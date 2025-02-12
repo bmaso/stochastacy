@@ -1,0 +1,21 @@
+# SBT and other build files
+target/
+project/target/
+project/metals.sbt
+.metals/
+.bloop/
+.idea/
+.vscode/
+*.iml
+
+# Logs and temp files
+logs/
+*.log
+.DS_Store
+
+# sbt-assembly output (fat JARs)
+stochastacy.jar
+
+# Docker build artifacts
+docker-compose.yml
+.dockerignore
