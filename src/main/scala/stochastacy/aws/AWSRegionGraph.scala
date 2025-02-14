@@ -12,19 +12,19 @@ import scala.concurrent.Future
  * the simulation graph generates a simulation of resources consumed by the system over time, including
  * AWS resources as well as cost. Such a simulation can be used to estimate performance and costs
  * to run the simulated system over time.
- * 
+ *
  * The simulation consists of a stream of time-window-based consumption events. Each such event is a
  * collection of resource consumptions events organized into discrete, contiguous time windows. The consumption
- * events match the types of resources discovered in the AWS Pricing API. 
- * 
+ * events match the types of resources discovered in the AWS Pricing API.
+ *
  * ## Building a Graph
- * 
+ *
  * The `provisionXYZ` methods are used to declare AWS configurable resources within the graph, such as
  * DDB tables, DDB storage units, SQS queues, ElastiCache caches, etc. AWS resources by default consume nothing
  * but time-based resources. For example, if your simulation includes nothing but an ElasitCache cache that
  * no one writes to or reads from, then the simulation will produce nothing but ElastiCache-Hours consumption
  * events.
- * 
+ *
  * Almost all AWS resources exist to be interacted with. An interaction will typically generate interaction-
  * specific consumption events. For example, a `GetItem` interaction with a DDB table generates RCU
  * consumption events.
@@ -34,9 +34,9 @@ import scala.concurrent.Future
  * graph you can connect your own sources to AWS resource sinks. The graph builder API also presents
  * methods for connecting resources to each other. For example, you can connect a DDB table's change
  * stream (represented in the graph as a source) to a Lambda function.
- * 
+ *
  * ## Running a Simulation
- * 
+ *
  * The `runSimulationTo` method will execute the simulation graph you have defined over the time window
  * you define. The simulation will send all consumption events for all resources in the graph to a sink you
  * provide. The simulation's time window is virtualized. It will take orders of magnitude less time
@@ -46,5 +46,5 @@ import scala.concurrent.Future
 abstract class AWSRegionGraph private (name: String) {
   type Mat
 
-  def runSimulationTo(sink: Sink[TimeWindowResourceConsumptionEvent, Mat]): Future[Done]
+  def runSimulationTo[Mat2, Mat3](sink: Sink[TimeWindowResourceConsumptionEvent, Mat2])(combiner: (Mat, Mat2) => Mat3): Future[Done]
 }
