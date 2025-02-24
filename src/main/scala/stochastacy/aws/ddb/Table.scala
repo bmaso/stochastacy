@@ -1,16 +1,20 @@
 package stochastacy.aws.ddb
 
 import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.{Graph, SourceShape}
-import org.apache.pekko.stream.scaladsl.Source
+import org.apache.pekko.stream.scaladsl.{Flow, GraphDSL, Keep, Sink, Source, SourceQueueWithComplete}
+import org.apache.pekko.stream.{Graph, Materializer, OverflowStrategy, SourceShape}
+import stochastacy.aws.ddb.Table.{PerformanceProfile, ResourceConsumptionEvents}
 import stochastacy.{TimeWindow, TimeWindowedEvents}
+
+import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.util.Random
 
 /**
  * A `Table` is a graph builder that builds a graph simulating the resource consumption of
  * a DynamoDB (DDB) table. Once the table is full constructed and configured, the constructGraph
  * method geneates a `Source[ResourceConsumptionEvents]`. The source object emits a stream of elements
  * representing the AWS resources consumed within individual time windows.
- * 
+ *
  * In an actual DDB table, the resource consumption behavior each time window depends on the table's
  * provisioning, and on the history or read and write operations submitted to the table since the
  * table was created. The factors the affect resource consumption at each time window is comprised of
@@ -69,12 +73,23 @@ import stochastacy.{TimeWindow, TimeWindowedEvents}
  * includes an implementation of the AWS auto-scaling algorithm.
  */
 trait Table:
-  def constructGraph: Graph[SourceShape[Table.ResourceConsumptionEvents], NotUsed]
+  /**
+   * Constructs a graph with input and output sources defined by calls to `useCaseInteractionsN` defined
+   * in `TableN` classes that mix in this trait.
+   */
+  def constructGraph: Source[Table.ResourceConsumptionEvents, NotUsed]
 
-class Table1[Reqs <: Table.RequestInteractions, Resps <: Table.ResponseInteractions, TableState](initialState: TableState, provisioning: Table.TableProvisioning) extends Table:
+class Table1[Reqs <: Table.RequestInteractions, Resps <: Table.ResponseInteractions](initialState: Table.TableState, provisioning: Table.TableProvisioning)(using ec: ExecutionContext) extends Table:
+  type InteractionTuple1 = (Source[Reqs, NotUsed], PerformanceProfile[Reqs, Resps], Promise[Source[Resps, NotUsed]])
+
+  /** threadsafety: only updated during calls to `useCaseInteractionsN`; those methods are explicitly _not_
+   *  threadsafe because of this. */
+  private var inter1_opt: Option[InteractionTuple1] = None
 
   /**
-   * 
+   * Note _NOT_ threadsafe. Should be called by client code only once during configuration of the table, prior
+   * to calling `constructGraph`
+   *
    * @param eventSource Elements emitted by the `Source` describe DDB GetItem interactions submitted within the
    *                    same time window
    * @param perfProfile A statistical model of the read units, latency, and retrieved data consumed by
@@ -84,20 +99,106 @@ class Table1[Reqs <: Table.RequestInteractions, Resps <: Table.ResponseInteracti
    * @tparam Mat Materialized type of the `eventSource`
    * @return A `Source` of GetItem interaction response collections
    */
-  protected def useCaseInteractions1[Mat](reqsSource: Source[Reqs, Mat],
-                                         perfProfile: Table.PerformanceProfile[Reqs, Resps]): Source[Resps, Mat]
-  
-  
-object Table:
-  
-  sealed trait RequestInteractions extends TimeWindowedEvents
-  sealed trait ResponseInteractions extends TimeWindowedEvents
-  
-  trait GetItemRequestsLike extends RequestInteractions:
-    val requestCnt: Long
+  protected def useCaseInteractions1(reqsSource: Source[Reqs, NotUsed],
+                                         perfProfile: Table.PerformanceProfile[Reqs, Resps]): Source[Resps, NotUsed] =
+    val respsPromise = Promise[Source[Resps, NotUsed]]()
+    inter1_opt = Some((reqsSource, perfProfile, respsPromise))
+    Source.futureSource(respsPromise.future).mapMaterializedValue(_ => NotUsed)
 
-  case class GetItemRequests(override val window: TimeWindow, override val requestCnt: Long) extends GetItemRequestsLike
-  
+
+  /**
+   * Construct the table's performance graph.
+   *
+   * @param materializer The `Materializer` is necessary to convey per-use-case performance data, which is
+   *                     conveyed to the `Source`s returned from the `useCaseInteractionsN` methods.
+   * @return The `Source[Table.ResourceConsumptionEvents]` returned from this method would be wired into
+   *         a larger graph, and would convey the resources consumed by the table as a whole during
+   *         a simulation. This would include resources consumed by read and write queries, as well as
+   *         resources consumed by the table for data storage and other background activities.
+   */
+  override def constructGraph: Source[Table.ResourceConsumptionEvents, NotUsed] =
+    var graphTableState = initialState
+
+    // ...This is the central kernel of the table interaction simulation: a single Reqs emitted from the
+    //    inter1 source represents the requests received within a single time window. This graph simulates
+    //    executing those requests one-by-one, parcelling each out to a 1-second window statistically.
+    //
+    // ...The per-interaction Sources are implemented as a chain of Futures. In each time window a set of
+    //    resps is computed; at the end of this computation a future is completed with the accumulated resps
+    //    value; this causes the associated source to emit the resps. At the concluion of this flow, the
+    //    final future is completed with a None value, closing the associated Source...
+    val graph = GraphDSL.create() { implicit builder =>
+      import GraphDSL.Implicits.*
+
+      val reqsSource = inter1_opt.get._1
+      val perf = inter1_opt.get._2
+      val respsSourcePromise = inter1_opt.get._3
+
+      var nextRespsPromise = Promise[Option[Resps]]
+      val respsSource: Source[Resps, NotUsed] = Source.unfoldAsync[NotUsed, Resps](null)(_ => nextRespsPromise.future.map(_.map((null, _))))
+      respsSourcePromise.completeWith(Future.successful(respsSource))
+
+      val simulationFlow = Flow[Reqs].map({ req =>
+        val secs = (req.window.windowSize.millis / 1000).toInt
+        val initialSec = req.window.windowStart / 1000
+        val requestBuckets = Table.simulateArrivals(req.requestsCnt, secs)
+        val resourceConsumptionEvents = new ResourceConsumptionEvents:
+          override val window: TimeWindow = req.window
+
+        val resps = perf.freshResps
+
+        // ...each second update read unit budget & simulate execution of all requests within that second,
+        //    updating read unit budget with each request...
+        for sec <- 0 to secs do
+          val clockTimeSec = initialSec + sec
+          provisioning.tick(clockTimeSec)
+          for r <- 0 to requestBuckets(sec) do
+            // * find what resources would be required to successfully complete request
+            val resourceRequirements = perf.resourcesRequiredForUseCaseExecution(graphTableState, clockTimeSec)
+
+            // * consume resources if available, or throttle request
+            val (newTableState, resourceConsumption) = provisioning.simulateExecution(graphTableState, clockTimeSec, resourceRequirements)
+            graphTableState = newTableState
+            // ...accrue resource consumption in per-interaction resps and overall resourceConsumptionEvents...
+            resps.accrue(resourceConsumption)
+            resourceConsumptionEvents.accrue(resourceConsumption)
+
+        // ...send per-interaction resps to appropriate sources through the promise waiting for resps...
+        val tmp = nextRespsPromise
+        nextRespsPromise = Promise[Option[Resps]]
+        tmp.completeWith(Future.successful(Some(resps)))
+
+        resourceConsumptionEvents
+      })
+
+      // ...when the flow is complete, shut down all the per-interaction sources
+      .watchTermination() { (_, doneFuture) =>
+        doneFuture.onComplete(_ => nextRespsPromise.completeWith(Future.successful(None)))
+      }
+
+      val simulationFlowShape = builder.add(simulationFlow)
+      reqsSource ~> simulationFlowShape.in
+
+      // ...this graph's sole unbound port is the simulate flow's output, which is a source
+      //    of ResourceConsumptionEvents objects...
+      SourceShape(simulationFlowShape.out)
+    }
+
+    Source.fromGraph(graph)
+
+
+object Table:
+
+  sealed trait RequestInteractions extends TimeWindowedEvents:
+    val requestsCnt: Long
+
+  sealed trait ResponseInteractions extends TimeWindowedEvents:
+    def accrue(resourceConsumption: ResourceConsumptionEvents): Unit = { /* placeholder */}
+
+  trait GetItemRequestsLike extends RequestInteractions
+
+  case class GetItemRequests(override val window: TimeWindow, override val requestsCnt: Long) extends GetItemRequestsLike
+
   trait GetItemResponsesLike extends ResponseInteractions:
     val requestHitCnt: Long
     val requestHitReadUnits: Long
@@ -116,9 +217,33 @@ object Table:
     /** DDB debits at least 1 read unit per request */
     val consumedReadUnits: Long = requestHitReadUnits + requestMissCnt
 
-  trait PerformanceProfile[Reqs <: RequestInteractions, Resps <: ResponseInteractions]
+  trait PerformanceProfile[Reqs <: RequestInteractions, Resps <: ResponseInteractions]:
+    def freshResps: Resps
+    def resourcesRequiredForUseCaseExecution(state: TableState, clockTimeSec: Long): TableResources
 
-  trait TableProvisioning
-  
-  trait ResourceConsumptionEvents extends TimeWindowedEvents
-  
+  trait TableState
+
+  trait TableProvisioning:
+    def tick(clockTimeSec: Long): Unit
+    def simulateExecution(graphTableState: TableState, clockTimeSec: Long, resourceRequirements: TableResources): (TableState, ResourceConsumptionEvents)
+
+  case class TableResources(readUnits: Int)
+
+  trait ResourceConsumptionEvents extends TimeWindowedEvents:
+    def accrue(resourceConsumptionEvents: ResourceConsumptionEvents): Unit = {/* placeholder */}
+
+  /**
+   * Utility function `simulateArrivals` generates an array of `n` values randomly partitioned
+   * into `m` buckets.
+   **/
+  // TODO: Needs to support Long n-values. Bucket count I don't think needs to ever get above seconds/24h == 86400
+  def simulateArrivals(n: Long, m: Int): Array[Int] =
+    val buckets = Array.fill[Int](m)(0)
+    (1 to n.toInt).foreach { _ =>
+      val bucket = (rnd_! * m).toInt
+      buckets(bucket) += 1
+    }
+    buckets
+
+  val random: Random = Random()
+  def rnd_! : Double = random.nextDouble()
