@@ -7,9 +7,9 @@ import org.apache.pekko.http.scaladsl.server.Directives.*
 import org.apache.pekko.stream.Materializer
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.Logger
-import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Sink, Source}
 import org.json4s.jackson.Serialization
+import org.json4s.jackson.Serialization.{read, write}
 import org.json4s.{DefaultFormats, jackson}
 import stochastacy.graphs.HelloWorldGraph
 import stochastacy.graphs.PoissonWindowedEventSource
