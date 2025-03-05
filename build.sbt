@@ -11,6 +11,7 @@ lazy val Versions = new {
   val commonsRngSimple = "1.6"
   val scalaLoggingVersion = "3.9.5"
   val logbackClassicVersion = "1.3.5"
+  val scalatestVersion = "3.2.19"
 }
 
 lazy val root = (project in file("."))
@@ -39,7 +40,11 @@ lazy val root = (project in file("."))
 
       // Logging
       "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLoggingVersion,
-      "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion
+      "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion,
+
+      // Testing
+      "org.apache.pekko" %% "pekko-stream-testkit" % Versions.pekkoStreamVersion % "test",
+      "org.scalatest" %% "scalatest" % Versions.scalatestVersion % "test"
     )
   )
 
