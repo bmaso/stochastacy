@@ -58,7 +58,7 @@ object WindowSize:
  * A time window of a certain size that begin at a particular number of milliseconds since
  * some implicit "beginning of time".
  */
-case class TimeWindow(windowSize: WindowSize, windowStart: Long)
+case class TimeWindow(windowSize: WindowSize, windowStartMs: Long)
 
 case class TimeWindowing(startTimeMs: Long, windowDuration: Duration, windowSize: WindowSize):
   def windowOfClockTimeSec(clockTimeSec: Long): TimeWindow =

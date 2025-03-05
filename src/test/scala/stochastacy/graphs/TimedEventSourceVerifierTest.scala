@@ -17,7 +17,7 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
   override def afterAll(): Unit =
     system.terminate()
 
-  "A TimedEVentSourceVerifier" when:
+  "A TimedEventSourceVerifier" when:
     "verifying a timed event source" should:
       "complete benignly with a valid sequence" in:
         val timedEvents = List(

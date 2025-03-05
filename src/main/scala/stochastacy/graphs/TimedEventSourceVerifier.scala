@@ -39,8 +39,8 @@ object TimedEventSourceVerifier:
           throw new IllegalArgumentException("Rule violation: clock time must increase monotonically")
         case (true, Seq(prev, next)) if prev.clockTime != next.clockTime && next.usecase != "!" && next.usecase != "tick" =>
           throw new IllegalArgumentException("Rule violation: a tick must be interleaved between clock time changes")
-        case (true, Seq(prev, next)) if prev.clockTime != next.clockTime && prev.clockTime != next.clockTime - 1 && next.usecase != "!" =>
-          throw new IllegalArgumentException("Rule violation: clock time must increase by no more than 1 unit")
+        case (true, Seq(prev, next)) if prev.clockTime != next.clockTime && prev.clockTime != next.clockTime - clockIncrement && next.usecase != "!" =>
+          throw new IllegalArgumentException(s"Rule violation: clock time must increase by no more than $clockIncrement unit(s)")
         case (true, p) => (true, p.tail) // ...drop the first element, use the second...
       }, _ => None)
       .flatMap(Source(_))
