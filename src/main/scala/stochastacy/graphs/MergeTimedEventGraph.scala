@@ -45,9 +45,7 @@ class MergeTimedEventGraph private (clockIncrementMs: Long, bufferSize: Int) ext
 
       def tryEmit(): Unit =
         if isAvailable(out) && queue.nonEmpty then
-          var t = queue.dequeue()
-          println(s"Pushing $t")
-          push(out, t)
+          push(out, queue.dequeue())
         if(queue.isEmpty && inlet0Closed && inlet1Closed)
           completeStage()
 
@@ -55,14 +53,9 @@ class MergeTimedEventGraph private (clockIncrementMs: Long, bufferSize: Int) ext
        * Do not
        */
       def tryPull(): Unit =
-        println(s"queue.size: ${queue.size}; bufferSize: $bufferSize")
-        println(s"hasBeenPulled(0)? ${hasBeenPulled(in0)}; isClosed(0)? ${isClosed(in0)}")
-        println(s"hasBeenPulled(1)? ${hasBeenPulled(in1)} ; isClosed(1)? ${isClosed(in1)}")
         if((unmatchedTick0.isEmpty) && !hasBeenPulled(in0) && !isClosed(in0)) then
-          println("Pulling from 0")
           pull(in0)
         if((unmatchedTick1.isEmpty) && !hasBeenPulled(in1) && !isClosed(in1)) then
-          println("Pulling from 1")
           pull(in1)
 
       /**
@@ -95,7 +88,6 @@ class MergeTimedEventGraph private (clockIncrementMs: Long, bufferSize: Int) ext
       setHandler(in0, new InHandler:
         override def onPush(): Unit =
           val elem = grab(in0)
-          println(s"in0.onPush received $elem")
           (elem, unmatchedTick1) match
             case (tick: TimedEvent.Tick, Some(unmatchedOtherTick)) if tick.clockTime != unmatchedOtherTick.clockTime =>
               failStage(new IllegalStateException(s"Unmatched tick received from source.in0: ${tick.clockTime} != ${unmatchedOtherTick.clockTime}"))
@@ -127,7 +119,6 @@ class MergeTimedEventGraph private (clockIncrementMs: Long, bufferSize: Int) ext
                 tryPull()
 
         override def onUpstreamFinish(): Unit =
-          println("source.in0 upstream finish")
           inlet0Closed = true
           tryEmit())
 
@@ -152,7 +143,6 @@ class MergeTimedEventGraph private (clockIncrementMs: Long, bufferSize: Int) ext
       setHandler(in1, new InHandler:
         override def onPush(): Unit =
           val elem = grab(in1)
-          println(s"in1.onPush received $elem")
           (elem, unmatchedTick0) match
             case (tick: TimedEvent.Tick, Some(unmatchedOtherTick)) if tick.clockTime != unmatchedOtherTick.clockTime =>
               failStage(new IllegalStateException(s"Unmatched tick received from source.in1: ${tick.clockTime} != ${unmatchedOtherTick.clockTime}"))
@@ -170,7 +160,7 @@ class MergeTimedEventGraph private (clockIncrementMs: Long, bufferSize: Int) ext
               if(!lastMatchedTick.forall(_.clockTime + clockIncrementMs == tick.clockTime))
                 failStage(new IllegalStateException(s"Tick increment through source.in1 not a valid increment from last tick: ${lastMatchedTick.get} → ${tick.clockTime}"))
               else
-                unmatchedTick0 = Some(tick)
+                unmatchedTick1 = Some(tick)
                 tryPull()
                 // ...do not pull on in1. We have backpressure until we get same tick coming through in0
 
@@ -184,13 +174,11 @@ class MergeTimedEventGraph private (clockIncrementMs: Long, bufferSize: Int) ext
                 tryPull()
 
         override def onUpstreamFinish(): Unit =
-          println("source.in1 upstream finish")
           inlet1Closed = true
           tryEmit())
 
       setHandler(out, new OutHandler:
         override def onPull(): Unit =
-          println("onPull...")
           tryEmit())
 
       override def preStart(): Unit =

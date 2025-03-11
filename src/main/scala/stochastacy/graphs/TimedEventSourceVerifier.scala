@@ -31,7 +31,7 @@ object TimedEventSourceVerifier:
       .statefulMap(() => false)({
         case (false, Seq(prev, _)) if (prev.usecase != "tick") =>
           throw new IllegalArgumentException("First source element must be a \"tick\"")
-        case (false, Seq(prev: TimedEvent.Tick, next)) =>
+        case (false, Seq(prev, next)) if (prev.usecase == "tick") =>
           (true, List(prev, next)) // ...the very first tick and first element are preserved...
         case (true, Seq(prev, TimedEvent.Tick(cl2))) if prev.clockTime >= cl2 =>
           throw new IllegalArgumentException("Rule violation: a clock tick must increase clock time vs previous element")

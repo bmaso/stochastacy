@@ -52,7 +52,7 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
         sub.expectNext(testEvent)
         sub.expectComplete()
 
-      "benignly merge a 2-element source and a single-element source" in :
+      "benignly merge a multi-element source and a 2-element source" in :
         val tick = TimedEvent.Tick(100L)
         val testEvent = TestEvent(100L)
         val sourceA: Source[TimedEvent, NotUsed] = Source(List(tick, testEvent))
@@ -66,4 +66,74 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
         sub.expectNext(tick)
         sub.expectNext(testEvent)
 
+        sub.expectComplete()
+
+      "merge a 2 sources covering 3 ticks and several events in each time period" in :
+        val ticks = List(TimedEvent.Tick(1000L), TimedEvent.Tick(2000L), TimedEvent.Tick(3000L))
+        val events = List(TestEvent(1000L), TestEvent(2000L), TestEvent(3000L))
+        val sourceA: Source[TimedEvent, NotUsed] = Source(List(
+          ticks(0),
+          events(0), events(0),
+          ticks(1),
+          events(1),
+          ticks(2),
+          events(2), events(2)))
+        val sourceB: Source[TimedEvent, NotUsed] = Source(List(
+          ticks(0),
+          events(0),
+          ticks(1),
+          events(1), events(1),
+          ticks(2),
+          events(2)))
+
+        val merged = MergeTimedEventGraph.apply(sourceA, sourceB)
+
+        val sub = merged.runWith(TestSink.probe[TimedEvent])
+
+        sub.request(12)
+        sub.expectNext(ticks(0))
+        sub.expectNext(events(0))
+        sub.expectNext(events(0))
+        sub.expectNext(events(0))
+        sub.expectNext(ticks(1))
+        sub.expectNext(events(1))
+        sub.expectNext(events(1))
+        sub.expectNext(events(1))
+        sub.expectNext(ticks(2))
+        sub.expectNext(events(2))
+        sub.expectNext(events(2))
+        sub.expectNext(events(2))
+
+        sub.expectComplete()
+
+      "merge a 2 sources covering 3 ticks with sparely populated time periods" in :
+        val ticks = List(TimedEvent.Tick(1000L), TimedEvent.Tick(2000L), TimedEvent.Tick(3000L))
+        val events = List(TestEvent(1000L), TestEvent(2000L), TestEvent(3000L))
+        val sourceA: Source[TimedEvent, NotUsed] = Source(List(
+          ticks(0),
+          ticks(1),
+          ticks(2),
+          events(2), events(2)))
+        val sourceB: Source[TimedEvent, NotUsed] = Source(List(
+          ticks(0),
+          events(0), events(0),
+          ticks(1),
+          events(1), events(1),
+          ticks(2)))
+      
+        val merged = MergeTimedEventGraph.apply(sourceA, sourceB)
+      
+        val sub = merged.runWith(TestSink.probe[TimedEvent])
+      
+        sub.request(9)
+        sub.expectNext(ticks(0))
+        sub.expectNext(events(0))
+        sub.expectNext(events(0))
+        sub.expectNext(ticks(1))
+        sub.expectNext(events(1))
+        sub.expectNext(events(1))
+        sub.expectNext(ticks(2))
+        sub.expectNext(events(2))
+        sub.expectNext(events(2))
+      
         sub.expectComplete()
