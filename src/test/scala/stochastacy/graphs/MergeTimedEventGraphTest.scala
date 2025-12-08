@@ -14,7 +14,10 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
   given materializer: Materializer = Materializer(actorSystem)
 
   case class TestEvent(clockTime: Long) extends TimedEvent.UserTimedEvent:
-    override val usecase: String = "test"
+    override type U = TestEventUsecase.type
+    override val usecase: this.U = TestEventUsecase
+    
+  object TestEventUsecase
 
   override def afterAll(): Unit =
     actorSystem.terminate()

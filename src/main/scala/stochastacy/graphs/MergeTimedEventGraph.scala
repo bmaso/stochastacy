@@ -69,20 +69,22 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
 
       /**
        * A pull has been issued on in0, which means there is not an unmatched tick received from in0.
+       * 
        * * If a tick is received:
-       * * validate it
-       * * if in1 has an unmatched a tick:
-       * * verify this one matches that one (error out if not)
-       * * store new matched tick
-       * * clear both last unmatched
-       * * enqueue tick
-       * * pull from both inlets if queue is not full
+       *   * validate it
+       *   * if in1 has an unmatched a tick:
+       *     * verify this one matches that one (error out if not)
+       *   * store new matched tick
+       *   * clear both last unmatched
+       *   * enqueue tick
+       *   * pull from both inlets if queue is not full
        * * else:
-       * * store unmatched tick
-       * * pull from in1 if queue is not full
-       * * else (not a tick):
-       * * enqueue event
-       * * pull from in0
+       *   * store unmatched tick
+       *   * pull from in1 if queue is not full
+       *   * else (not a tick):
+       *   * enqueue event
+       *   * pull from in0
+       *
        * * Either way, try emit
        */
       setHandler(in0, new InHandler:
@@ -126,20 +128,22 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
 
         /**
          * A pull has been issued on in1, which means there is not an unmatched tick received from in1.
+         *
          * * If a tick is received:
-         * * validate it
-         * * if in0 has an unmatched a tick:
-         * * verify this one matches that one (error out if not)
-         * * store new matched tick
-         * * clear both last unmatched
-         * * enqueue tick
-         * * pull from both inlets if queue is not full
+         *   * validate it
+         *   * if in0 has an unmatched a tick:
+         *     * verify this one matches that one (error out if not)
+         *   * store new matched tick
+         *   * clear both last unmatched
+         *   * enqueue tick
+         *   * pull from both inlets if queue is not full
          * * else:
-         * * store unmatched tick
-         * * pull from in0 if queue is not full
-         * * else (not a tick):
-         * * enqueue event
-         * * pull from in1
+         *   * store unmatched tick
+         *   * pull from in0 if queue is not full
+         *     * else (not a tick):
+         *   * enqueue event
+         *   * pull from in1
+         *
          * * Either way, try emit
          */
         setHandler(in1, new InHandler:

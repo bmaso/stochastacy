@@ -127,10 +127,13 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
       verifiedSource.toMat(TestSink.probe[TimedEvent])(Keep.both)
         .run()
 
-    timedEvents.foreach(pub.sendNext(_))
+    timedEvents.foreach(pub.sendNext)
     pub.sendComplete()
     sub
   }
 
   case class TestTimedEvent(id: Int, override val clockTime: Long) extends TimedEvent.UserTimedEvent:
-    override val usecase: String = "testing"
+    override type U = TimedEventUsecase.type
+    override val usecase: this.U = TimedEventUsecase
+  
+  object TimedEventUsecase
