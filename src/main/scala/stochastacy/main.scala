@@ -7,18 +7,18 @@ import org.apache.pekko.http.scaladsl.server.Directives.*
 import org.apache.pekko.stream.Materializer
 import com.typesafe.config.ConfigFactory
 import com.typesafe.scalalogging.Logger
+import org.apache.commons.rng.core.source32.KISSRandom
 import org.apache.pekko.stream.scaladsl.{Sink, Source}
 import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.{read, write}
 import org.json4s.{DefaultFormats, jackson}
-import stochastacy.graphs.HelloWorldGraph
-import stochastacy.graphs.PoissonWindowedEventSource
+import stochastacy.graphs.{HelloWorldGraph, PoissonEventSource}
 
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success}
 
-case class EventCountSet(windowSizeMs: Long, events: Seq[PoissonWindowedEventSource.EventCount])
+case class EventCountSet(windowSizeMs: Long, events: Seq[PoissonEventSource.EventCount])
 
 @main def Stochastacy(): Unit =
   given system: ActorSystem = ActorSystem("StochastacySystem")
@@ -58,11 +58,16 @@ case class EventCountSet(windowSizeMs: Long, events: Seq[PoissonWindowedEventSou
 
             val totalDurationMs = totalMs.millis
             val windowSizeMs = windowMs.millis
+            val totalWindowCount = totalMs / windowMs
+            val eventsPerWindow = (1000.0 / windowSizeMs.toMillis) * lambda
 
             if (totalDurationMs.toMillis % totalDurationMs.toMillis != 0) {
               complete(StatusCodes.BadRequest, "Total duration must be a multiple of window duration")
             } else {
-              val future = PoissonWindowedEventSource(totalDurationMs, windowSizeMs, lambda).runWith(Sink.seq)
+              val future = PoissonEventSource(eventsPerWindow, KISSRandom.apply(Array[Int](1, 1, 1, 1)))
+                .take(totalWindowCount)
+                .runWith(Sink.seq)
+              
               onSuccess(future) { events =>
                 complete(EventCountSet(windowSizeMs.toMillis, events))
               }

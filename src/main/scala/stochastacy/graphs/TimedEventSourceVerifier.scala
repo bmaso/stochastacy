@@ -34,6 +34,9 @@ object TimedEventSourceVerifier:
           throw new IllegalArgumentException("First source element must be a \"Tick\"")
         case (false, Seq(prev@Tick(_), next)) =>
           (true, List(prev, next)) // ...the very first tick and first element are preserved...
+        case (false, _) =>
+          // ...this case shouldn't ever happen...
+          throw new IllegalArgumentException("unexpected sliding window condition")
         case (true, Seq(prev, TimedEvent.Tick(cl2))) if prev.clockTime >= cl2 =>
           throw new IllegalArgumentException("Rule violation: a clock tick must increase clock time vs previous element")
         case (true, Seq(prev, next)) if prev.clockTime > next.clockTime =>

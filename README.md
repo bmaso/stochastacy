@@ -58,9 +58,8 @@ A stochastic data generator, utilizing the Pekko Streaming API.
 
 ## DynamoDB Table simulator development curriculum
 
-### 1. A read-only key-value cache
-
-- Only 1 use-case: read element with single `GetItem`
-  - fixed stochastic function of hit/miss
-  - fixed stochastic function of RCUs consumed
-
+1. Phase 1 - Permanent cache lookup
+2. Phase 2 - Multiple independent cache clients
+3. Phase 3 - Provisioned read capacity (whole-table)
+4. Phase 4 - Hot vs. cold keys (Skewed access)
+5. Phase 5 - Write operations and WCU tracking

@@ -11,9 +11,9 @@ object TimeWindowTicksSource:
    * * _1: a `TimedEvent.Tick`
    *   * first tuple has tick with clock time `timeWindow.windowStart`, incrementing by `clockIncrementMs` in each element
    * * _2: the 0-based index of this tick within the window
-   * * _2: total number of ticks in the time window
+   * * _3: total number of ticks in the time window
    *   * computed by time window millis / `clockIncrementMs`
-   * * _3: original `TimeWindow`
+   * * _4: original `TimeWindow`
    **/
   def apply(timeWindow: TimeWindow, clockIncrementMs: Long = 1000L): Source[(TimedEvent.Tick, Int, Long, TimeWindow), NotUsed] =
     val windowSizeMs = timeWindow.windowSize.millis.toMillis
