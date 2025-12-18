@@ -67,7 +67,7 @@ case class EventCountSet(windowSizeMs: Long, events: Seq[PoissonEventSource.Even
               val future = PoissonEventSource(eventsPerWindow, KISSRandom.apply(Array[Int](1, 1, 1, 1)))
                 .take(totalWindowCount)
                 .runWith(Sink.seq)
-              
+
               onSuccess(future) { events =>
                 complete(EventCountSet(windowSizeMs.toMillis, events))
               }

@@ -14,7 +14,7 @@ lazy val Versions = new {
   val scalatestVersion = "3.2.19"
 }
 
-lazy val root = (project in file("."))
+lazy val core = (project in file("core"))
   .settings(
     name := "stochastacy",
     version := "0.0.1",
@@ -47,6 +47,25 @@ lazy val root = (project in file("."))
       "org.scalatest" %% "scalatest" % Versions.scalatestVersion % "test"
     )
   )
+
+lazy val examples = (project in file("examples"))
+  .dependsOn(core)
+  .settings(
+    name := "stochastacy-examples",
+    version := "0.0.1",
+
+    // examples often want logging + runtime deps
+    libraryDependencies ++= Seq(
+      "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion
+    )
+  )
+
+lazy val root = (project in file("."))
+  .aggregate(core, examples)
+  .settings(
+    publish / skip := true
+  )
+
 
 /* We don't need module-info.class files, and they screw up uberjar assembly, so here
  * is code that causes them to not be added to the assembled uberjar */

@@ -1,28 +1,12 @@
 package stochastacy.aws.ddb
 
-import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.scaladsl.{Flow, GraphDSL, Keep, Sink, Source, SourceQueueWithComplete}
-import org.apache.pekko.stream.{Graph, Materializer, OverflowStrategy, SourceShape}
-import stochastacy.TimeWindow
-import stochastacy.graphs.TimedEvent.UserTimedEvent
-
-import scala.concurrent.{ExecutionContext, Future, Promise}
-import scala.util.{Random, Success}
-
 /**
  * A `Table[X]` is a graph builder that builds a graph simulating the resource consumption of
- * a DynamoDB (DDB) table. Once the table is full constructed and configured, the `createGraph`
- * method generates a `Graph[SourceShape[DDBTableMetrics], X]`. The source emits a stream of elements
- * representing the AWS metrics describing resources consumed, storage, and performance of a DDB table
- *
- * The resource consumption behavior each moment depends on the table's provisioning, and on the history
- * of read and write operations submitted to the table since the table was created. The factors the affect
- * resource consumption at each time window is comprised of these constituents:
- *
- * 1. **The contents of the table at operation time**. A Scan operation on an empty table
- *   consumes far fewer read units than on a multi-Tb table.
- * 1. **The table provisioning**. Tables may have OnDemand provisioning, or may be provisioned with a certain
- *   number of read units and write units.
+ * a DynamoDB (DDB) table. A table component has one input stream and two output streams:
+ * * An input stream of DynamoDB requests
+ * * An output stream of DynamoDB responses
+ * * An output stream of metrics describing resources consumed and operation metrics of the
+ *   table over time
  *
  * ## Stochastic modeling of table state and interaction use-cases
  *
@@ -42,6 +26,8 @@ import scala.util.{Random, Success}
  * 99% of the time in our imagined system, irrespective of the number of devices stored in the table. We
  * model the table's behavior under this use-case using a binomial distribution with a $p$ value of 0.99.
  * Item size, which affects the RCUs consumed, would similarly be defined by a statistical distribution.
+ * The {{GetItemUseCaseStochasticModel}} trait defines the statistical distributions needed to instantiate
+ * the stochastic behavior of a table handling a single use-case of GetItem requests.
  *
  * Another use case for this table is a query for all the active IoT devices in a local area. The number
  * of read units consumed by a query in this use-case depends on the size of the table, which may
