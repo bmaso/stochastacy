@@ -2,24 +2,22 @@ package stochastacy.graphs
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
-import stochastacy.TimeWindow
+import stochastacy.SimTimeWindow
 
 object TimeWindowTicksSource:
 
   /**
    * Creates a `Source` of tuples:
    * * _1: a `TimedEvent.Tick`
-   *   * first tuple has tick with clock time `timeWindow.windowStart`, incrementing by `clockIncrementMs` in each element
+   *   * first tuple has tick with clock time `timeWindow.windowStart`
    * * _2: the 0-based index of this tick within the window
    * * _3: total number of ticks in the time window
-   *   * computed by time window millis / `clockIncrementMs`
    * * _4: original `TimeWindow`
    **/
-  def apply(timeWindow: TimeWindow, clockIncrementMs: Long = 1000L): Source[(TimedEvent.Tick, Int, Long, TimeWindow), NotUsed] =
-    val windowSizeMs = timeWindow.windowSize.millis.toMillis
-    val totalTicks = windowSizeMs / clockIncrementMs
-    Source.unfold((0, timeWindow.windowStartMs))({ case (idx, t) =>
-      if t < windowSizeMs then
-        Some(((idx + 1, t + clockIncrementMs), (TimedEvent.Tick(t), idx, totalTicks, timeWindow)))
+  def apply(timeWindow: SimTimeWindow): Source[(TimedEvent.Tick, Int, Long, SimTimeWindow), NotUsed] =
+    val windowSize = timeWindow.windowSize
+    Source.unfold(0) ({ idx =>
+      if idx < timeWindow.windowSize.ticks then
+        Some((idx + 1, (TimedEvent.Tick(SimTime.of(idx)), idx, windowSize.ticks, timeWindow)))
       else
         None })

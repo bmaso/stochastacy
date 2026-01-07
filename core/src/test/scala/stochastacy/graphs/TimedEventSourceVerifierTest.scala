@@ -21,12 +21,12 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
     "verifying a timed event source" should:
       "complete benignly with a valid sequence" in:
         val timedEvents = List(
-          TimedEvent.Tick(10L),
-          TestTimedEvent(1, 10L),
-          TestTimedEvent(2, 10L),
-          TimedEvent.Tick(11L),
-          TestTimedEvent(3, 11L),
-          TestTimedEvent(4, 11L))
+          TimedEvent.Tick(SimTime.of(10L)),
+          TestTimedEvent(1, SimTime.of(10L)),
+          TestTimedEvent(2, SimTime.of(10L)),
+          TimedEvent.Tick(SimTime.of(11L)),
+          TestTimedEvent(3, SimTime.of(11L)),
+          TestTimedEvent(4, SimTime.of(11L)))
 
         val sub = verifyEventSequence(timedEvents)
 
@@ -37,11 +37,11 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
 
       "complete benignly with a series of ticks" in :
         val timedEvents = List(
-          TimedEvent.Tick(10L),
-          TimedEvent.Tick(11L),
-          TimedEvent.Tick(12L),
-          TimedEvent.Tick(13L),
-          TimedEvent.Tick(14L))
+          TimedEvent.Tick(SimTime.of(10L)),
+          TimedEvent.Tick(SimTime.of(11L)),
+          TimedEvent.Tick(SimTime.of(12L)),
+          TimedEvent.Tick(SimTime.of(13L)),
+          TimedEvent.Tick(SimTime.of(14L)))
 
         val sub = verifyEventSequence(timedEvents)
 
@@ -52,11 +52,11 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
 
       "fail because the source does not start with a Tick" in:
         val timedEvents = List(
-          TestTimedEvent(1, 10L),
-          TestTimedEvent(2, 10L),
-          TimedEvent.Tick(11L),
-          TestTimedEvent(3, 11L),
-          TestTimedEvent(4, 11L))
+          TestTimedEvent(1, SimTime.of(10L)),
+          TestTimedEvent(2, SimTime.of(10L)),
+          TimedEvent.Tick(SimTime.of(11L)),
+          TestTimedEvent(3, SimTime.of(11L)),
+          TestTimedEvent(4, SimTime.of(11L)))
 
         val sub = verifyEventSequence(timedEvents)
 
@@ -65,17 +65,17 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
 
       "fail because a time increment between two consecutive non-ticks" in:
         val timedEvents = List(
-          TimedEvent.Tick(10L),
-          TestTimedEvent(1, 10L),
-          TestTimedEvent(2, 10L),
-          TimedEvent.Tick(11L),
-          TestTimedEvent(3, 11L),
-          TestTimedEvent(4, 15L))
+          TimedEvent.Tick(SimTime.of(10L)),
+          TestTimedEvent(1, SimTime.of(10L)),
+          TestTimedEvent(2, SimTime.of(10L)),
+          TimedEvent.Tick(SimTime.of(11L)),
+          TestTimedEvent(3, SimTime.of(11L)),
+          TestTimedEvent(4, SimTime.of(15L)))
 
         val sub = verifyEventSequence(timedEvents)
 
         sub.request(6)
-        sub.expectNext(timedEvents(0))
+        sub.expectNext(timedEvents.head)
         sub.expectNext(timedEvents(1))
         sub.expectNext(timedEvents(2))
         sub.expectNext(timedEvents(3))
@@ -84,18 +84,18 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
 
       "fail because two consecutive ticks without a time increment" in :
         val timedEvents = List(
-          TimedEvent.Tick(10L),
-          TestTimedEvent(1, 10L),
-          TestTimedEvent(2, 10L),
-          TimedEvent.Tick(11L),
-          TimedEvent.Tick(11L),
-          TestTimedEvent(3, 11L),
-          TestTimedEvent(4, 11L))
+          TimedEvent.Tick(SimTime.of(10L)),
+          TestTimedEvent(1, SimTime.of(10L)),
+          TestTimedEvent(2, SimTime.of(10L)),
+          TimedEvent.Tick(SimTime.of(11L)),
+          TimedEvent.Tick(SimTime.of(11L)),
+          TestTimedEvent(3, SimTime.of(11L)),
+          TestTimedEvent(4, SimTime.of(11L)))
 
         val sub = verifyEventSequence(timedEvents)
 
         sub.request(5)
-        sub.expectNext(timedEvents(0))
+        sub.expectNext(timedEvents.head)
         sub.expectNext(timedEvents(1))
         sub.expectNext(timedEvents(2))
         sub.expectNext(timedEvents(3))
@@ -103,17 +103,17 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
 
       "fail because time increment skipped" in :
         val timedEvents = List(
-          TimedEvent.Tick(10L),
-          TestTimedEvent(1, 10L),
-          TestTimedEvent(2, 10L),
-          TimedEvent.Tick(15L),
-          TestTimedEvent(3, 15L),
-          TestTimedEvent(4, 15L))
+          TimedEvent.Tick(SimTime.of(10L)),
+          TestTimedEvent(1, SimTime.of(10L)),
+          TestTimedEvent(2, SimTime.of(10L)),
+          TimedEvent.Tick(SimTime.of(15L)),
+          TestTimedEvent(3, SimTime.of(15L)),
+          TestTimedEvent(4, SimTime.of(15L)))
 
         val sub = verifyEventSequence(timedEvents)
 
         sub.request(4)
-        sub.expectNext(timedEvents(0))
+        sub.expectNext(timedEvents.head)
         sub.expectNext(timedEvents(1))
         sub.expectNext(timedEvents(2))
         sub.expectError()
@@ -132,8 +132,7 @@ class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers 
     sub
   }
 
-  case class TestTimedEvent(id: Int, override val clockTime: Long) extends TimedEvent.UserTimedEvent:
-    override type U = TimedEventUsecase.type
-    override val usecase: this.U = TimedEventUsecase
+  case class TestTimedEvent(id: Int, override val eventTime: SimTime) extends TimedEvent:
+    override val usecase: Any = TimedEventUsecase
   
   object TimedEventUsecase

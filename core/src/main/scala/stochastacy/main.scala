@@ -21,11 +21,12 @@ import scala.util.{Failure, Success}
 case class EventCountSet(windowSizeMs: Long, events: Seq[PoissonEventSource.EventCount])
 
 @main def Stochastacy(): Unit =
-  given system: ActorSystem = ActorSystem("StochastacySystem")
+  val config = ConfigFactory.load()
+
+  given system: ActorSystem = ActorSystem("StochastacySystem", config)
   given materializer: Materializer = Materializer(system)
   given ExecutionContext = system.dispatcher
 
-  val config = ConfigFactory.load()
   val host = config.getString("app.host")
   val port = config.getInt("app.port")
   

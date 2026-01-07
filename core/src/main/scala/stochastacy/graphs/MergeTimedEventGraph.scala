@@ -5,7 +5,6 @@ import org.apache.pekko.stream.stage.*
 import org.apache.pekko.stream.scaladsl.*
 
 import scala.collection.mutable
-import stochastacy.graphs.TimedEvent
 
 /**
  * Merges two timed event sources into a single source that conforms to the timed event source
@@ -13,19 +12,19 @@ import stochastacy.graphs.TimedEvent
  *
  * Restrictions on the input sources:
  * * each source must begin with equal `Tick` elements
- * * each subsequent `Tick` element in each source must have a clock value exactly `clockIncrementMs`
- * greater than the last `Tick` element in the same stream
+ * * each subsequent `Tick` element in each source must have a clock value exactly 1
+ *   greater than the last `Tick` element in the same stream
  * * this ensures `Tick` elements from both sources can be aligned pairwise
  *
  * Guarantees on the output source:
  * * the output source will be a valid timed event source
  * * it will have a single `Tick` for each `Tick` element in the input sources
  * * the interleaved timed event elements from each source will be interleaved in the
- * output source, in no particular order
+ *   output source, in no particular order
  * * relative order of elements originating in each source will be preserved in the
- * output source, but elements from each source will be interleaved randomly
+ *   output source, but elements from each source will be interleaved randomly
  * */
-class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) extends GraphStage[FanInShape2[TimedEvent, TimedEvent, TimedEvent]]:
+class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShape2[TimedEvent, TimedEvent, TimedEvent]]:
 
   val in0: Inlet[TimedEvent] = Inlet("source0.in")
   val in1: Inlet[TimedEvent] = Inlet("source1.in")
@@ -50,7 +49,7 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
           completeStage()
 
       /**
-       * Do not
+       * Either input 0 or input 1 has previously provided a `Tick`; pull from unmatched input source
        */
       def tryPull(): Unit =
         if ((unmatchedTick0.isEmpty) && !hasBeenPulled(in0) && !isClosed(in0)) then
@@ -63,8 +62,8 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
        */
       def validateTick(tick: TimedEvent.Tick): Unit =
         lastMatchedTick match
-          case Some(prevTick) if tick.clockTime != prevTick.clockTime + clockIncrementMs =>
-            failStage(new IllegalStateException(s"Invalid Tick sequence: ${prevTick.clockTime} → ${tick.clockTime}"))
+          case Some(prevTick) if tick.eventTime != prevTick.eventTime.nextTime =>
+            failStage(new IllegalStateException(s"Invalid Tick sequence: ${prevTick.eventTime} → ${tick.eventTime}"))
           case _ => () // Valid sequence
 
       /**
@@ -91,8 +90,8 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
         override def onPush(): Unit =
           val elem = grab(in0)
           (elem, unmatchedTick1) match
-            case (tick: TimedEvent.Tick, Some(unmatchedOtherTick)) if tick.clockTime != unmatchedOtherTick.clockTime =>
-              failStage(new IllegalStateException(s"Unmatched tick received from source.in0: ${tick.clockTime} != ${unmatchedOtherTick.clockTime}"))
+            case (tick: TimedEvent.Tick, Some(unmatchedOtherTick)) if tick.eventTime != unmatchedOtherTick.eventTime =>
+              failStage(new IllegalStateException(s"Unmatched tick received from source.in0: ${tick.eventTime} != ${unmatchedOtherTick.eventTime}"))
 
             case (tick: TimedEvent.Tick, Some(_)) =>
               validateTick(tick)
@@ -104,8 +103,8 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
               tryPull()
 
             case (tick: TimedEvent.Tick, None) =>
-              if (!lastMatchedTick.forall(_.clockTime + clockIncrementMs == tick.clockTime))
-                failStage(new IllegalStateException(s"Tick increment through source.in0 not a valid increment from last tick: ${lastMatchedTick.get} → ${tick.clockTime}"))
+              if (!lastMatchedTick.forall(_.eventTime.nextTime == tick.eventTime))
+                failStage(new IllegalStateException(s"Tick increment through source.in0 not a valid increment from last tick: ${lastMatchedTick.get} → ${tick.eventTime}"))
               else
                 unmatchedTick0 = Some(tick)
                 tryPull()
@@ -113,8 +112,8 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
 
             case (te: TimedEvent, _) =>
               val tickOpt = unmatchedTick0.orElse(lastMatchedTick)
-              if (!tickOpt.forall(_.clockTime == te.clockTime))
-                failStage(new IllegalStateException(s"Event increment through source.in0 not a valid increment from last tick: ${tickOpt.get} → ${te.clockTime}"))
+              if (!tickOpt.forall(_.eventTime == te.eventTime))
+                failStage(new IllegalStateException(s"Event increment through source.in0 not a valid increment from last tick: ${tickOpt.get} → ${te.eventTime}"))
               else
                 queue.enqueue(te)
                 tryEmit()
@@ -147,49 +146,49 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
          * * Either way, try emit
          */
         setHandler(in1, new InHandler:
-        override def onPush(): Unit =
-          val elem = grab(in1)
-          (elem, unmatchedTick0) match
-            case (tick: TimedEvent.Tick, Some(unmatchedOtherTick)) if tick.clockTime != unmatchedOtherTick.clockTime =>
-              failStage(new IllegalStateException(s"Unmatched tick received from source.in1: ${tick.clockTime} != ${unmatchedOtherTick.clockTime}"))
+          override def onPush(): Unit =
+            val elem = grab(in1)
+            (elem, unmatchedTick0) match
+              case (tick: TimedEvent.Tick, Some(unmatchedOtherTick)) if tick.eventTime != unmatchedOtherTick.eventTime =>
+                failStage(new IllegalStateException(s"Unmatched tick received from source.in1: ${tick.eventTime} != ${unmatchedOtherTick.eventTime}"))
 
-            case (tick: TimedEvent.Tick, Some(_)) =>
-              validateTick(tick)
-              lastMatchedTick = Some(tick)
-              unmatchedTick0 = None
-              unmatchedTick1 = None
-              queue.enqueue(tick)
-              tryEmit()
-              tryPull()
-
-            case (tick: TimedEvent.Tick, None) =>
-              if (!lastMatchedTick.forall(_.clockTime + clockIncrementMs == tick.clockTime))
-                failStage(new IllegalStateException(s"Tick increment through source.in1 not a valid increment from last tick: ${lastMatchedTick.get} → ${tick.clockTime}"))
-              else
-                unmatchedTick1 = Some(tick)
-                tryPull()
-            // ...do not pull on in1. We have backpressure until we get same tick coming through in0
-
-            case (te: TimedEvent, _) =>
-              val tickOpt = unmatchedTick1.orElse(lastMatchedTick)
-              if (!tickOpt.forall(_.clockTime == te.clockTime))
-                failStage(new IllegalStateException(s"Event through source.in1 clock time does not match last tick: ${tickOpt.get} → ${te.clockTime}"))
-              else
-                queue.enqueue(te)
+              case (tick: TimedEvent.Tick, Some(_)) =>
+                validateTick(tick)
+                lastMatchedTick = Some(tick)
+                unmatchedTick0 = None
+                unmatchedTick1 = None
+                queue.enqueue(tick)
                 tryEmit()
                 tryPull()
 
-        override def onUpstreamFinish(): Unit =
-          inlet1Closed = true
-          tryEmit()
+              case (tick: TimedEvent.Tick, None) =>
+                if (!lastMatchedTick.forall(_.eventTime.nextTime == tick.eventTime))
+                  failStage(new IllegalStateException(s"Tick increment through source.in1 not a valid increment from last tick: ${lastMatchedTick.get.eventTime} → ${tick.eventTime}"))
+                else
+                  unmatchedTick1 = Some(tick)
+                  tryPull()
+              // ...do not pull on in1. We have backpressure until we get same tick coming through in0
 
-        )
+              case (te: TimedEvent, _) =>
+                val tickOpt = unmatchedTick1.orElse(lastMatchedTick)
+                if (!tickOpt.forall(_.eventTime == te.eventTime))
+                  failStage(new IllegalStateException(s"Event through source.in1 clock time does not match last tick: ${tickOpt.get.eventTime} → ${te.eventTime}"))
+                else
+                  queue.enqueue(te)
+                  tryEmit()
+                  tryPull()
 
-        setHandler(out, new OutHandler:
-        override def onPull(): Unit =
-          tryEmit()
-
-        )
+          override def onUpstreamFinish(): Unit =
+            inlet1Closed = true
+            tryEmit()
+  
+          )
+  
+          setHandler(out, new OutHandler:
+          override def onPull(): Unit =
+            tryEmit()
+  
+          )
 
       override def preStart(): Unit =
         tryPull()
@@ -197,16 +196,16 @@ class MergeTimedEventGraph private(clockIncrementMs: Long, bufferSize: Int) exte
 object MergeTimedEventGraph:
 
   extension [MatT](source1: Source[TimedEvent, MatT])
-    def mergeWithTimeEventSource[MatU](source2: Source[TimedEvent, MatU], clockIncrementMs: Long = 1000L, bufferSize: Int = 10): Source[TimedEvent, (MatT, MatU)] =
-      apply(source1, source2, clockIncrementMs, bufferSize)
+    def mergeWithTimeEventSource[MatU](source2: Source[TimedEvent, MatU], bufferSize: Int = 10): Source[TimedEvent, (MatT, MatU)] =
+      apply(source1, source2, bufferSize)
 
-  def apply[MatT, MatU](source1: Source[TimedEvent, MatT], source2: Source[TimedEvent, MatU], clockIncrementMs: Long = 1000L, bufferSize: Int = 10): Source[TimedEvent, (MatT, MatU)] =
+  def apply[MatT, MatU](source1: Source[TimedEvent, MatT], source2: Source[TimedEvent, MatU], bufferSize: Int = 10): Source[TimedEvent, (MatT, MatU)] =
     Source.fromGraph(GraphDSL.createGraph(source1, source2)(Keep.both) {
       implicit builder =>
         (src1, src2) =>
           import GraphDSL.Implicits._
 
-          val merge = builder.add(new MergeTimedEventGraph(clockIncrementMs, bufferSize))
+          val merge = builder.add(new MergeTimedEventGraph(bufferSize))
 
           src1 ~> merge.in0
           src2 ~> merge.in1
