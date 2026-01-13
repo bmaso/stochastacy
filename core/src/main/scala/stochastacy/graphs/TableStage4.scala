@@ -1,8 +1,9 @@
 package stochastacy.graphs
 
 import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.scaladsl.Flow
-import org.apache.pekko.stream.{FlowShape, Graph}
+import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL, Source}
+import org.apache.pekko.stream.{FanOutShape3, FlowShape, Graph}
+import stochastacy.aws.{MetricEvent, ResourceConsumptionEvent}
 import stochastacy.aws.ddb.{DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, TableState, UseCaseSampler}
 
 /**
@@ -13,41 +14,45 @@ import stochastacy.aws.ddb.{DynamoDBRequest, DynamoDBResponse, GetItemRequest, G
  */
 object TableStage4:
 
-  def stage4Table(
-                   stateModel: TableState,
-                   getItemBehaviors: Map[Any, UseCaseSampler[TableState]]
-                 ): Graph[FlowShape[DynamoDBRequest, DynamoDBResponse], NotUsed] =
+  def componentOf(stateModel: TableState,
+                  getItemBehaviors: Map[Any, UseCaseSampler[TableState]]):
+      Graph[FanOutShape3[DynamoDBRequest, DynamoDBResponse, ResourceConsumptionEvent, MetricEvent], NotUsed] =
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits._
 
-    Flow[DynamoDBRequest].map {
+      val requestProcessingFlow =
+        b.add(
+          Flow[DynamoDBRequest].map {
+            case r: GetItemRequest =>
+              val behavior =
+                getItemBehaviors.getOrElse(
+                  r.usecase,
+                  throw new IllegalArgumentException(
+                    s"No GetItem behavior registered for use-case '${r.usecase}'"
+                  )
+                )
 
-      case r: GetItemRequest =>
-        val behavior =
-          getItemBehaviors.getOrElse(
-            r.usecase,
-            throw new IllegalArgumentException(
-              s"No GetItem behavior registered for use-case '${r.usecase}'"
-            )
-          )
+              behavior.getItem(r, stateModel)
 
-        val sample = behavior.getItem(r, stateModel)
+              GetItemResponse(
+                eventTime = r.eventTime,
+                usecase = r.usecase
+              )
 
-        sample match
-          case None =>
-            GetItemResponse(
-              eventTime = r.eventTime,
-              usecase   = r.usecase
-            )
-
-          case Some(sample) =>
-            GetItemResponse(
-              eventTime = r.eventTime,
-              usecase   = r.usecase
-            )
-
-      case other =>
-        throw new IllegalArgumentException(
-          s"Stage 4 received unsupported request type: ${other.getClass.getSimpleName}"
+            case other =>
+              throw new IllegalArgumentException(
+                s"Stage 4 received unsupported request type: ${other.getClass.getSimpleName}"
+              )
+          }
         )
+
+      // Independent empty streams for resource consumption and metrics for now
+      val emptyConsumption = b.add(Source.empty[ResourceConsumptionEvent])
+      val emptyMetrics = b.add(Source.empty[MetricEvent])
+
+      new FanOutShape3(
+        requestProcessingFlow.in,
+        requestProcessingFlow.out,
+        emptyConsumption.out,
+        emptyMetrics.out)
     }
-
-
