@@ -8,6 +8,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.{MetricEvent, ResourceConsumptionEvent}
 import stochastacy.graphs.{SimTime, TableStage4}
+import stochastacy.test._
 
 /**
  * "Stage 4" of a Table component graph represents the DDB data-plane. This stage is only reached _after_
@@ -99,12 +100,13 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
         }
 
       // TODO: expect RCU's consumed
-      resourceProbe.expectSubscription()
-      resourceProbe.expectComplete()
+      resourceProbe.assertEmptyStream()
 
       // TODO: figure out which metrics are deduced/observed by this component, and make sure this test
       // does indeed expect the right elements.
-      metricsProbe.expectSubscription()
-      metricsProbe.expectComplete()
+      metricsProbe.assertEmptyStream()
     }
   }
+
+  "???" in ???
+
