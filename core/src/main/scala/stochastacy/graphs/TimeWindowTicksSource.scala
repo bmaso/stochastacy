@@ -14,10 +14,10 @@ object TimeWindowTicksSource:
    * * _3: total number of ticks in the time window
    * * _4: original `TimeWindow`
    **/
-  def apply(timeWindow: SimTimeWindow): Source[(TimedEvent.Tick, Int, Long, SimTimeWindow), NotUsed] =
+  def apply(timeWindow: SimTimeWindow): Source[(TimedControlEvent.Tick, Int, Long, SimTimeWindow), NotUsed] =
     val windowSize = timeWindow.windowSize
     Source.unfold(0) ({ idx =>
       if idx < timeWindow.windowSize.ticks then
-        Some((idx + 1, (TimedEvent.Tick(SimTime.of(idx)), idx, windowSize.ticks, timeWindow)))
+        Some((idx + 1, (TimedControlEvent.Tick(SimTime.of(idx)), idx, windowSize.ticks, timeWindow)))
       else
         None })

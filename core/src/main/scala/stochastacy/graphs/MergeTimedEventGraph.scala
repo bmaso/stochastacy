@@ -36,9 +36,9 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
     new GraphStageLogic(shape):
       val queue: mutable.Queue[TimedEvent] = mutable.Queue() // ...buffer waiting to go out...
-      var unmatchedTick0: Option[TimedEvent.Tick] = None // ...track last unmatched tick for in0...
-      var unmatchedTick1: Option[TimedEvent.Tick] = None // ...track last unmatched tick for in1...
-      var lastMatchedTick: Option[TimedEvent.Tick] = None // ...track last tick matched from both in0 & in1...
+      var unmatchedTick0: Option[TimedControlEvent.Tick] = None // ...track last unmatched tick for in0...
+      var unmatchedTick1: Option[TimedControlEvent.Tick] = None // ...track last unmatched tick for in1...
+      var lastMatchedTick: Option[TimedControlEvent.Tick] = None // ...track last tick matched from both in0 & in1...
       var inlet0Closed: Boolean = false
       var inlet1Closed: Boolean = false
 
@@ -60,7 +60,7 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
       /**
        * verifies a received tick is 1 increment greater than the last tick received
        */
-      def validateTick(tick: TimedEvent.Tick): Unit =
+      def validateTick(tick: TimedControlEvent.Tick): Unit =
         lastMatchedTick match
           case Some(prevTick) if tick.eventTime != prevTick.eventTime.nextTime =>
             failStage(new IllegalStateException(s"Invalid Tick sequence: ${prevTick.eventTime} → ${tick.eventTime}"))
@@ -90,10 +90,10 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
         override def onPush(): Unit =
           val elem = grab(in0)
           (elem, unmatchedTick1) match
-            case (tick: TimedEvent.Tick, Some(unmatchedOtherTick)) if tick.eventTime != unmatchedOtherTick.eventTime =>
+            case (tick: TimedControlEvent.Tick, Some(unmatchedOtherTick)) if tick.eventTime != unmatchedOtherTick.eventTime =>
               failStage(new IllegalStateException(s"Unmatched tick received from source.in0: ${tick.eventTime} != ${unmatchedOtherTick.eventTime}"))
 
-            case (tick: TimedEvent.Tick, Some(_)) =>
+            case (tick: TimedControlEvent.Tick, Some(_)) =>
               validateTick(tick)
               lastMatchedTick = Some(tick)
               unmatchedTick0 = None
@@ -102,7 +102,7 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
               tryEmit()
               tryPull()
 
-            case (tick: TimedEvent.Tick, None) =>
+            case (tick: TimedControlEvent.Tick, None) =>
               if (!lastMatchedTick.forall(_.eventTime.nextTime == tick.eventTime))
                 failStage(new IllegalStateException(s"Tick increment through source.in0 not a valid increment from last tick: ${lastMatchedTick.get} → ${tick.eventTime}"))
               else
@@ -149,10 +149,10 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
           override def onPush(): Unit =
             val elem = grab(in1)
             (elem, unmatchedTick0) match
-              case (tick: TimedEvent.Tick, Some(unmatchedOtherTick)) if tick.eventTime != unmatchedOtherTick.eventTime =>
+              case (tick: TimedControlEvent.Tick, Some(unmatchedOtherTick)) if tick.eventTime != unmatchedOtherTick.eventTime =>
                 failStage(new IllegalStateException(s"Unmatched tick received from source.in1: ${tick.eventTime} != ${unmatchedOtherTick.eventTime}"))
 
-              case (tick: TimedEvent.Tick, Some(_)) =>
+              case (tick: TimedControlEvent.Tick, Some(_)) =>
                 validateTick(tick)
                 lastMatchedTick = Some(tick)
                 unmatchedTick0 = None
@@ -161,7 +161,7 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
                 tryEmit()
                 tryPull()
 
-              case (tick: TimedEvent.Tick, None) =>
+              case (tick: TimedControlEvent.Tick, None) =>
                 if (!lastMatchedTick.forall(_.eventTime.nextTime == tick.eventTime))
                   failStage(new IllegalStateException(s"Tick increment through source.in1 not a valid increment from last tick: ${lastMatchedTick.get.eventTime} → ${tick.eventTime}"))
                 else

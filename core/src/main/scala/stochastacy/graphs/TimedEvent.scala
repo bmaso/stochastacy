@@ -1,5 +1,7 @@
 package stochastacy.graphs
 
+import org.apache.pekko.stream.scaladsl.Source
+
 /**
  * Common base trait for all events exchanged in a stochastacy simulation runnable graph. All events
  * have two things in common:
@@ -19,23 +21,27 @@ trait TimedEvent:
   val eventTime: SimTime
   val usecase: Any
 
-object TimedEvent:
+/** Base type for all clock/timing events that can appear in a timed event stream. */
+sealed trait TimedControlEvent extends TimedEvent:
+  override val usecase = CoordinatedTimingUsecase
 
-  /**
-   * `Tick` is a distinguished timed event type, used for organizing timed event streams.
-   **/
-  case class Tick(override val eventTime: SimTime) extends TimedEvent:
-    override val usecase: Any = CoordinatedTimingUsecase
+object TimedControlEvent:
+  /** A tick advances the logical clock. */
+  final case class Tick(override val eventTime: SimTime) extends TimedControlEvent
 
-  /**
-   * `EndOfTime` is a distinguished timed event object, used for organizing timed event streams.
-   **/
-  case object EndOfTime extends TimedEvent:
+  /** End-of-stream marker for timed event streams. */
+  case object EndOfTime extends TimedControlEvent:
     override val eventTime: SimTime = SimTime.of(Long.MaxValue)
-    override val usecase: Any = CoordinatedTimingUsecase
 
 /** Use-case for control events within time streams: tick, "end-of-time, and "beginning-of-time" events */
 object CoordinatedTimingUsecase
+
+
+/**
+ * Definition of type encoding a Pekko `Source` of elements of type `X :< TimedEvent` OR of
+ * type `TimedControlEvent`, but no other types of values.
+ */
+type TimedElement[X <: TimedEvent] = X | TimedControlEvent
 
 /**
  * Simulation time in arbitrary "sim time" units.

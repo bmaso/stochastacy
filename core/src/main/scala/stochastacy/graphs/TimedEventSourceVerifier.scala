@@ -2,7 +2,7 @@ package stochastacy.graphs
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Flow, Source}
-import stochastacy.graphs.TimedEvent.{EndOfTime, Tick}
+import stochastacy.graphs.TimedControlEvent.{EndOfTime, Tick}
 
 /**
  * This pass-through flow verifies the content of a `Source[TimedEvent]` conforms to the
@@ -27,7 +27,7 @@ object TimedEventSourceVerifier:
    */
   extension [Mat](timedEventSource: Source[TimedEvent, Mat])
     def verifyTimedEventSource(): Source[TimedEvent, Mat] =
-    timedEventSource.concat(Source.single(TimedEvent.EndOfTime))
+    timedEventSource.concat(Source.single(TimedControlEvent.EndOfTime))
       .sliding(2)
       .statefulMap(() => false)({
         case (false, Seq(prev, _)) if (prev.usecase != CoordinatedTimingUsecase) =>
@@ -37,7 +37,7 @@ object TimedEventSourceVerifier:
         case (false, _) =>
           // ...this case shouldn't ever happen...
           throw new IllegalArgumentException("unexpected sliding window condition")
-        case (true, Seq(prev, TimedEvent.Tick(cl2))) if prev.eventTime.gte(cl2) =>
+        case (true, Seq(prev, TimedControlEvent.Tick(cl2))) if prev.eventTime.gte(cl2) =>
           throw new IllegalArgumentException("Rule violation: a clock tick must increase clock time vs previous element")
         case (true, Seq(prev, next)) if prev.eventTime.gt(next.eventTime) =>
           throw new IllegalArgumentException("Rule violation: clock time must increase monotonically")

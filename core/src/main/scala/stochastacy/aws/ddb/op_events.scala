@@ -12,5 +12,10 @@ case class GetItemRequest(override val eventTime: SimTime, override val usecase:
 /**
  * The non-error response to a GetItem request submitted to a DDB table
  */
-case class GetItemResponse(override val eventTime: SimTime, override val usecase: Any)
+case class GetItemResponse(
+                            override val eventTime: SimTime,
+                            override val usecase: Any,
+                            itemFound: Boolean,
+                            itemBytes: Option[Long]
+                          )
     extends DynamoDBResponse

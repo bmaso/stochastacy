@@ -1,4 +1,5 @@
 package stochastacy.aws.ddb
 
 trait GetItemSample:
-  def getItemBytes: Option[Long]
+  /**  */
+  def getItemBytes: Long

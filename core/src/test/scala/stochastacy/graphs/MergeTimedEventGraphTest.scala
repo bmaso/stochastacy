@@ -24,7 +24,7 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
   "A MergeTimedEventGraph" when:
     "merging two valid sources" should:
       "benignly merge two trivial single-element sources" in:
-        val tick = TimedEvent.Tick(SimTime.of(100L))
+        val tick = TimedControlEvent.Tick(SimTime.of(100L))
         val sourceA: Source[TimedEvent, NotUsed] = Source.single(tick)
         val sourceB: Source[TimedEvent, NotUsed] = Source.single(tick)
 
@@ -38,7 +38,7 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
         sub.expectComplete()
 
       "benignly merge two 2-element sources" in :
-        val tick = TimedEvent.Tick(SimTime.of(100L))
+        val tick = TimedControlEvent.Tick(SimTime.of(100L))
         val testEvent = TestEvent(SimTime.of(100L))
         val sourceA: Source[TimedEvent, NotUsed] = Source(List(tick, testEvent))
         val sourceB: Source[TimedEvent, NotUsed] = Source(List(tick, testEvent))
@@ -55,7 +55,7 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
         sub.expectComplete()
 
       "benignly merge a multi-element source and a 2-element source" in :
-        val tick = TimedEvent.Tick(SimTime.of(100L))
+        val tick = TimedControlEvent.Tick(SimTime.of(100L))
         val testEvent = TestEvent(SimTime.of(100L))
         val sourceA: Source[TimedEvent, NotUsed] = Source(List(tick, testEvent))
         val sourceB: Source[TimedEvent, NotUsed] = Source.single(tick)
@@ -72,9 +72,9 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
 
       "merge a 2 sources covering 3 ticks and several events in each time period" in :
         val ticks = List(
-          TimedEvent.Tick(SimTime.of(1000L)),
-          TimedEvent.Tick(SimTime.of(1001L)),
-          TimedEvent.Tick(SimTime.of(1002L)))
+          TimedControlEvent.Tick(SimTime.of(1000L)),
+          TimedControlEvent.Tick(SimTime.of(1001L)),
+          TimedControlEvent.Tick(SimTime.of(1002L)))
 
         val events = List(
           TestEvent(SimTime.of(1000L)),
@@ -118,9 +118,9 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
 
       "merge a 2 sources covering 3 ticks with sparsely populated time periods" in :
         val ticks = List(
-          TimedEvent.Tick(SimTime.of(1000L)),
-          TimedEvent.Tick(SimTime.of(1001L)),
-          TimedEvent.Tick(SimTime.of(1002L)))
+          TimedControlEvent.Tick(SimTime.of(1000L)),
+          TimedControlEvent.Tick(SimTime.of(1001L)),
+          TimedControlEvent.Tick(SimTime.of(1002L)))
 
         val events = List(
           TestEvent(SimTime.of(1000L)),
@@ -158,9 +158,9 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
 
       "merge a 4 sources covering 3 ticks with sparsely populated time periods" in :
         val ticks = List(
-          TimedEvent.Tick(SimTime.of(1000L)),
-          TimedEvent.Tick(SimTime.of(1001L)),
-          TimedEvent.Tick(SimTime.of(1002L)))
+          TimedControlEvent.Tick(SimTime.of(1000L)),
+          TimedControlEvent.Tick(SimTime.of(1001L)),
+          TimedControlEvent.Tick(SimTime.of(1002L)))
 
         val events = List(
           TestEvent(SimTime.of(1000L)),
