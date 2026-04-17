@@ -15,19 +15,19 @@ import stochastacy.test.*
 /**
  * "Stage 4" of a Table component graph represents the DDB data-plane. This stage is only reached _after_
  * per-account throttling and provisioned capacity (and burst capacity) throttling. This is the component
- * that consumes RCUs and WCUs, and where may Table metrics are maintained and reported.
+ * that consumes RCUs and WCUs, and where many Table metrics are maintained and reported.
  *
  * This is the read-only (aka "stateless", "observation-only", or "query") test suite for this component
  * stage. (There are also stateful and timing-consistency test suites.)
  *
- * This test suite verifies the expected _stateless_ behavior of the `GetItem` request handling behavior for this
+ * This test suite verifies the expected _stateless_ behavior of the `GetItem` request handling for this
  * stage. `GetItem` is a read-only operation.
  *
  * The test suite separately tests _eventually consistent_ configuration from _consistent_ reads. There are two
  * distinctions in the behavior of a table configured with or without consistent reads. Eventual consistency
  * consumes fewer RCUs than Guaranteed consistency.
  *
- * This test suite verifies the entanglement of the table sampler. table state, responses, consumed resources,
+ * This test suite verifies the entanglement of the table sampler: table state, responses, consumed resources,
  * and metrics generated during `GetItem` processing.
  */
 class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
