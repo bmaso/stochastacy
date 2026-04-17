@@ -1,6 +1,6 @@
 package stochastacy.aws
 
-import stochastacy.graphs.TimedEvent
+import stochastacy.sim.TimedEvent
 
 /** An AWS service request is a type of timed event. All AWS requests are represented by subtypes of this type. */
 trait AWSServiceRequestEvent extends TimedEvent

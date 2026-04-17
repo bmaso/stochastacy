@@ -1,4 +1,4 @@
-package stochastacy
+package stochastacy.sim
 
 import scala.concurrent.duration.*
 import scala.util.CommandLineParser.FromString

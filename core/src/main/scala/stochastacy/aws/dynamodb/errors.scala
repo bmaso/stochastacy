@@ -1,4 +1,4 @@
-package stochastacy.aws.ddb
+package stochastacy.aws.dynamodb
 
 sealed trait DynamoDBError
 

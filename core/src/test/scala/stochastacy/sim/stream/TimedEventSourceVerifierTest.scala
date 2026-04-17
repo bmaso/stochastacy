@@ -1,4 +1,4 @@
-package stochastacy.graphs
+package stochastacy.sim.stream
 
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
@@ -8,7 +8,8 @@ import org.apache.pekko.stream.testkit.scaladsl.{TestSink, TestSource}
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.{AnyWordSpec, AnyWordSpecLike}
-import stochastacy.graphs.TimedEventSourceVerifier.*
+import stochastacy.sim.*
+import stochastacy.sim.stream.TimedEventSourceVerifier.*
 
 class TimedEventSourceVerifierTest extends AnyWordSpecLike with should.Matchers with BeforeAndAfterAll:
   given system: ActorSystem = ActorSystem("ExperimentSystem")

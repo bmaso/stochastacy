@@ -1,7 +1,7 @@
-package stochastacy.aws.ddb
+package stochastacy.aws.dynamodb
 
 import stochastacy.aws.{AWSServiceRequestEvent, AWSServiceResponseEvent}
-import stochastacy.graphs.SimTime
+import stochastacy.sim.SimTime
 
 sealed trait DynamoDBRequest extends AWSServiceRequestEvent
 sealed trait DynamoDBResponse extends AWSServiceResponseEvent

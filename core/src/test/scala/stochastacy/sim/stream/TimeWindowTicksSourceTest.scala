@@ -1,4 +1,4 @@
-package stochastacy.graphs
+package stochastacy.sim.stream
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.ActorSystem
@@ -8,8 +8,8 @@ import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpecLike
-import stochastacy.{SimTimeWindow, WindowSize}
-import stochastacy.graphs.TimedEventSourceVerifier.*
+import stochastacy.sim.{SimTime, SimTimeWindow, TimedControlEvent, TimedEvent, WindowSize}
+import stochastacy.sim.stream.TimedEventSourceVerifier.*
 
 class TimeWindowTicksSourceTest extends AnyWordSpecLike with should.Matchers with BeforeAndAfterAll:
   given system: ActorSystem = ActorSystem("ExperimentSystem")
@@ -58,4 +58,3 @@ class TimeWindowTicksSourceTest extends AnyWordSpecLike with should.Matchers wit
       sub.expectNext((9, 10L, timeWindow))
 
       sub.expectComplete()
-

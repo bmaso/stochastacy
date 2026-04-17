@@ -1,9 +1,10 @@
-package stochastacy.graphs
+package stochastacy.sim.workload
 
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.statistics.distribution.{ContinuousDistribution, DiscreteDistribution, ExponentialDistribution}
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
+import stochastacy.sim.TimedEvent
 
 /**
  * Infinite source of `Double` values with an exponential distribution of `1/avgEventsPerTimeUnit`. Intended to be

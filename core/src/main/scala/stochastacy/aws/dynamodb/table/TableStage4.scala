@@ -1,9 +1,10 @@
-package stochastacy.graphs
+package stochastacy.aws.dynamodb.table
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL}
 import org.apache.pekko.stream.{FanOutShape3, Graph}
-import stochastacy.aws.ddb.{DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, GetItemSample, Stage4MetricEvent, TableState, UseCaseSampler}
+import stochastacy.aws.dynamodb.{DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse}
+import stochastacy.sim.*
 
 /**
  * A table is implemented as a multi-stage Pekko component graph. Stage 4 of this model

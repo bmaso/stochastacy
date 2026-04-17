@@ -1,4 +1,6 @@
-package stochastacy.aws.ddb
+package stochastacy.aws.dynamodb.table
+
+import stochastacy.aws.dynamodb.GetItemRequest
 
 /**
  * This trait describes the stochastic table behavior for requests against a table whose

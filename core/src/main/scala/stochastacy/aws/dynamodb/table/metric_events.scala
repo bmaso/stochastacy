@@ -1,7 +1,7 @@
-package stochastacy.aws.ddb
+package stochastacy.aws.dynamodb.table
 
 import stochastacy.aws.MetricEvent
-import stochastacy.graphs.SimTime
+import stochastacy.sim.SimTime
 
 sealed trait Stage4MetricEvent extends MetricEvent
 

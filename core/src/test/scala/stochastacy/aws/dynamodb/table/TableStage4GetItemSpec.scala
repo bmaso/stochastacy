@@ -1,4 +1,4 @@
-package stochastacy.aws.ddb
+package stochastacy.aws.dynamodb.table
 
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, Materializer}
@@ -8,7 +8,8 @@ import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.{MetricEvent, ResourceConsumptionEvent}
-import stochastacy.graphs.{SimTime, TableStage4, TimedEvent}
+import stochastacy.aws.dynamodb.{GetItemRequest, GetItemResponse}
+import stochastacy.sim.{SimTime, TimedEvent}
 import stochastacy.test.*
 
 /**

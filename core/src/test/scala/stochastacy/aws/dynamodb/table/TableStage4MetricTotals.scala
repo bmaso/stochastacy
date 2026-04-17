@@ -1,4 +1,4 @@
-package stochastacy.aws.ddb
+package stochastacy.aws.dynamodb.table
 
 final case class Stage4MetricTotals(
                                      observedGets: Long = 0,

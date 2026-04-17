@@ -1,4 +1,4 @@
-package stochastacy.graphs
+package stochastacy.sim
 
 import org.apache.pekko.stream.scaladsl.Source
 

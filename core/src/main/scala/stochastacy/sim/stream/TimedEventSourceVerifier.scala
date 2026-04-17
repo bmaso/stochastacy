@@ -1,8 +1,9 @@
-package stochastacy.graphs
+package stochastacy.sim.stream
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Flow, Source}
-import stochastacy.graphs.TimedControlEvent.{EndOfTime, Tick}
+import stochastacy.sim.*
+import stochastacy.sim.TimedControlEvent.{EndOfTime, Tick}
 
 /**
  * This pass-through flow verifies the content of a `Source[TimedEvent]` conforms to the

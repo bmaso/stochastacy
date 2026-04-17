@@ -1,4 +1,4 @@
-package stochastacy.graphs
+package stochastacy.app
 
 import org.apache.pekko.stream.Materializer
 import org.apache.pekko.stream.scaladsl.{Flow, RunnableGraph, Sink, Source}
@@ -16,4 +16,3 @@ object HelloWorldGraph:
     val sink = Sink.head[String]
 
     source.via(flow).runWith(sink)
-

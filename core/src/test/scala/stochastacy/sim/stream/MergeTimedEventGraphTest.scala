@@ -1,4 +1,4 @@
-package stochastacy.graphs
+package stochastacy.sim.stream
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.actor.ActorSystem
@@ -8,6 +8,7 @@ import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpecLike
+import stochastacy.sim.*
 
 class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with BeforeAndAfterAll:
   given actorSystem: ActorSystem = ActorSystem("TestSystem")

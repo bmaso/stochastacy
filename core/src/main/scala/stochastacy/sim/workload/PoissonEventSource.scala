@@ -1,4 +1,4 @@
-package stochastacy.graphs
+package stochastacy.sim.workload
 
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource

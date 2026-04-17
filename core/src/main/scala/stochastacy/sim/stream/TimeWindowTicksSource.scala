@@ -1,8 +1,8 @@
-package stochastacy.graphs
+package stochastacy.sim.stream
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Source
-import stochastacy.SimTimeWindow
+import stochastacy.sim.{SimTime, SimTimeWindow, TimedControlEvent}
 
 object TimeWindowTicksSource:
 

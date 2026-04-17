@@ -1,4 +1,4 @@
-package stochastacy
+package stochastacy.app
 
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.http.scaladsl.Http
@@ -12,7 +12,7 @@ import org.apache.pekko.stream.scaladsl.{Sink, Source}
 import org.json4s.jackson.Serialization
 import org.json4s.jackson.Serialization.{read, write}
 import org.json4s.{DefaultFormats, jackson}
-import stochastacy.graphs.{HelloWorldGraph, PoissonEventSource}
+import stochastacy.sim.workload.PoissonEventSource
 
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
