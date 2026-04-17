@@ -14,22 +14,37 @@ import stochastacy.sim.*
  */
 object TableStage4:
 
+  private val BytesPerReadCapacityUnitChunk = 4096L
+
   private case class TimedRequestSamplePair(req: DynamoDBRequest, sample: Option[GetItemSample]) extends TimedEvent:
     override val eventTime: SimTime = req.eventTime
     override val usecase: Any = req.usecase
 
   def componentOf(
                    stateModel: TableState,
-                   getItemBehaviors: Map[Any, UseCaseSampler[TableState]]
+                   getItemBehaviors: Map[Any, UseCaseSampler[TableState]],
+                   tableTarget: DynamoDbTarget = DynamoDbTarget.Table("table"),
+                   readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
                  ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
       TimedElement[DynamoDBResponse], // <-- response events in a timed stream
-      TimedElement[Nothing], // <-- consumption events in a timed stream
+      TimedElement[DynamoDbConsumptionEvent], // <-- consumption events in a timed stream
       TimedElement[Stage4MetricEvent] // <-- metric events in a timed stream
     ],
     NotUsed
   ] = {
+    val readCapacityUnitMultiplier = readConsistency match
+      case ReadConsistency.EventuallyConsistent => BigDecimal("0.5")
+      case ReadConsistency.StronglyConsistent => BigDecimal(1)
+
+    def readCapacityUnitsFor(itemBytes: Option[Long]): BigDecimal =
+      val chunkCount = itemBytes match
+        case Some(bytes) if bytes > 0 =>
+          ((bytes - 1L) / BytesPerReadCapacityUnitChunk) + 1L
+        case _ =>
+          1L
+      BigDecimal(chunkCount) * readCapacityUnitMultiplier
 
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits._
@@ -111,12 +126,40 @@ object TableStage4:
         )
 
       // ─────────────────────────────────────────────────────────────
-      // Resource consumption (control timing only for now)
+      // Resource consumption
       // ─────────────────────────────────────────────────────────────
       val consumptionFlow =
         b.add(
-          Flow[TimedElement[TimedRequestSamplePair]].collect[TimedElement[Nothing]] {
-            case t: TimedControlEvent => t
+          Flow[TimedElement[TimedRequestSamplePair]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
+            case t: TimedControlEvent => List(t)
+
+            case TimedRequestSamplePair(r: GetItemRequest, Some(s: GetItemSample)) =>
+              List(
+                DynamoDbConsumptionEvent.ReadCapacityConsumed(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  units = readCapacityUnitsFor(Some(s.getItemBytes)),
+                  consistency = readConsistency
+                ),
+                DynamoDbConsumptionEvent.StorageBytesRead(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  bytes = s.getItemBytes
+                )
+              )
+
+            case TimedRequestSamplePair(r: GetItemRequest, None) =>
+              List(
+                DynamoDbConsumptionEvent.ReadCapacityConsumed(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  units = readCapacityUnitsFor(None),
+                  consistency = readConsistency
+                )
+              )
           }
         )
 

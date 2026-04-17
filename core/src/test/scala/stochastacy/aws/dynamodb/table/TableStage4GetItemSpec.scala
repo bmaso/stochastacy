@@ -7,7 +7,6 @@ import org.apache.pekko.stream.testkit.TestSubscriber
 import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.{MetricEvent, ResourceConsumptionEvent}
 import stochastacy.aws.dynamodb.{GetItemRequest, GetItemResponse}
 import stochastacy.sim.{SimTime, TimedEvent}
 import stochastacy.test.*
@@ -49,7 +48,9 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
             itemCount = 0L,
             totalItemBytes = 0L
           ),
-          behaviors = Map("get-miss" -> AlwaysMissGetItemBehavior)
+          behaviors = Map("get-miss" -> AlwaysMissGetItemBehavior),
+          tableTarget = DynamoDbTarget.Table("orders"),
+          readConsistency = ReadConsistency.EventuallyConsistent
         )
 
       resourceProbe.request(100)
@@ -62,7 +63,13 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
       }
       responseProbe.expectComplete()
 
-      resourceProbe.expectComplete()
+      val consumptionTotals = drainConsumptionEvents(resourceProbe)
+        .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
+
+      consumptionTotals.readCapacityUnits shouldBe BigDecimal("5.0")
+      consumptionTotals.storageBytesRead shouldBe 0L
+      consumptionTotals.targets shouldBe Set(DynamoDbTarget.Table("orders"))
+      consumptionTotals.consistencies shouldBe Set(ReadConsistency.EventuallyConsistent)
 
       val totals = drainMetricEvents(metricsProbe).foldLeft(Stage4MetricTotals())(Stage4MetricTotals.accumulate)
       totals.observedGets shouldBe 10
@@ -83,7 +90,9 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
             itemCount = 1L,
             totalItemBytes = 512L
           ),
-          behaviors = Map("get-hit" -> FixedHitGetItemBehavior(512L))
+          behaviors = Map("get-hit" -> FixedHitGetItemBehavior(512L)),
+          tableTarget = DynamoDbTarget.Table("orders"),
+          readConsistency = ReadConsistency.StronglyConsistent
         )
 
       resourceProbe.request(100)
@@ -96,7 +105,13 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
       }
       responseProbe.expectComplete()
 
-      resourceProbe.expectComplete()
+      val consumptionTotals = drainConsumptionEvents(resourceProbe)
+        .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
+
+      consumptionTotals.readCapacityUnits shouldBe BigDecimal("3")
+      consumptionTotals.storageBytesRead shouldBe 1536L
+      consumptionTotals.targets shouldBe Set(DynamoDbTarget.Table("orders"))
+      consumptionTotals.consistencies shouldBe Set(ReadConsistency.StronglyConsistent)
 
       val totals = drainMetricEvents(metricsProbe).foldLeft(Stage4MetricTotals())(Stage4MetricTotals.accumulate)
       totals.observedGets shouldBe 3
@@ -108,7 +123,9 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
   private def runTable(
                         requestSource: Source[GetItemRequest, ?],
                         tableState: TableState,
-                        behaviors: Map[Any, UseCaseSampler[TableState]]
+                        behaviors: Map[Any, UseCaseSampler[TableState]],
+                        tableTarget: DynamoDbTarget,
+                        readConsistency: ReadConsistency
                       ) =
     val responseSink = TestSink.probe[TimedEvent]
     val resourceSink = TestSink.probe[TimedEvent]
@@ -121,7 +138,7 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
         (respSink, consSink, metrSink) =>
           import GraphDSL.Implicits._
 
-          val table = b.add(TableStage4.componentOf(tableState, behaviors))
+          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency))
 
           requestSource ~> table.in
           table.out0 ~> respSink
@@ -149,6 +166,25 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
 
         case Left(_) =>
           // NonStream completed → stop draining
+          done = true
+
+    buf.result()
+
+  def drainConsumptionEvents(
+                              probe: TestSubscriber.Probe[_]
+                            ): Vector[DynamoDbConsumptionEvent] =
+    val buf = Vector.newBuilder[DynamoDbConsumptionEvent]
+    var done = false
+
+    while !done do
+      probe.expectNextOrComplete() match
+        case Right(evt: DynamoDbConsumptionEvent) =>
+          buf += evt
+
+        case Right(_) =>
+          done = true
+
+        case Left(_) =>
           done = true
 
     buf.result()
