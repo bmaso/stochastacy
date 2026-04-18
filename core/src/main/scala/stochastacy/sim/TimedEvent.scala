@@ -53,6 +53,7 @@ extension (t: SimTime)
   def prevTime: SimTime = t - 1L
   def gt(other: SimTime): Boolean = t > other
   def gte(other: SimTime): Boolean = t >= other
+  def ticks: Long = t
 
 object SimTime:
   def of(ticks: Long): SimTime = ticks
