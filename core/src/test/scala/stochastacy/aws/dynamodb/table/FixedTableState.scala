@@ -1,3 +1,8 @@
 package stochastacy.aws.dynamodb.table
 
-case class FixedTableState(override val itemCount: Long, override val totalItemBytes: Long) extends TableState
+final class FixedTableState(itemCount: Long, totalItemBytes: Long)
+    extends SummaryTableState(itemCount, totalItemBytes)
+
+object FixedTableState:
+  def apply(itemCount: Long, totalItemBytes: Long): FixedTableState =
+    new FixedTableState(itemCount, totalItemBytes)

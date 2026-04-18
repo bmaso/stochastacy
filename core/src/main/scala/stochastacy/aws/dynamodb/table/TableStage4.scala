@@ -3,7 +3,7 @@ package stochastacy.aws.dynamodb.table
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL}
 import org.apache.pekko.stream.{FanOutShape3, Graph}
-import stochastacy.aws.dynamodb.{DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse}
+import stochastacy.aws.dynamodb.{DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, PutItemRequest, PutItemResponse}
 import stochastacy.sim.*
 
 /**
@@ -15,10 +15,16 @@ import stochastacy.sim.*
 object TableStage4:
 
   private val BytesPerReadCapacityUnitChunk = 4096L
+  private val BytesPerWriteCapacityUnitChunk = 1024L
 
-  private case class TimedRequestSamplePair(req: DynamoDBRequest, sample: Option[GetItemSample]) extends TimedEvent:
+  private sealed trait TimedRequestSample extends TimedEvent:
+    def req: DynamoDBRequest
     override val eventTime: SimTime = req.eventTime
     override val usecase: Any = req.usecase
+
+  private case class TimedGetItemSample(req: GetItemRequest, sample: Option[GetItemSample]) extends TimedRequestSample
+
+  private case class TimedPutItemSample(req: PutItemRequest, sample: PutItemSample) extends TimedRequestSample
 
   def componentOf(
                    stateModel: TableState,
@@ -46,6 +52,12 @@ object TableStage4:
           1L
       BigDecimal(chunkCount) * readCapacityUnitMultiplier
 
+    def writeCapacityUnitsFor(itemBytes: Long): BigDecimal =
+      val chunkCount =
+        if itemBytes > 0 then ((itemBytes - 1L) / BytesPerWriteCapacityUnitChunk) + 1L
+        else 1L
+      BigDecimal(chunkCount)
+
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits._
 
@@ -54,29 +66,38 @@ object TableStage4:
       // ─────────────────────────────────────────────────────────────
       val requestFlow = b.add(
         Flow[TimedElement[DynamoDBRequest]]
-          .map[TimedElement[TimedRequestSamplePair]] {
+          .map[TimedElement[TimedRequestSample]] {
             case r: GetItemRequest =>
               val sampler = getItemBehaviors.getOrElse(
                 r.usecase,
                 throw new IllegalArgumentException(s"No GetItem behavior for '${r.usecase}'")
               )
-              TimedRequestSamplePair(r, sampler.getItem(r, stateModel))
+              TimedGetItemSample(r, sampler.getItem(r, stateModel))
+
+            case r: PutItemRequest =>
+              val sampler = getItemBehaviors.getOrElse(
+                r.usecase,
+                throw new IllegalArgumentException(s"No PutItem behavior for '${r.usecase}'")
+              )
+              val sample = sampler.putItem(r, stateModel)
+              stateModel.recordSuccessfulPut(sample.writtenItemBytes, sample.previousItemBytes)
+              TimedPutItemSample(r, sample)
   
             case t: TimedControlEvent => t // ...everything else, which should just be TimedEvent elements, gets passed through
           }
       )
 
-      val broadcast = b.add(Broadcast[TimedElement[TimedRequestSamplePair]](3))
+      val broadcast = b.add(Broadcast[TimedElement[TimedRequestSample]](3))
 
       // ─────────────────────────────────────────────────────────────
       // sample → Response
       // ─────────────────────────────────────────────────────────────
       val responseFlow =
         b.add(
-          Flow[TimedElement[TimedRequestSamplePair]].map[TimedElement[DynamoDBResponse]] {
+          Flow[TimedElement[TimedRequestSample]].map[TimedElement[DynamoDBResponse]] {
             case t: TimedControlEvent => t
 
-            case TimedRequestSamplePair(r: GetItemRequest, Some(s: GetItemSample)) =>
+            case TimedGetItemSample(r: GetItemRequest, Some(s: GetItemSample)) =>
               GetItemResponse(
                 eventTime = r.eventTime,
                 usecase   = r.usecase,
@@ -84,12 +105,21 @@ object TableStage4:
                 itemBytes = Some(s.getItemBytes)
               )
 
-            case TimedRequestSamplePair(r: GetItemRequest, None) =>
+            case TimedGetItemSample(r: GetItemRequest, None) =>
               GetItemResponse(
                 eventTime = r.eventTime,
                 usecase   = r.usecase,
                 itemFound = false,
                 itemBytes = None
+              )
+
+            case TimedPutItemSample(r: PutItemRequest, s: PutItemSample) =>
+              PutItemResponse(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                storedItemBytes = s.writtenItemBytes,
+                createdNewItem = s.createdNewItem,
+                previousItemBytes = s.previousItemBytes
               )
           }
         )
@@ -99,10 +129,10 @@ object TableStage4:
       // ─────────────────────────────────────────────────────────────
       val metricFlow =
         b.add(
-          Flow[TimedElement[TimedRequestSamplePair]].mapConcat[TimedElement[Stage4MetricEvent]] {
+          Flow[TimedElement[TimedRequestSample]].mapConcat[TimedElement[Stage4MetricEvent]] {
             case t: TimedControlEvent => List(t) // propagate time events
 
-            case TimedRequestSamplePair(r: GetItemRequest, Some(s: GetItemSample)) =>
+            case TimedGetItemSample(r: GetItemRequest, Some(s: GetItemSample)) =>
               List(
                 Stage4MetricEvent.GetItemObserved(
                   eventTime = r.eventTime,
@@ -115,11 +145,35 @@ object TableStage4:
                 )
               )
 
-            case TimedRequestSamplePair(r: GetItemRequest, None) =>
+            case TimedGetItemSample(r: GetItemRequest, None) =>
               List(
                 Stage4MetricEvent.GetItemObserved(
                   eventTime = r.eventTime,
                   usecase = r.usecase
+                )
+              )
+
+            case TimedPutItemSample(r: PutItemRequest, s: PutItemSample) =>
+              List(
+                Stage4MetricEvent.PutItemObserved(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase
+                ),
+                Stage4MetricEvent.PutItemStored(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  bytes = s.writtenItemBytes,
+                  createdNewItem = s.createdNewItem
+                ),
+                Stage4MetricEvent.TableItemCountChanged(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  delta = s.itemCountDelta
+                ),
+                Stage4MetricEvent.TableBytesChanged(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  delta = s.storageBytesDelta
                 )
               )
           }
@@ -130,10 +184,10 @@ object TableStage4:
       // ─────────────────────────────────────────────────────────────
       val consumptionFlow =
         b.add(
-          Flow[TimedElement[TimedRequestSamplePair]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
+          Flow[TimedElement[TimedRequestSample]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
             case t: TimedControlEvent => List(t)
 
-            case TimedRequestSamplePair(r: GetItemRequest, Some(s: GetItemSample)) =>
+            case TimedGetItemSample(r: GetItemRequest, Some(s: GetItemSample)) =>
               List(
                 DynamoDbConsumptionEvent.ReadCapacityConsumed(
                   eventTime = r.eventTime,
@@ -150,7 +204,7 @@ object TableStage4:
                 )
               )
 
-            case TimedRequestSamplePair(r: GetItemRequest, None) =>
+            case TimedGetItemSample(r: GetItemRequest, None) =>
               List(
                 DynamoDbConsumptionEvent.ReadCapacityConsumed(
                   eventTime = r.eventTime,
@@ -158,6 +212,28 @@ object TableStage4:
                   target = tableTarget,
                   units = readCapacityUnitsFor(None),
                   consistency = readConsistency
+                )
+              )
+
+            case TimedPutItemSample(r: PutItemRequest, s: PutItemSample) =>
+              List(
+                DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  units = writeCapacityUnitsFor(s.writtenItemBytes)
+                ),
+                DynamoDbConsumptionEvent.StorageBytesWritten(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  bytes = s.writtenItemBytes
+                ),
+                DynamoDbConsumptionEvent.StorageBytesDelta(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  bytesDelta = s.storageBytesDelta
                 )
               )
           }

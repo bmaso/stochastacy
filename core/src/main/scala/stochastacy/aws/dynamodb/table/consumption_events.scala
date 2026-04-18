@@ -33,3 +33,24 @@ object DynamoDbConsumptionEvent:
                                      target: DynamoDbTarget,
                                      bytes: Long
                                    ) extends DynamoDbConsumptionEvent
+
+  final case class WriteCapacityConsumed(
+                                          eventTime: SimTime,
+                                          usecase: Any,
+                                          target: DynamoDbTarget,
+                                          units: BigDecimal
+                                        ) extends DynamoDbConsumptionEvent
+
+  final case class StorageBytesWritten(
+                                        eventTime: SimTime,
+                                        usecase: Any,
+                                        target: DynamoDbTarget,
+                                        bytes: Long
+                                      ) extends DynamoDbConsumptionEvent
+
+  final case class StorageBytesDelta(
+                                      eventTime: SimTime,
+                                      usecase: Any,
+                                      target: DynamoDbTarget,
+                                      bytesDelta: Long
+                                    ) extends DynamoDbConsumptionEvent

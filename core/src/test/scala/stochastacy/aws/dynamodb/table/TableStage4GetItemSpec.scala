@@ -66,7 +66,7 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
       val consumptionTotals = drainConsumptionEvents(resourceProbe)
         .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
 
-      consumptionTotals.readCapacityUnits shouldBe BigDecimal("5.0")
+      consumptionTotals.readCapacityUnits shouldBe BigDecimal(5.0)
       consumptionTotals.storageBytesRead shouldBe 0L
       consumptionTotals.targets shouldBe Set(DynamoDbTarget.Table("orders"))
       consumptionTotals.consistencies shouldBe Set(ReadConsistency.EventuallyConsistent)
@@ -108,7 +108,7 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
       val consumptionTotals = drainConsumptionEvents(resourceProbe)
         .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
 
-      consumptionTotals.readCapacityUnits shouldBe BigDecimal("3")
+      consumptionTotals.readCapacityUnits shouldBe BigDecimal(3.0)
       consumptionTotals.storageBytesRead shouldBe 1536L
       consumptionTotals.targets shouldBe Set(DynamoDbTarget.Table("orders"))
       consumptionTotals.consistencies shouldBe Set(ReadConsistency.StronglyConsistent)
