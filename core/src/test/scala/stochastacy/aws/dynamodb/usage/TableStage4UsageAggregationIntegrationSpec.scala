@@ -11,7 +11,7 @@ import stochastacy.aws.dynamodb.{DynamoDBRequest, GetItemRequest, PutItemRequest
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.sim.{SimTime, TimedEvent}
 
-class TableStage4UsageAggregationSpec extends AnyWordSpec with should.Matchers:
+class TableStage4UsageAggregationIntegrationSpec extends AnyWordSpec with should.Matchers:
 
   given ActorSystem = ActorSystem("table-stage4-usage-test")
   given Materializer = Materializer.matFromSystem

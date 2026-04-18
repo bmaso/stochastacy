@@ -241,6 +241,61 @@ Recommended flow:
 
 This separation keeps the model easier to evolve and easier to explain.
 
+## Countable Usage Vs Time-Based Usage
+
+Not all DynamoDB cost components should be priced from the same kind of aggregate.
+
+There are two different classes of pricing inputs in this simulator design:
+
+### Countable usage
+
+Examples:
+
+- read capacity consumed
+- write capacity consumed
+- bytes read
+- bytes written
+
+These are additive quantities. Pricing for these can be derived accurately from aggregate usage totals, because only the summed quantity matters.
+
+This is the purpose of the usage aggregation layer:
+
+- raw timed consumption events are emitted by `TableStage4`
+- those events are folded into stable usage totals
+- pricing for countable consumption can be computed from those totals
+
+### Time-based usage
+
+Examples:
+
+- storage occupancy over time
+- future provisioned-capacity charges
+- any charge whose meaning depends on how long a quantity remained in effect
+
+These cannot be derived accurately from a single final total alone. For time-based pricing, the simulator must preserve the relationship between:
+
+- a resource change event
+- the passage of simulation time
+- the next change to that resource
+
+This is one of the key reasons the simulator uses the timed-event source model. Time-based pricing should be derived from timed event streams, or from windowed rollups built from those streams, rather than from a single whole-run total.
+
+## Pricing Input Strategy
+
+The current architectural direction is:
+
+- use aggregate usage totals for countable, additive consumption
+- use timed event streams and time progression for duration-based consumption
+
+That means the pricing layer should not assume one totals type can price every kind of DynamoDB cost component.
+
+Instead:
+
+- request-priced usage may be priced from `DynamoDbUsageTotals`
+- duration-priced usage should be priced from time-aware rollups or occupancy derived from timed consumption events
+
+This keeps the current totals model useful without forcing it to represent time-dependent billing by itself.
+
 ## Open Questions
 
 - How should DynamoDB table and index identities be represented in phase 1 if requests do not yet carry explicit names?
