@@ -191,6 +191,17 @@ Recommended first slice:
 
 This is enough to make `GetItem` emit priceable usage facts.
 
+That initial slice has now been completed and extended.
+
+The current implementation also includes:
+
+- `WriteCapacityConsumed`
+- `StorageBytesWritten`
+- `StorageBytesDelta`
+- size-based read and write capacity calculation
+- explicit table targets and read-consistency configuration
+- a downstream usage aggregation layer
+
 ## `GetItem` Semantics
 
 For the initial `GetItem` slice:
@@ -201,6 +212,23 @@ For the initial `GetItem` slice:
 - a miss may emit `StorageBytesRead(bytes = 0)` or omit the byte-read event entirely
 - `GetItem` should not emit storage-delta events because it does not mutate storage
 
+Current implementation:
+
+- `GetItem` always emits `ReadCapacityConsumed`
+- hits emit `StorageBytesRead`
+- misses omit `StorageBytesRead`
+- read-capacity units are derived from item-size chunks and read consistency
+
+## `PutItem` Semantics
+
+For the current `PutItem` slice:
+
+- a successful put emits exactly one `WriteCapacityConsumed`
+- a successful put emits exactly one `StorageBytesWritten`
+- a successful put emits exactly one `StorageBytesDelta`
+- the storage delta reflects insert vs overwrite behavior in the mutable summary state
+- these events remain raw accounting facts rather than priced totals
+
 ## Separation From Pricing
 
 The pricing layer should remain separate from `TableStage4`.
@@ -208,7 +236,7 @@ The pricing layer should remain separate from `TableStage4`.
 Recommended flow:
 
 1. `TableStage4` emits `DynamoDbConsumptionEvent`
-2. aggregation folds those events into usage totals
+2. a usage aggregation layer folds those events into usage totals
 3. pricing translates usage totals into cost estimates
 
 This separation keeps the model easier to evolve and easier to explain.
@@ -217,14 +245,13 @@ This separation keeps the model easier to evolve and easier to explain.
 
 - How should DynamoDB table and index identities be represented in phase 1 if requests do not yet carry explicit names?
 - Should `StorageBytesRead(bytes = 0)` be emitted for misses, or should misses simply omit the byte-read event?
-- Should capacity consumption modeling begin with a simplified deterministic rule before richer read-consistency behavior is added?
+- How should `UpdateItem` and `DeleteItem` map into raw write-side accounting facts?
+- When index support arrives, should index write amplification be emitted in the same request-time window or in a later one?
 
 ## Recommended Next Step
 
 The next implementation slice should be:
 
-1. define `DynamoDbConsumptionEvent`
-2. add `ReadCapacityConsumed`
-3. emit it from `TableStage4` for `GetItem`
-4. add test helpers that aggregate consumption totals
-5. leave pricing as a separate follow-up layer
+1. add the pricing layer on top of aggregated usage totals
+2. extend the consumption model to additional write operations
+3. incorporate index-targeted usage into the same aggregation model

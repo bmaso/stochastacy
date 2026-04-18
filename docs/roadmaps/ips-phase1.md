@@ -15,6 +15,22 @@ Phase 1 is scoped to:
 - DynamoDB tables
 - DynamoDB indexes
 
+## Current Status
+
+The current codebase already includes:
+
+- `TableStage4` support for `GetItem`
+- `TableStage4` support for `PutItem`
+- mutable summary-state updates for successful puts
+- read-side and write-side consumption events
+- a usage aggregation layer that folds raw consumption events into usage totals
+
+The biggest remaining gaps are:
+
+- pricing
+- index modeling and composition
+- broader demo scenarios and demo-facing output
+
 ## Must Have For Public Showing
 
 ### 1. End-to-End Simulation Path
@@ -35,6 +51,7 @@ Phase 1 is scoped to:
 - Normalized resource-consumption events for DynamoDB operations
 - Enough detail to support later pricing
 - Clear distinction between logical response events and accounting/resource events
+- A usage aggregation layer that folds raw consumption into stable DynamoDB usage totals
 
 ### 4. Cost Derivation
 
@@ -90,6 +107,10 @@ Phase 1 is scoped to:
 - State-mutation tests for write paths
 - Resource and metric emission for writes
 
+Current status:
+`PutItem` plus state-mutation tests and write-side resource/metric emission are already implemented.
+The remaining work in this area is `UpdateItem` and `DeleteItem`.
+
 ### 11. Better Metric Model
 
 - Additive Stage 4 metric events with stable semantics
@@ -125,10 +146,8 @@ Phase 1 is scoped to:
 
 ## Suggested Near-Term Order
 
-1. Finish the DynamoDB table vertical slice cleanly.
-2. Make resource-consumption events costable.
-3. Add or firm up write-path support.
-4. Define the phase-1 index story.
-5. Build one strong end-to-end demo scenario.
-6. Tighten docs around scope, assumptions, and outputs.
-7. Keep `sbt test` green throughout.
+1. Build the pricing layer on top of aggregated usage totals.
+2. Define the phase-1 index story.
+3. Build one strong end-to-end demo scenario.
+4. Tighten docs around scope, assumptions, and outputs.
+5. Keep `sbt test` green throughout.

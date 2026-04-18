@@ -116,12 +116,21 @@ Behavioral requirements:
 
 ## Write Semantics
 
-Future write-like operations such as `PutItem`, `UpdateItem`, and `DeleteItem` should:
+`TableStage4` currently supports `PutItem`, and future work should extend the same pattern to operations such as `UpdateItem` and `DeleteItem`.
+
+For write-like operations:
 
 - produce exactly one synchronous response each
 - mutate table state when the operation succeeds
 - emit resource-consumption events reflecting write-side physical effects
 - emit metric events describing observed writes and resulting storage changes
+
+Current implementation notes:
+
+- `PutItem` produces exactly one `PutItemResponse`
+- successful puts update the mutable summary state owned by `TableStage4`
+- current state mutation is stochastic-summary-oriented rather than key-accurate
+- successful puts emit write-side consumption and metric events
 
 ## Consumption Stream
 
@@ -136,6 +145,12 @@ The resource-consumption output is the accounting-facing stream. It should event
 - storage occupancy changes
 
 `TableStage4` should emit raw facts, not final billing totals.
+
+Current implementation notes:
+
+- `GetItem` emits read-capacity and byte-read facts
+- `PutItem` emits write-capacity, bytes-written, and storage-delta facts
+- a downstream usage aggregation layer folds those raw facts into stable totals
 
 ## Metric Stream
 
@@ -195,3 +210,12 @@ The initial `TableStage4` milestone should be considered complete when:
 - metric output reflects observed gets and returned items/bytes
 - resource consumption has a stable event model, even if initially minimal
 - the component can be embedded unchanged inside a future higher-level `Table` graph
+
+That initial `GetItem` slice is now complete.
+
+The current implementation has progressed beyond that initial slice and now also includes:
+
+- `PutItem` request handling
+- mutable summary-state updates on successful puts
+- write-side metric and consumption emission
+- downstream usage aggregation over the raw consumption stream
