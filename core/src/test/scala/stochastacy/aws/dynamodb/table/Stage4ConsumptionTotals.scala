@@ -5,6 +5,7 @@ final case class Stage4ConsumptionTotals(
                                           writeCapacityUnits: BigDecimal = BigDecimal(0),
                                           storageBytesRead: Long = 0L,
                                           storageBytesWritten: Long = 0L,
+                                          storageBytesDeleted: Long = 0L,
                                           storageBytesDelta: Long = 0L,
                                           targets: Set[DynamoDbTarget] = Set.empty,
                                           consistencies: Set[ReadConsistency] = Set.empty
@@ -38,6 +39,12 @@ object Stage4ConsumptionTotals:
       case DynamoDbConsumptionEvent.StorageBytesWritten(_, _, target, bytes) =>
         acc.copy(
           storageBytesWritten = acc.storageBytesWritten + bytes,
+          targets = acc.targets + target
+        )
+
+      case DynamoDbConsumptionEvent.StorageBytesDeleted(_, _, target, bytes) =>
+        acc.copy(
+          storageBytesDeleted = acc.storageBytesDeleted + bytes,
           targets = acc.targets + target
         )
 

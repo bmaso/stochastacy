@@ -36,4 +36,18 @@ class DynamoDbConsumptionEventSpec extends AnyWordSpec with should.Matchers:
       evt.target shouldBe DynamoDbTarget.GlobalSecondaryIndex("orders", "by-status")
       evt.bytes shouldBe 4096L
     }
+
+    "represent storage bytes deleted as a timed consumption fact" in {
+      val evt = DynamoDbConsumptionEvent.StorageBytesDeleted(
+        eventTime = SimTime.of(9L),
+        usecase = "demo-delete",
+        target = DynamoDbTarget.Table("orders"),
+        bytes = 768L
+      )
+
+      evt.eventTime shouldBe SimTime.of(9L)
+      evt.usecase shouldBe "demo-delete"
+      evt.target shouldBe DynamoDbTarget.Table("orders")
+      evt.bytes shouldBe 768L
+    }
   }

@@ -3,7 +3,14 @@ package stochastacy.aws.dynamodb.table
 trait TableState:
   def itemCount: Long
   def totalItemBytes: Long
-  def recordSuccessfulPut(writtenItemBytes: Long, previousItemBytes: Option[Long]): Unit
+  def recordSuccessfulWrite(writtenItemBytes: Long, previousItemBytes: Option[Long]): Unit
+  def recordSuccessfulDelete(deletedItemBytes: Option[Long]): Unit
+
+  def recordSuccessfulPut(writtenItemBytes: Long, previousItemBytes: Option[Long]): Unit =
+    recordSuccessfulWrite(writtenItemBytes, previousItemBytes)
+
+  def recordSuccessfulUpdate(writtenItemBytes: Long, previousItemBytes: Option[Long]): Unit =
+    recordSuccessfulWrite(writtenItemBytes, previousItemBytes)
 
   def averageItemBytes: Option[Long] =
     if itemCount > 0 then Some(totalItemBytes / itemCount)
@@ -20,7 +27,7 @@ class SummaryTableState(
 
   override def totalItemBytes: Long = currentTotalItemBytes
 
-  override def recordSuccessfulPut(writtenItemBytes: Long, previousItemBytes: Option[Long]): Unit =
+  override def recordSuccessfulWrite(writtenItemBytes: Long, previousItemBytes: Option[Long]): Unit =
     previousItemBytes match
       case Some(prevBytes) =>
         currentTotalItemBytes = currentTotalItemBytes - prevBytes + writtenItemBytes
@@ -28,6 +35,12 @@ class SummaryTableState(
       case None =>
         currentItemCount = currentItemCount + 1L
         currentTotalItemBytes = currentTotalItemBytes + writtenItemBytes
+
+  override def recordSuccessfulDelete(deletedItemBytes: Option[Long]): Unit =
+    deletedItemBytes.foreach { bytes =>
+      currentItemCount = currentItemCount - 1L
+      currentTotalItemBytes = currentTotalItemBytes - bytes
+    }
 
 object SummaryTableState:
   def apply(

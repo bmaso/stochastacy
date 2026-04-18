@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This note proposes the initial event model for DynamoDB resource-consumption output in `ips/phase1`.
+This note proposes the event model for DynamoDB resource-consumption output in `ips/phase1`.
 
 The goal is to let the simulator emit raw, additive facts about physical resource usage so that later layers can:
 
@@ -18,7 +18,7 @@ These events are not billing totals. They are simulation facts that should be st
 - keep events additive and easy to aggregate
 - preserve timing by emitting events as timed events
 - separate pricing concerns from table execution concerns
-- support both tables and indexes
+- support both tables and future index work without redesign
 - start small for phase 1, but avoid immediate redesign later
 
 ## Relationship To `TableStage4`
@@ -177,30 +177,21 @@ The byte-oriented events support:
 - validation of state transitions
 - clearer demo outputs
 
-## Initial Phase-1 Slice
+## Current Phase-1 Coverage
 
-The full event family above is a reasonable target, but phase 1 should start with the smallest useful subset.
-
-Recommended first slice:
-
-- define `DynamoDbConsumptionEvent`
-- define `DynamoDbTarget`
-- define `ReadConsistency`
-- implement `ReadCapacityConsumed`
-- optionally implement `StorageBytesRead`
-
-This is enough to make `GetItem` emit priceable usage facts.
-
-That initial slice has now been completed and extended.
+The initial `GetItem` slice has already been completed and extended.
 
 The current implementation also includes:
 
 - `WriteCapacityConsumed`
 - `StorageBytesWritten`
+- `StorageBytesDeleted`
 - `StorageBytesDelta`
 - size-based read and write capacity calculation
 - explicit table targets and read-consistency configuration
 - a downstream usage aggregation layer
+- a downstream time-based usage aggregation layer
+- downstream pricing built on top of those two usage layers
 
 ## `GetItem` Semantics
 
@@ -228,6 +219,19 @@ For the current `PutItem` slice:
 - a successful put emits exactly one `StorageBytesDelta`
 - the storage delta reflects insert vs overwrite behavior in the mutable summary state
 - these events remain raw accounting facts rather than priced totals
+
+## `UpdateItem` And `DeleteItem` Semantics
+
+Current implementation:
+
+- `UpdateItem` emits `WriteCapacityConsumed`
+- `UpdateItem` emits `StorageBytesWritten`
+- `UpdateItem` emits `StorageBytesDelta`
+- `DeleteItem` emits `WriteCapacityConsumed`
+- `DeleteItem` emits `StorageBytesDeleted` when an item was removed
+- `DeleteItem` emits `StorageBytesDelta`
+
+This keeps update and delete accounting aligned with the mutable summary-state model while preserving enough raw detail for later explanation and pricing.
 
 ## Separation From Pricing
 
@@ -298,15 +302,17 @@ This keeps the current totals model useful without forcing it to represent time-
 
 ## Open Questions
 
-- How should DynamoDB table and index identities be represented in phase 1 if requests do not yet carry explicit names?
+- How should DynamoDB table and index identities be represented once requests carry explicit names?
 - Should `StorageBytesRead(bytes = 0)` be emitted for misses, or should misses simply omit the byte-read event?
-- How should `UpdateItem` and `DeleteItem` map into raw write-side accounting facts?
 - When index support arrives, should index write amplification be emitted in the same request-time window or in a later one?
+- How much DynamoDB billing fidelity should phase 2 add before the model becomes harder to explain?
 
 ## Recommended Next Step
 
-The next implementation slice should be:
+For phase 1, the next step is not more accounting primitives. It is using the existing event and usage model in a stronger end-to-end demo path.
 
-1. add the pricing layer on top of aggregated usage totals
-2. extend the consumption model to additional write operations
-3. incorporate index-targeted usage into the same aggregation model
+For phase 2, this same event model should be extended to:
+
+1. index-targeted consumption
+2. `Query`, `Scan`, and PartiQL-related accounting
+3. table-plus-index write propagation

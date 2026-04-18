@@ -3,7 +3,7 @@ package stochastacy.aws.dynamodb.table
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL}
 import org.apache.pekko.stream.{FanOutShape3, Graph}
-import stochastacy.aws.dynamodb.{DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, PutItemRequest, PutItemResponse}
+import stochastacy.aws.dynamodb.{DeleteItemRequest, DeleteItemResponse, DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, PutItemRequest, PutItemResponse, UpdateItemRequest, UpdateItemResponse}
 import stochastacy.sim.*
 
 /**
@@ -26,9 +26,13 @@ object TableStage4:
 
   private case class TimedPutItemSample(req: PutItemRequest, sample: PutItemSample) extends TimedRequestSample
 
+  private case class TimedUpdateItemSample(req: UpdateItemRequest, sample: UpdateItemSample) extends TimedRequestSample
+
+  private case class TimedDeleteItemSample(req: DeleteItemRequest, sample: DeleteItemSample) extends TimedRequestSample
+
   def componentOf(
                    stateModel: TableState,
-                   getItemBehaviors: Map[Any, UseCaseSampler[TableState]],
+                   useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
                    tableTarget: DynamoDbTarget = DynamoDbTarget.Table("table"),
                    readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
                  ): Graph[
@@ -58,6 +62,12 @@ object TableStage4:
         else 1L
       BigDecimal(chunkCount)
 
+    def samplerFor(request: DynamoDBRequest): UseCaseSampler[TableState] =
+      useCaseBehaviors.getOrElse(
+        request.usecase,
+        throw new IllegalArgumentException(s"No table behavior for '${request.usecase}'")
+      )
+
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits._
 
@@ -68,20 +78,26 @@ object TableStage4:
         Flow[TimedElement[DynamoDBRequest]]
           .map[TimedElement[TimedRequestSample]] {
             case r: GetItemRequest =>
-              val sampler = getItemBehaviors.getOrElse(
-                r.usecase,
-                throw new IllegalArgumentException(s"No GetItem behavior for '${r.usecase}'")
-              )
+              val sampler = samplerFor(r)
               TimedGetItemSample(r, sampler.getItem(r, stateModel))
 
             case r: PutItemRequest =>
-              val sampler = getItemBehaviors.getOrElse(
-                r.usecase,
-                throw new IllegalArgumentException(s"No PutItem behavior for '${r.usecase}'")
-              )
+              val sampler = samplerFor(r)
               val sample = sampler.putItem(r, stateModel)
               stateModel.recordSuccessfulPut(sample.writtenItemBytes, sample.previousItemBytes)
               TimedPutItemSample(r, sample)
+
+            case r: UpdateItemRequest =>
+              val sampler = samplerFor(r)
+              val sample = sampler.updateItem(r, stateModel)
+              stateModel.recordSuccessfulUpdate(sample.writtenItemBytes, sample.previousItemBytes)
+              TimedUpdateItemSample(r, sample)
+
+            case r: DeleteItemRequest =>
+              val sampler = samplerFor(r)
+              val sample = sampler.deleteItem(r, stateModel)
+              stateModel.recordSuccessfulDelete(sample.deletedItemBytes)
+              TimedDeleteItemSample(r, sample)
   
             case t: TimedControlEvent => t // ...everything else, which should just be TimedEvent elements, gets passed through
           }
@@ -120,6 +136,22 @@ object TableStage4:
                 storedItemBytes = s.writtenItemBytes,
                 createdNewItem = s.createdNewItem,
                 previousItemBytes = s.previousItemBytes
+              )
+
+            case TimedUpdateItemSample(r: UpdateItemRequest, s: UpdateItemSample) =>
+              UpdateItemResponse(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                storedItemBytes = s.writtenItemBytes,
+                createdNewItem = s.createdNewItem,
+                previousItemBytes = s.previousItemBytes
+              )
+
+            case TimedDeleteItemSample(r: DeleteItemRequest, s: DeleteItemSample) =>
+              DeleteItemResponse(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                deletedItemBytes = s.deletedItemBytes
               )
           }
         )
@@ -165,6 +197,57 @@ object TableStage4:
                   bytes = s.writtenItemBytes,
                   createdNewItem = s.createdNewItem
                 ),
+                Stage4MetricEvent.TableItemCountChanged(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  delta = s.itemCountDelta
+                ),
+                Stage4MetricEvent.TableBytesChanged(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  delta = s.storageBytesDelta
+                )
+              )
+
+            case TimedUpdateItemSample(r: UpdateItemRequest, s: UpdateItemSample) =>
+              List(
+                Stage4MetricEvent.UpdateItemObserved(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase
+                ),
+                Stage4MetricEvent.UpdateItemStored(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  bytes = s.writtenItemBytes,
+                  createdNewItem = s.createdNewItem
+                ),
+                Stage4MetricEvent.TableItemCountChanged(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  delta = s.itemCountDelta
+                ),
+                Stage4MetricEvent.TableBytesChanged(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  delta = s.storageBytesDelta
+                )
+              )
+
+            case TimedDeleteItemSample(r: DeleteItemRequest, s: DeleteItemSample) =>
+              val deleteEvents =
+                s.deletedItemBytes.toList.map { bytes =>
+                  Stage4MetricEvent.DeleteItemDeleted(
+                    eventTime = r.eventTime,
+                    usecase = r.usecase,
+                    bytes = bytes
+                  )
+                }
+              List(
+                Stage4MetricEvent.DeleteItemObserved(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase
+                )
+              ) ++ deleteEvents ++ List(
                 Stage4MetricEvent.TableItemCountChanged(
                   eventTime = r.eventTime,
                   usecase = r.usecase,
@@ -229,6 +312,54 @@ object TableStage4:
                   target = tableTarget,
                   bytes = s.writtenItemBytes
                 ),
+                DynamoDbConsumptionEvent.StorageBytesDelta(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  bytesDelta = s.storageBytesDelta
+                )
+              )
+
+            case TimedUpdateItemSample(r: UpdateItemRequest, s: UpdateItemSample) =>
+              List(
+                DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  units = writeCapacityUnitsFor(s.writtenItemBytes)
+                ),
+                DynamoDbConsumptionEvent.StorageBytesWritten(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  bytes = s.writtenItemBytes
+                ),
+                DynamoDbConsumptionEvent.StorageBytesDelta(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  bytesDelta = s.storageBytesDelta
+                )
+              )
+
+            case TimedDeleteItemSample(r: DeleteItemRequest, s: DeleteItemSample) =>
+              val deletedBytesEvents =
+                s.deletedItemBytes.toList.map { bytes =>
+                  DynamoDbConsumptionEvent.StorageBytesDeleted(
+                    eventTime = r.eventTime,
+                    usecase = r.usecase,
+                    target = tableTarget,
+                    bytes = bytes
+                  )
+                }
+              List(
+                DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = tableTarget,
+                  units = writeCapacityUnitsFor(s.deletedItemBytes.getOrElse(0L))
+                )
+              ) ++ deletedBytesEvents ++ List(
                 DynamoDbConsumptionEvent.StorageBytesDelta(
                   eventTime = r.eventTime,
                   usecase = r.usecase,

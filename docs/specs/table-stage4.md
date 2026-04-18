@@ -116,7 +116,12 @@ Behavioral requirements:
 
 ## Write Semantics
 
-`TableStage4` currently supports `PutItem`, and future work should extend the same pattern to operations such as `UpdateItem` and `DeleteItem`.
+`TableStage4` currently supports:
+
+- `GetItem`
+- `PutItem`
+- `UpdateItem`
+- `DeleteItem`
 
 For write-like operations:
 
@@ -128,9 +133,11 @@ For write-like operations:
 Current implementation notes:
 
 - `PutItem` produces exactly one `PutItemResponse`
-- successful puts update the mutable summary state owned by `TableStage4`
+- `UpdateItem` produces exactly one `UpdateItemResponse`
+- `DeleteItem` produces exactly one `DeleteItemResponse`
+- successful writes update the mutable summary state owned by `TableStage4`
 - current state mutation is stochastic-summary-oriented rather than key-accurate
-- successful puts emit write-side consumption and metric events
+- successful writes emit write-side consumption and metric events
 
 ## Consumption Stream
 
@@ -149,8 +156,11 @@ The resource-consumption output is the accounting-facing stream. It should event
 Current implementation notes:
 
 - `GetItem` emits read-capacity and byte-read facts
-- `PutItem` emits write-capacity, bytes-written, and storage-delta facts
+- `PutItem` and `UpdateItem` emit write-capacity, bytes-written, and storage-delta facts
+- `DeleteItem` emits write-capacity, bytes-deleted, and storage-delta facts
 - a downstream usage aggregation layer folds those raw facts into stable totals
+- time-based storage usage is derived downstream from timed consumption streams
+- downstream pricing remains outside `TableStage4`
 
 ## Metric Stream
 
@@ -216,6 +226,19 @@ That initial `GetItem` slice is now complete.
 The current implementation has progressed beyond that initial slice and now also includes:
 
 - `PutItem` request handling
-- mutable summary-state updates on successful puts
-- write-side metric and consumption emission
+- `UpdateItem` request handling
+- `DeleteItem` request handling
+- mutable summary-state updates for successful writes
+- write-side metric and consumption emission for put, update, and delete operations
 - downstream usage aggregation over the raw consumption stream
+- time-based storage usage aggregation
+- downstream pricing derived from those usage layers
+
+## Deferred To Phase 2
+
+The current phase-1 plan intentionally leaves these outside `TableStage4`'s required surface area:
+
+- `Query`
+- `Scan`
+- PartiQL query support
+- index-targeted execution paths

@@ -38,6 +38,12 @@ class DynamoDbUsageTotalsSpec extends AnyWordSpec with should.Matchers:
           target = ordersIndex,
           bytes = 2048L
         ),
+        DynamoDbConsumptionEvent.StorageBytesDeleted(
+          eventTime = SimTime.of(3L),
+          usecase = "demo",
+          target = ordersIndex,
+          bytes = 512L
+        ),
         DynamoDbConsumptionEvent.StorageBytesDelta(
           eventTime = SimTime.of(2L),
           usecase = "demo",
@@ -52,6 +58,7 @@ class DynamoDbUsageTotalsSpec extends AnyWordSpec with should.Matchers:
       totals.overall.writeCapacityUnits shouldBe BigDecimal(2.0)
       totals.overall.storageBytesRead shouldBe 512L
       totals.overall.storageBytesWritten shouldBe 2048L
+      totals.overall.storageBytesDeleted shouldBe 512L
       totals.overall.storageBytesDelta shouldBe 1024L
 
       totals.byTarget(ordersTable) shouldBe DynamoDbTargetUsageTotals(
@@ -59,6 +66,7 @@ class DynamoDbUsageTotalsSpec extends AnyWordSpec with should.Matchers:
         writeCapacityUnits = BigDecimal(0),
         storageBytesRead = 512L,
         storageBytesWritten = 0L,
+        storageBytesDeleted = 0L,
         storageBytesDelta = 0L
       )
 
@@ -67,6 +75,7 @@ class DynamoDbUsageTotalsSpec extends AnyWordSpec with should.Matchers:
         writeCapacityUnits = BigDecimal(2.0),
         storageBytesRead = 0L,
         storageBytesWritten = 2048L,
+        storageBytesDeleted = 512L,
         storageBytesDelta = 1024L
       )
     }

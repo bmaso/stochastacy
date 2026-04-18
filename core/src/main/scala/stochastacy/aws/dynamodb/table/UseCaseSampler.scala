@@ -1,6 +1,6 @@
 package stochastacy.aws.dynamodb.table
 
-import stochastacy.aws.dynamodb.{GetItemRequest, PutItemRequest}
+import stochastacy.aws.dynamodb.{DeleteItemRequest, GetItemRequest, PutItemRequest, UpdateItemRequest}
 
 /**
  * This trait describes the stochastic table behavior for requests against a table whose
@@ -16,3 +16,9 @@ trait UseCaseSampler[T <: TableState]:
 
   def putItem(request: PutItemRequest, s: T): PutItemSample =
     throw new UnsupportedOperationException(s"PutItem is not supported for use-case '${request.usecase}'")
+
+  def updateItem(request: UpdateItemRequest, s: T): UpdateItemSample =
+    throw new UnsupportedOperationException(s"UpdateItem is not supported for use-case '${request.usecase}'")
+
+  def deleteItem(request: DeleteItemRequest, s: T): DeleteItemSample =
+    throw new UnsupportedOperationException(s"DeleteItem is not supported for use-case '${request.usecase}'")

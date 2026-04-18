@@ -10,10 +10,17 @@ Deliver an initial public showing build that can simulate the predicted:
 
 for a non-trivial AWS-based system.
 
-Phase 1 is scoped to:
+Phase 1 is now scoped to:
 
 - DynamoDB tables
+- table-oriented read and write operations used in the initial demo
+
+Deferred to phase 2:
+
 - DynamoDB indexes
+- `Query`
+- `Scan`
+- PartiQL queries
 
 ## Current Status
 
@@ -21,15 +28,20 @@ The current codebase already includes:
 
 - `TableStage4` support for `GetItem`
 - `TableStage4` support for `PutItem`
+- `TableStage4` support for `UpdateItem`
+- `TableStage4` support for `DeleteItem`
 - mutable summary-state updates for successful puts
+- mutable summary-state updates for successful updates and deletes
 - read-side and write-side consumption events
 - a usage aggregation layer that folds raw consumption events into usage totals
+- time-based storage usage aggregation
+- downstream pricing from usage totals and time-based usage
 
 The biggest remaining gaps are:
 
-- pricing
-- index modeling and composition
-- broader demo scenarios and demo-facing output
+- broader demo scenarios
+- demo-facing output
+- final scope polish for the public showing
 
 ## Must Have For Public Showing
 
@@ -66,13 +78,7 @@ The biggest remaining gaps are:
 - A basic explanation of what "performance characteristics" means in phase 1
 - One or more example scenarios showing timing-sensitive behavior
 
-### 6. Index Support
-
-- At least one coherent index model included in the simulation story
-- Index-related resource usage represented
-- Table vs index behavior explained clearly enough for a public walkthrough
-
-### 7. Demo-Ready Outputs
+### 6. Demo-Ready Outputs
 
 - Simulation outputs that are readable by someone other than the implementer
 - Metrics and events named clearly
@@ -83,14 +89,14 @@ The biggest remaining gaps are:
   - estimated cost
   - timing and performance observations
 
-### 8. Documentation
+### 7. Documentation
 
 - Architecture docs for the DynamoDB table model
 - Phase-1 scope documented clearly
 - Clear statement of what is modeled vs not modeled
 - Short demo walkthrough notes
 
-### 9. Test Confidence
+### 8. Test Confidence
 
 - `sbt test` green
 - Focused tests for key DynamoDB table behaviors
@@ -108,8 +114,7 @@ The biggest remaining gaps are:
 - Resource and metric emission for writes
 
 Current status:
-`PutItem` plus state-mutation tests and write-side resource/metric emission are already implemented.
-The remaining work in this area is `UpdateItem` and `DeleteItem`.
+`PutItem`, `UpdateItem`, and `DeleteItem` plus state-mutation tests and write-side resource/metric emission are now implemented.
 
 ### 11. Better Metric Model
 
@@ -121,7 +126,7 @@ The remaining work in this area is `UpdateItem` and `DeleteItem`.
 
 - At least one scenario with mixed reads and writes
 - At least one scenario with meaningful item sizes, skew, or hit/miss behavior
-- At least one scenario that exercises an index
+- At least one non-trivial table-only story that is easy to explain publicly
 
 ### 13. Presentation Polish
 
@@ -146,8 +151,7 @@ The remaining work in this area is `UpdateItem` and `DeleteItem`.
 
 ## Suggested Near-Term Order
 
-1. Build the pricing layer on top of aggregated usage totals.
-2. Define the phase-1 index story.
-3. Build one strong end-to-end demo scenario.
-4. Tighten docs around scope, assumptions, and outputs.
-5. Keep `sbt test` green throughout.
+1. Build one strong end-to-end demo scenario.
+2. Improve demo-facing output and reporting.
+3. Tighten docs around scope, assumptions, and outputs.
+4. Keep `sbt test` green throughout.

@@ -48,6 +48,13 @@ object DynamoDbConsumptionEvent:
                                         bytes: Long
                                       ) extends DynamoDbConsumptionEvent
 
+  final case class StorageBytesDeleted(
+                                        eventTime: SimTime,
+                                        usecase: Any,
+                                        target: DynamoDbTarget,
+                                        bytes: Long
+                                      ) extends DynamoDbConsumptionEvent
+
   final case class StorageBytesDelta(
                                       eventTime: SimTime,
                                       usecase: Any,
