@@ -300,6 +300,28 @@ Instead:
 
 This keeps the current totals model useful without forcing it to represent time-dependent billing by itself.
 
+## Total Price Vs Time Windows
+
+Timed event streams and time-windowed rollups are useful for representing how consumption evolves during a simulation run.
+
+They are not the same thing as billed price outputs.
+
+The intended relationship is:
+
+- timed windows help the simulator model duration-based usage correctly
+- downstream pricing integrates that usage into a total cost for the whole run
+
+This means it is reasonable to:
+
+- compute a final total price from all consumption events in a timed event stream
+- use time-windowed usage as an intermediate accounting representation
+
+It is not automatically reasonable to:
+
+- assign an authoritative billed price to each minute or other time window in that stream
+
+Per-window values may still be useful for explanation or debugging, but they should be treated as derived diagnostics unless the simulator explicitly chooses to present them as estimated prorated breakdowns.
+
 ## Open Questions
 
 - How should DynamoDB table and index identities be represented once requests carry explicit names?
