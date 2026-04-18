@@ -24,22 +24,18 @@ class TableStage4PutItemSpec extends AnyWordSpec with should.Matchers:
 
       val (responseProbe, resourceProbe, metricsProbe) =
         runTable(
-          requestSource = Source(List[DynamoDBRequest](
-            PutItemRequest(
-              eventTime = SimTime.of(1L),
-              usecase = "stateful-table",
-              itemBytes = 512L
-            ),
-            PutItemRequest(
-              eventTime = SimTime.of(2L),
-              usecase = "stateful-table",
-              itemBytes = 1024L
-            ),
-            GetItemRequest(
+          requestSource = Source(
+            (Seq(512L, 1024L).zipWithIndex.map { case (itemBytes, idx) =>
+              PutItemRequest(
+                eventTime = SimTime.of(idx.toLong + 1L),
+                usecase = "stateful-table",
+                itemBytes = itemBytes
+              ): DynamoDBRequest
+            }) :+ GetItemRequest(
               eventTime = SimTime.of(3L),
               usecase = "stateful-table"
             )
-          )),
+          ),
           tableState = tableState,
           behaviors = Map("stateful-table" -> StatefulTableBehavior),
           tableTarget = DynamoDbTarget.Table("orders"),
@@ -50,22 +46,19 @@ class TableStage4PutItemSpec extends AnyWordSpec with should.Matchers:
       metricsProbe.request(100)
 
       val responses = responseProbe.request(3).expectNextN(3)
-      responses shouldBe Seq(
-        PutItemResponse(
-          eventTime = SimTime.of(1L),
-          usecase = "stateful-table",
-          storedItemBytes = 512L,
-          createdNewItem = true,
-          previousItemBytes = None
-        ),
-        PutItemResponse(
-          eventTime = SimTime.of(2L),
-          usecase = "stateful-table",
-          storedItemBytes = 1024L,
-          createdNewItem = false,
-          previousItemBytes = Some(512L)
-        ),
-        GetItemResponse(
+      responses shouldBe (
+        Seq(
+          (512L, true, None),
+          (1024L, false, Some(512L))
+        ).zipWithIndex.map { case ((storedItemBytes, createdNewItem, previousItemBytes), idx) =>
+          PutItemResponse(
+            eventTime = SimTime.of(idx.toLong + 1L),
+            usecase = "stateful-table",
+            storedItemBytes = storedItemBytes,
+            createdNewItem = createdNewItem,
+            previousItemBytes = previousItemBytes
+          )
+        } :+ GetItemResponse(
           eventTime = SimTime.of(3L),
           usecase = "stateful-table",
           itemFound = true,
@@ -77,8 +70,8 @@ class TableStage4PutItemSpec extends AnyWordSpec with should.Matchers:
       val consumptionTotals = drainConsumptionEvents(resourceProbe)
         .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
 
-      consumptionTotals.readCapacityUnits shouldBe BigDecimal("1")
-      consumptionTotals.writeCapacityUnits shouldBe BigDecimal("2")
+      consumptionTotals.readCapacityUnits shouldBe BigDecimal(1.0)
+      consumptionTotals.writeCapacityUnits shouldBe BigDecimal(2.0)
       consumptionTotals.storageBytesRead shouldBe 1024L
       consumptionTotals.storageBytesWritten shouldBe 1536L
       consumptionTotals.storageBytesDelta shouldBe 1024L

@@ -12,14 +12,14 @@ class DynamoDbConsumptionEventSpec extends AnyWordSpec with should.Matchers:
         eventTime = SimTime.of(42L),
         usecase = "demo-read",
         target = DynamoDbTarget.Table("orders"),
-        units = BigDecimal("0.5"),
+        units = BigDecimal(0.5),
         consistency = ReadConsistency.EventuallyConsistent
       )
 
       evt.eventTime shouldBe SimTime.of(42L)
       evt.usecase shouldBe "demo-read"
       evt.target shouldBe DynamoDbTarget.Table("orders")
-      evt.units shouldBe BigDecimal("0.5")
+      evt.units shouldBe BigDecimal(0.5)
       evt.consistency shouldBe ReadConsistency.EventuallyConsistent
     }
 
