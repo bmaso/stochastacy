@@ -48,7 +48,9 @@ class OrderTrackingPhase1DemoRunnerSpec extends AnyWordSpec with should.Matchers
         "trial-time-series",
         "aggregate-time-series",
         "trial-summary",
-        "aggregate-summary"
+        "aggregate-summary",
+        "trial-window-time-series",
+        "aggregate-window-time-series"
       )
     }
 

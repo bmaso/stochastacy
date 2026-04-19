@@ -9,6 +9,28 @@ final case class DemoExportBundle(
 object DemoReportBuilder:
   def build(trials: Vector[TrialResult]): DemoExportBundle =
     val aggregate = MonteCarloAggregator.aggregate(trials)
+    val windowedTrialRecords =
+      WindowSizeSeconds.phase1Values.flatMap { windowSize =>
+        trials.flatMap { trial =>
+          DemoExportRecord.fromWindowedTrialTimeSeries(
+            scenarioId = trial.scenarioId,
+            trialId = trial.trialId,
+            points = TimeWindowRollups.rollupTrialTimeSeries(trial.timeSeries, windowSize)
+          ).collect {
+            case record: DemoExportRecord.TrialWindowTimeSeriesRecord => record
+          }
+        }
+      }
+    val windowedAggregateRecords =
+      WindowSizeSeconds.phase1Values.flatMap { windowSize =>
+        DemoExportRecord.fromAggregatedWindowedTimeSeries(
+          scenarioId = aggregate.scenarioId,
+          trialCount = aggregate.trialCount,
+          points = TimeWindowRollups.aggregateWindowedTrials(trials, windowSize)
+        ).collect {
+          case record: DemoExportRecord.AggregateWindowTimeSeriesRecord => record
+        }
+      }
 
     val trialTimeSeriesRecords =
       trials.flatMap { trial =>
@@ -38,5 +60,7 @@ object DemoReportBuilder:
         trialTimeSeriesRecords ++
           aggregateTimeSeriesRecords ++
           trialSummaryRecords ++
-          aggregateSummaryRecords
+          aggregateSummaryRecords ++
+          windowedTrialRecords ++
+          windowedAggregateRecords
     )

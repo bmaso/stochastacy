@@ -51,7 +51,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## Order Tracking Phase 1\n\n- Batch ID: `${batch_id}`\n- Scenario ID: `${scenarioId}`\n- Trial Count: `${trialCount}`\n- Simulation Ticks: `${simulationTicks}`\n- Read Consistency: `${readConsistency}`\n- Table Name: `${tableName}`",
+        "content": "## Order Tracking Phase 1\n\n- Batch ID: `${batch_id}`\n- Scenario ID: `${scenarioId}`\n- Trial Count: `${trialCount}`\n- Simulation Ticks: `${simulationTicks}`\n- Window Size (seconds): `${windowSizeSeconds}`\n- Read Consistency: `${readConsistency}`\n- Table Name: `${tableName}`",
         "mode": "markdown"
       },
       "pluginVersion": "10.4.2",
@@ -60,288 +60,52 @@
       "type": "text"
     },
     {
-      "datasource": {
-        "type": "postgres",
-        "uid": "stochastacy-postgres"
-      },
-      "description": "aggregate-summary where metric = TotalEstimatedCost and statistic = mean",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 10
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
+      "datasource": null,
+      "description": "Displays the mean total estimated cost across trials, plus and minus one standard deviation. This shows the central spread of simulated outcomes for the batch.",
       "gridPos": {
         "h": 6,
-        "w": 4,
+        "w": 8,
         "x": 8,
         "y": 1
       },
       "id": 3,
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "code": {
+          "language": "markdown",
+          "showLineNumbers": false,
+          "showMiniMap": false
         },
-        "textMode": "auto"
+        "content": "# ${totalEstimatedCostCentralRange}",
+        "mode": "markdown"
       },
       "pluginVersion": "10.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "stochastacy-postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "select \"value\"\nfrom stochastacy_demo.aggregate_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'TotalEstimatedCost'\n  and statistic = 'mean';",
-          "refId": "A"
-        }
-      ],
-      "title": "Mean Total Estimated Cost",
-      "type": "stat"
+      "targets": [],
+      "title": "Total Estimated Cost Central Range",
+      "type": "text"
     },
     {
-      "datasource": {
-        "type": "postgres",
-        "uid": "stochastacy-postgres"
-      },
-      "description": "aggregate-summary where metric = TotalEstimatedCost and statistic = stddev",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 10
-              }
-            ]
-          },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
+      "datasource": null,
+      "description": "Displays the mean final storage bytes across trials, plus and minus one standard deviation. This shows the central spread of simulated outcomes for the batch.",
       "gridPos": {
         "h": 6,
-        "w": 4,
-        "x": 12,
+        "w": 8,
+        "x": 16,
         "y": 1
       },
       "id": 4,
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
+        "code": {
+          "language": "markdown",
+          "showLineNumbers": false,
+          "showMiniMap": false
         },
-        "textMode": "auto"
+        "content": "# ${finalStorageBytesCentralRange}",
+        "mode": "markdown"
       },
       "pluginVersion": "10.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "stochastacy-postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "select \"value\"\nfrom stochastacy_demo.aggregate_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'TotalEstimatedCost'\n  and statistic = 'stddev';",
-          "refId": "A"
-        }
-      ],
-      "title": "StdDev of Total Estimated Cost",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "stochastacy-postgres"
-      },
-      "description": "aggregate-summary where metric = FinalStorageBytes and statistic = mean",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1048576
-              },
-              {
-                "color": "red",
-                "value": 10485760
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 4,
-        "x": 16,
-        "y": 1
-      },
-      "id": 5,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "stochastacy-postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "select \"value\"\nfrom stochastacy_demo.aggregate_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'FinalStorageBytes'\n  and statistic = 'mean';",
-          "refId": "A"
-        }
-      ],
-      "title": "Mean Final Storage Bytes",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "stochastacy-postgres"
-      },
-      "description": "aggregate-summary where metric = FinalStorageBytes and statistic = stddev",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1048576
-              },
-              {
-                "color": "red",
-                "value": 10485760
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 4,
-        "x": 20,
-        "y": 1
-      },
-      "id": 6,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "stochastacy-postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "select \"value\"\nfrom stochastacy_demo.aggregate_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'FinalStorageBytes'\n  and statistic = 'stddev';",
-          "refId": "A"
-        }
-      ],
-      "title": "StdDev of Final Storage Bytes",
-      "type": "stat"
+      "targets": [],
+      "title": "Final Storage Bytes Central Range",
+      "type": "text"
     },
     {
       "collapsed": false,
@@ -361,7 +125,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "trial_time_series percentiles for ReadCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
+      "description": "trial_window_time_series percentiles for ReadCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -622,11 +386,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "with percentiles as (\n  select\n    tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.25) within group (order by \"value\") as p25,\n    percentile_cont(0.75) within group (order by \"value\") as p75,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'ReadCapacityUnits'\n  group by tick\n)\nselect\n  to_timestamp(tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p75 as \"P75\",\n  p25 as \"P25\",\n  p5 as \"P5\",\n  p95 as \"Band P95-P75\",\n  p75 as \"Band P75-P25\",\n  p25 as \"Band P25-P5\"\nfrom percentiles\norder by tick;",
+          "rawSql": "with percentiles as (\n  select\n    window_start_tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.25) within group (order by \"value\") as p25,\n    percentile_cont(0.75) within group (order by \"value\") as p75,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_window_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'ReadCapacityUnits'\n    and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  group by window_start_tick\n)\nselect\n  to_timestamp(window_start_tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p75 as \"P75\",\n  p25 as \"P25\",\n  p5 as \"P5\",\n  p95 as \"Band P95-P75\",\n  p75 as \"Band P75-P25\",\n  p25 as \"Band P25-P5\"\nfrom percentiles\norder by window_start_tick;",
           "refId": "A"
         }
       ],
-      "title": "Read Capacity Units by Tick",
+      "title": "Read Capacity Units by Window",
       "type": "timeseries"
     },
     {
@@ -634,7 +398,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "trial_time_series percentiles for WriteCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
+      "description": "trial_window_time_series percentiles for WriteCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -895,11 +659,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "with percentiles as (\n  select\n    tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.25) within group (order by \"value\") as p25,\n    percentile_cont(0.75) within group (order by \"value\") as p75,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'WriteCapacityUnits'\n  group by tick\n)\nselect\n  to_timestamp(tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p75 as \"P75\",\n  p25 as \"P25\",\n  p5 as \"P5\",\n  p95 as \"Band P95-P75\",\n  p75 as \"Band P75-P25\",\n  p25 as \"Band P25-P5\"\nfrom percentiles\norder by tick;",
+          "rawSql": "with percentiles as (\n  select\n    window_start_tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.25) within group (order by \"value\") as p25,\n    percentile_cont(0.75) within group (order by \"value\") as p75,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_window_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'WriteCapacityUnits'\n    and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  group by window_start_tick\n)\nselect\n  to_timestamp(window_start_tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p75 as \"P75\",\n  p25 as \"P25\",\n  p5 as \"P5\",\n  p95 as \"Band P95-P75\",\n  p75 as \"Band P75-P25\",\n  p25 as \"Band P25-P5\"\nfrom percentiles\norder by window_start_tick;",
           "refId": "A"
         }
       ],
-      "title": "Write Capacity Units by Tick",
+      "title": "Write Capacity Units by Window",
       "type": "timeseries"
     },
     {
@@ -920,7 +684,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "aggregate-time-series for StorageBytes with mean, mean + stddev, and mean - stddev",
+      "description": "aggregate_window_time_series for StorageBytes with mean, mean + stddev, and mean - stddev",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1058,11 +822,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select\n  to_timestamp(mean_series.tick) as \"time\",\n  mean_series.\"value\" as \"Mean Storage Bytes\",\n  mean_series.\"value\" + stddev_series.\"value\" as \"Mean + StdDev\",\n  mean_series.\"value\" - stddev_series.\"value\" as \"Mean - StdDev\"\nfrom stochastacy_demo.aggregate_time_series mean_series\nleft join stochastacy_demo.aggregate_time_series stddev_series\n  on stddev_series.batch_id = mean_series.batch_id\n and stddev_series.scenario_id = mean_series.scenario_id\n and stddev_series.metric = mean_series.metric\n and stddev_series.tick = mean_series.tick\n and stddev_series.statistic = 'stddev'\nwhere mean_series.batch_id = '${batch_id}'\n  and mean_series.scenario_id = '${scenarioId}'\n  and mean_series.metric = 'StorageBytes'\n  and mean_series.statistic = 'mean'\norder by mean_series.tick;",
+          "rawSql": "select\n  to_timestamp(mean_series.window_start_tick) as \"time\",\n  mean_series.\"value\" as \"Mean Storage Bytes\",\n  mean_series.\"value\" + stddev_series.\"value\" as \"Mean + StdDev\",\n  mean_series.\"value\" - stddev_series.\"value\" as \"Mean - StdDev\"\nfrom stochastacy_demo.aggregate_window_time_series mean_series\nleft join stochastacy_demo.aggregate_window_time_series stddev_series\n  on stddev_series.batch_id = mean_series.batch_id\n and stddev_series.scenario_id = mean_series.scenario_id\n and stddev_series.metric = mean_series.metric\n and stddev_series.window_size_seconds = mean_series.window_size_seconds\n and stddev_series.window_start_tick = mean_series.window_start_tick\n and stddev_series.statistic = 'stddev'\nwhere mean_series.batch_id = '${batch_id}'\n  and mean_series.scenario_id = '${scenarioId}'\n  and mean_series.metric = 'StorageBytes'\n  and mean_series.window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and mean_series.statistic = 'mean'\norder by mean_series.window_start_tick;",
           "refId": "A"
         }
       ],
-      "title": "Storage Bytes by Tick (Mean +/- StdDev)",
+      "title": "Storage Bytes by Window (Mean +/- StdDev)",
       "type": "timeseries"
     },
     {
@@ -1070,7 +834,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "aggregate-time-series for CumulativeEstimatedCost with mean, mean + stddev, and mean - stddev",
+      "description": "aggregate_window_time_series for CumulativeEstimatedCost with mean, mean + stddev, and mean - stddev",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1208,11 +972,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select\n  to_timestamp(mean_series.tick) as \"time\",\n  mean_series.\"value\" as \"Mean Cumulative Estimated Cost\",\n  mean_series.\"value\" + stddev_series.\"value\" as \"Mean + StdDev\",\n  mean_series.\"value\" - stddev_series.\"value\" as \"Mean - StdDev\"\nfrom stochastacy_demo.aggregate_time_series mean_series\nleft join stochastacy_demo.aggregate_time_series stddev_series\n  on stddev_series.batch_id = mean_series.batch_id\n and stddev_series.scenario_id = mean_series.scenario_id\n and stddev_series.metric = mean_series.metric\n and stddev_series.tick = mean_series.tick\n and stddev_series.statistic = 'stddev'\nwhere mean_series.batch_id = '${batch_id}'\n  and mean_series.scenario_id = '${scenarioId}'\n  and mean_series.metric = 'CumulativeEstimatedCost'\n  and mean_series.statistic = 'mean'\norder by mean_series.tick;",
+          "rawSql": "select\n  to_timestamp(mean_series.window_start_tick) as \"time\",\n  mean_series.\"value\" as \"Mean Cumulative Estimated Cost\",\n  mean_series.\"value\" + stddev_series.\"value\" as \"Mean + StdDev\",\n  mean_series.\"value\" - stddev_series.\"value\" as \"Mean - StdDev\"\nfrom stochastacy_demo.aggregate_window_time_series mean_series\nleft join stochastacy_demo.aggregate_window_time_series stddev_series\n  on stddev_series.batch_id = mean_series.batch_id\n and stddev_series.scenario_id = mean_series.scenario_id\n and stddev_series.metric = mean_series.metric\n and stddev_series.window_size_seconds = mean_series.window_size_seconds\n and stddev_series.window_start_tick = mean_series.window_start_tick\n and stddev_series.statistic = 'stddev'\nwhere mean_series.batch_id = '${batch_id}'\n  and mean_series.scenario_id = '${scenarioId}'\n  and mean_series.metric = 'CumulativeEstimatedCost'\n  and mean_series.window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and mean_series.statistic = 'mean'\norder by mean_series.window_start_tick;",
           "refId": "A"
         }
       ],
-      "title": "Cumulative Estimated Cost by Tick (Mean +/- StdDev)",
+      "title": "Cumulative Estimated Cost by Window (Mean +/- StdDev)",
       "type": "timeseries"
     }
   ],
@@ -1245,6 +1009,30 @@
         "name": "batch_id",
         "options": [],
         "query": "select batch_id __text, batch_id __value from stochastacy_demo.demo_batches order by generated_at desc",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "60",
+          "value": "60"
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "select '60' __text, '60' __value union all select '300' __text, '300' __value",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Window Size",
+        "multi": false,
+        "name": "windowSizeSeconds",
+        "options": [],
+        "query": "select '60' __text, '60' __value union all select '300' __text, '300' __value",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
@@ -1370,12 +1158,60 @@
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "with stats as ( select max(case when statistic = 'mean' then \"value\" end) as mean_value, max(case when statistic = 'stddev' then \"value\" end) as stddev_value from stochastacy_demo.aggregate_summary where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and metric = 'TotalEstimatedCost' ) select concat(to_char(mean_value, 'FM$0.00000'), ' +/- ', to_char(stddev_value, 'FM$0.00000')) __text, concat(to_char(mean_value, 'FM$0.00000'), ' +/- ', to_char(stddev_value, 'FM$0.00000')) __value from stats",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Total Estimated Cost Central Range",
+        "multi": false,
+        "name": "totalEstimatedCostCentralRange",
+        "options": [],
+        "query": "with stats as ( select max(case when statistic = 'mean' then \"value\" end) as mean_value, max(case when statistic = 'stddev' then \"value\" end) as stddev_value from stochastacy_demo.aggregate_summary where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and metric = 'TotalEstimatedCost' ) select concat(to_char(mean_value, 'FM$0.00000'), ' +/- ', to_char(stddev_value, 'FM$0.00000')) __text, concat(to_char(mean_value, 'FM$0.00000'), ' +/- ', to_char(stddev_value, 'FM$0.00000')) __value from stats",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "with stats as ( select max(case when statistic = 'mean' then \"value\" end) as mean_value, max(case when statistic = 'stddev' then \"value\" end) as stddev_value from stochastacy_demo.aggregate_summary where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and metric = 'FinalStorageBytes' ), formatted as ( select case when abs(mean_value) >= 1073741824 then trim(to_char(mean_value / 1073741824.0, 'FM999999990.0')) || ' GiB' when abs(mean_value) >= 1048576 then trim(to_char(mean_value / 1048576.0, 'FM999999990.0')) || ' MiB' when abs(mean_value) >= 1024 then trim(to_char(mean_value / 1024.0, 'FM999999990.0')) || ' KiB' else trim(to_char(mean_value, 'FM999999990.0')) || ' B' end as mean_text, case when abs(stddev_value) >= 1073741824 then trim(to_char(stddev_value / 1073741824.0, 'FM999999990.0')) || ' GiB' when abs(stddev_value) >= 1048576 then trim(to_char(stddev_value / 1048576.0, 'FM999999990.0')) || ' MiB' when abs(stddev_value) >= 1024 then trim(to_char(stddev_value / 1024.0, 'FM999999990.0')) || ' KiB' else trim(to_char(stddev_value, 'FM999999990.0')) || ' B' end as stddev_text from stats ) select concat(mean_text, ' +/- ', stddev_text) __text, concat(mean_text, ' +/- ', stddev_text) __value from formatted",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Final Storage Bytes Central Range",
+        "multi": false,
+        "name": "finalStorageBytesCentralRange",
+        "options": [],
+        "query": "with stats as ( select max(case when statistic = 'mean' then \"value\" end) as mean_value, max(case when statistic = 'stddev' then \"value\" end) as stddev_value from stochastacy_demo.aggregate_summary where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and metric = 'FinalStorageBytes' ), formatted as ( select case when abs(mean_value) >= 1073741824 then trim(to_char(mean_value / 1073741824.0, 'FM999999990.0')) || ' GiB' when abs(mean_value) >= 1048576 then trim(to_char(mean_value / 1048576.0, 'FM999999990.0')) || ' MiB' when abs(mean_value) >= 1024 then trim(to_char(mean_value / 1024.0, 'FM999999990.0')) || ' KiB' else trim(to_char(mean_value, 'FM999999990.0')) || ' B' end as mean_text, case when abs(stddev_value) >= 1073741824 then trim(to_char(stddev_value / 1073741824.0, 'FM999999990.0')) || ' GiB' when abs(stddev_value) >= 1048576 then trim(to_char(stddev_value / 1048576.0, 'FM999999990.0')) || ' MiB' when abs(stddev_value) >= 1024 then trim(to_char(stddev_value / 1024.0, 'FM999999990.0')) || ' KiB' else trim(to_char(stddev_value, 'FM999999990.0')) || ' B' end as stddev_text from stats ) select concat(mean_text, ' +/- ', stddev_text) __text, concat(mean_text, ' +/- ', stddev_text) __value from formatted",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
       }
     ]
   },
   "time": {
-    "from": "now-6h",
-    "to": "now"
+    "from": "1970-01-01T00:00:00Z",
+    "to": "1970-01-01T01:00:00Z"
   },
   "timepicker": {},
   "timezone": "browser",

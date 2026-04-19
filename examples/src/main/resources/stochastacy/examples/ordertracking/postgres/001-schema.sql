@@ -19,6 +19,8 @@ create table if not exists stochastacy_demo.demo_records (
   scenario_id text not null,
   trial_id integer null,
   tick bigint null,
+  window_size_seconds integer null,
+  window_start_tick bigint null,
   metric text not null,
   statistic text null,
   "value" numeric not null
@@ -32,6 +34,9 @@ create index if not exists demo_records_batch_type_metric_trial_idx
 
 create index if not exists demo_records_batch_scenario_idx
   on stochastacy_demo.demo_records(batch_id, scenario_id);
+
+create index if not exists demo_records_batch_type_window_metric_stat_idx
+  on stochastacy_demo.demo_records(batch_id, record_type, window_size_seconds, metric, statistic, window_start_tick);
 
 create or replace view stochastacy_demo.aggregate_time_series as
 select *
@@ -52,3 +57,13 @@ create or replace view stochastacy_demo.trial_summary as
 select *
 from stochastacy_demo.demo_records
 where record_type = 'trial-summary';
+
+create or replace view stochastacy_demo.trial_window_time_series as
+select *
+from stochastacy_demo.demo_records
+where record_type = 'trial-window-time-series';
+
+create or replace view stochastacy_demo.aggregate_window_time_series as
+select *
+from stochastacy_demo.demo_records
+where record_type = 'aggregate-window-time-series';

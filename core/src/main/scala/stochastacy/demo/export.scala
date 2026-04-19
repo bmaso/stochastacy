@@ -19,6 +19,16 @@ object DemoExportRecord:
                                           value: BigDecimal
                                         ) extends DemoExportRecord
 
+  final case class TrialWindowTimeSeriesRecord(
+                                                recordType: String = "trial-window-time-series",
+                                                scenarioId: String,
+                                                trialId: Int,
+                                                windowSizeSeconds: Int,
+                                                windowStartTick: Long,
+                                                metric: String,
+                                                value: BigDecimal
+                                              ) extends DemoExportRecord
+
   final case class AggregateTimeSeriesRecord(
                                               recordType: String = "aggregate-time-series",
                                               scenarioId: String,
@@ -28,6 +38,17 @@ object DemoExportRecord:
                                               statistic: String,
                                               value: BigDecimal
                                             ) extends DemoExportRecord
+
+  final case class AggregateWindowTimeSeriesRecord(
+                                                    recordType: String = "aggregate-window-time-series",
+                                                    scenarioId: String,
+                                                    trialCount: Int,
+                                                    windowSizeSeconds: Int,
+                                                    windowStartTick: Long,
+                                                    metric: String,
+                                                    statistic: String,
+                                                    value: BigDecimal
+                                                  ) extends DemoExportRecord
 
   final case class TrialSummaryRecord(
                                        recordType: String = "trial-summary",
@@ -81,6 +102,39 @@ object DemoExportRecord:
         metric = summary.metric.toString,
         statistic = summary.statistic.exportName,
         value = summary.value
+      )
+    }
+
+  def fromWindowedTrialTimeSeries(
+                                   scenarioId: String,
+                                   trialId: Int,
+                                   points: Vector[WindowedTimeSeriesPoint]
+                                 ): Vector[DemoExportRecord] =
+    points.map { point =>
+      TrialWindowTimeSeriesRecord(
+        scenarioId = scenarioId,
+        trialId = trialId,
+        windowSizeSeconds = point.windowSizeSeconds,
+        windowStartTick = point.windowStartTick,
+        metric = point.metric.toString,
+        value = point.value
+      )
+    }
+
+  def fromAggregatedWindowedTimeSeries(
+                                        scenarioId: String,
+                                        trialCount: Int,
+                                        points: Vector[AggregatedWindowedTimeSeriesPoint]
+                                      ): Vector[DemoExportRecord] =
+    points.map { point =>
+      AggregateWindowTimeSeriesRecord(
+        scenarioId = scenarioId,
+        trialCount = trialCount,
+        windowSizeSeconds = point.windowSizeSeconds,
+        windowStartTick = point.windowStartTick,
+        metric = point.metric.toString,
+        statistic = point.statistic.exportName,
+        value = point.value
       )
     }
 

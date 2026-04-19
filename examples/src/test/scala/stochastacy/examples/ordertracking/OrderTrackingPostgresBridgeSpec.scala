@@ -22,7 +22,7 @@ class OrderTrackingPostgresBridgeSpec extends AnyWordSpec with should.Matchers w
     super.afterAll()
 
   "OrderTrackingPostgresBridge" should {
-    "stage generated JSONL into a fresh database and expose all four record families through views" in {
+    "stage generated JSONL into a fresh database and expose raw and windowed record families through views" in {
       val tempFile = Files.createTempFile("order-tracking-stage-", ".jsonl")
       val options = OrderTrackingPhase1DemoOptions(
         outputPath = Some(tempFile),
@@ -69,6 +69,8 @@ class OrderTrackingPostgresBridgeSpec extends AnyWordSpec with should.Matchers w
         val aggregateSummaryCount = scalarLong(verifyConnection, "select count(*) from stochastacy_demo.aggregate_summary")
         val trialTsCount = scalarLong(verifyConnection, "select count(*) from stochastacy_demo.trial_time_series")
         val trialSummaryCount = scalarLong(verifyConnection, "select count(*) from stochastacy_demo.trial_summary")
+        val trialWindowTsCount = scalarLong(verifyConnection, "select count(*) from stochastacy_demo.trial_window_time_series")
+        val aggregateWindowTsCount = scalarLong(verifyConnection, "select count(*) from stochastacy_demo.aggregate_window_time_series")
 
         batchCount shouldBe 1L
         recordCount shouldBe count.toLong
@@ -76,6 +78,8 @@ class OrderTrackingPostgresBridgeSpec extends AnyWordSpec with should.Matchers w
         aggregateSummaryCount should be > 0L
         trialTsCount should be > 0L
         trialSummaryCount should be > 0L
+        trialWindowTsCount should be > 0L
+        aggregateWindowTsCount should be > 0L
       finally
         verifyConnection.close()
     }
@@ -126,6 +130,17 @@ class OrderTrackingPostgresBridgeSpec extends AnyWordSpec with should.Matchers w
       an[Throwable] should be thrownBy {
         OrderTrackingPostgresBridge.parseJsonl("""{"recordType":"trial-time-series"}""", OrderTrackingScenarioConfig.phase1Default.scenarioId)
       }
+    }
+
+    "accept older raw-only JSONL records without window fields" in {
+      val records = OrderTrackingPostgresBridge.parseJsonl(
+        """{"recordType":"trial-time-series","scenarioId":"order-tracking-phase1","trialId":0,"tick":1,"metric":"ReadCapacityUnits","value":2}""",
+        OrderTrackingScenarioConfig.phase1Default.scenarioId
+      )
+
+      records should have size 1
+      records.head.windowSizeSeconds shouldBe None
+      records.head.windowStartTick shouldBe None
     }
   }
 

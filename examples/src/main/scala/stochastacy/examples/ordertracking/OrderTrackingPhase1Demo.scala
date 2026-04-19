@@ -367,6 +367,8 @@ final case class StagedDemoRecord(
                                    scenarioId: String,
                                    trialId: Option[Int],
                                    tick: Option[Long],
+                                   windowSizeSeconds: Option[Int],
+                                   windowStartTick: Option[Long],
                                    metric: String,
                                    statistic: Option[String],
                                    value: BigDecimal
@@ -438,6 +440,8 @@ object OrderTrackingPostgresBridge:
       scenarioId = scenarioId,
       trialId = (json \ "trialId").extractOpt[Int],
       tick = (json \ "tick").extractOpt[Long],
+      windowSizeSeconds = (json \ "windowSizeSeconds").extractOpt[Int],
+      windowStartTick = (json \ "windowStartTick").extractOpt[Long],
       metric = metric,
       statistic = (json \ "statistic").extractOpt[String],
       value = value
@@ -470,8 +474,8 @@ object OrderTrackingPostgresBridge:
                            ): Unit =
     val sql =
       """insert into stochastacy_demo.demo_records
-        |(batch_id, record_type, scenario_id, trial_id, tick, metric, statistic, "value")
-        |values (?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+        |(batch_id, record_type, scenario_id, trial_id, tick, window_size_seconds, window_start_tick, metric, statistic, "value")
+        |values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
     val stmt = connection.prepareStatement(sql)
     try
       records.foreach { record =>
@@ -480,9 +484,11 @@ object OrderTrackingPostgresBridge:
         stmt.setString(3, record.scenarioId)
         stmt.setObject(4, record.trialId.map(Int.box).orNull)
         stmt.setObject(5, record.tick.map(Long.box).orNull)
-        stmt.setString(6, record.metric)
-        stmt.setString(7, record.statistic.orNull)
-        stmt.setBigDecimal(8, record.value.bigDecimal)
+        stmt.setObject(6, record.windowSizeSeconds.map(Int.box).orNull)
+        stmt.setObject(7, record.windowStartTick.map(Long.box).orNull)
+        stmt.setString(8, record.metric)
+        stmt.setString(9, record.statistic.orNull)
+        stmt.setBigDecimal(10, record.value.bigDecimal)
         stmt.addBatch()
       }
       stmt.executeBatch()

@@ -65,6 +65,41 @@ class DemoExportSpec extends AnyWordSpec with should.Matchers:
           value = BigDecimal(2)
         )
       )
+
+      DemoExportRecord.fromWindowedTrialTimeSeries(
+        scenarioId = "orders",
+        trialId = 3,
+        points = Vector(
+          WindowedTimeSeriesPoint(60, 1L, DemoMetric.ReadCapacityUnits, BigDecimal(7))
+        )
+      ) shouldBe Vector(
+        DemoExportRecord.TrialWindowTimeSeriesRecord(
+          scenarioId = "orders",
+          trialId = 3,
+          windowSizeSeconds = 60,
+          windowStartTick = 1L,
+          metric = "ReadCapacityUnits",
+          value = BigDecimal(7)
+        )
+      )
+
+      DemoExportRecord.fromAggregatedWindowedTimeSeries(
+        scenarioId = "orders",
+        trialCount = 2,
+        points = Vector(
+          AggregatedWindowedTimeSeriesPoint(300, 1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Mean, BigDecimal(11))
+        )
+      ) shouldBe Vector(
+        DemoExportRecord.AggregateWindowTimeSeriesRecord(
+          scenarioId = "orders",
+          trialCount = 2,
+          windowSizeSeconds = 300,
+          windowStartTick = 1L,
+          metric = "ReadCapacityUnits",
+          statistic = "mean",
+          value = BigDecimal(11)
+        )
+      )
     }
   }
 
@@ -103,7 +138,15 @@ class DemoExportSpec extends AnyWordSpec with should.Matchers:
         "trial-summary",
         "trial-summary",
         "aggregate-summary",
-        "aggregate-summary"
+        "aggregate-summary",
+        "trial-window-time-series",
+        "trial-window-time-series",
+        "trial-window-time-series",
+        "trial-window-time-series",
+        "aggregate-window-time-series",
+        "aggregate-window-time-series",
+        "aggregate-window-time-series",
+        "aggregate-window-time-series"
       )
     }
   }
