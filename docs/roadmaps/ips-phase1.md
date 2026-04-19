@@ -10,10 +10,12 @@ Deliver an initial public showing build that can simulate the predicted:
 
 for a non-trivial AWS-based system.
 
-Phase 1 is now scoped to:
+Phase 1 is scoped to:
 
 - DynamoDB tables
-- table-oriented read and write operations used in the initial demo
+- table-oriented CRUD operations used in the initial demo
+- a table-only `order-tracking` scenario
+- a runnable Docker, Postgres, and Grafana demo flow
 
 Deferred to phase 2:
 
@@ -24,24 +26,23 @@ Deferred to phase 2:
 
 ## Current Status
 
-The current codebase already includes:
+Phase 1 is now functionally complete.
 
-- `TableStage4` support for `GetItem`
-- `TableStage4` support for `PutItem`
-- `TableStage4` support for `UpdateItem`
-- `TableStage4` support for `DeleteItem`
-- mutable summary-state updates for successful puts
-- mutable summary-state updates for successful updates and deletes
-- read-side and write-side consumption events
-- a usage aggregation layer that folds raw consumption events into usage totals
+The current codebase includes:
+
+- `TableStage4` support for `GetItem`, `PutItem`, `UpdateItem`, and `DeleteItem`
+- mutable stochastic-summary table state for table-only CRUD behavior
+- raw DynamoDB consumption events and metric events
+- additive usage aggregation
 - time-based storage usage aggregation
-- downstream pricing from usage totals and time-based usage
+- downstream pricing from additive and time-based usage
+- Monte Carlo multi-trial execution
+- raw per-tick JSONL export
+- derived `60s` and `300s` windowed JSONL export
+- a Postgres staging bridge and schema-backed demo workflow
+- a provisioned Grafana dashboard with selectable `60s` and `300s` windows
 
-The biggest remaining gaps are:
-
-- broader demo scenarios
-- demo-facing output
-- final scope polish for the public showing
+Remaining work is limited to operator notes, documentation hygiene, and small presentation polish.
 
 ## Must Have For Public Showing
 
@@ -54,7 +55,7 @@ The biggest remaining gaps are:
 ### 2. DynamoDB Table Core
 
 - `TableStage4` stable for admitted data-plane requests
-- `GetItem` fully modeled for hit vs miss
+- `GetItem`, `PutItem`, `UpdateItem`, and `DeleteItem` modeled coherently
 - Table state represented clearly enough to support read and write behavior
 - Timing and control-event propagation correct on all outputs
 
@@ -64,6 +65,7 @@ The biggest remaining gaps are:
 - Enough detail to support later pricing
 - Clear distinction between logical response events and accounting/resource events
 - A usage aggregation layer that folds raw consumption into stable DynamoDB usage totals
+- A time-based storage usage layer that derives duration-sensitive usage from timed streams
 
 ### 4. Cost Derivation
 
@@ -76,82 +78,75 @@ The biggest remaining gaps are:
 - Request and response timing represented in the simulation
 - Time-window behavior coherent and testable
 - A basic explanation of what "performance characteristics" means in phase 1
-- One or more example scenarios showing timing-sensitive behavior
+- Example scenarios showing timing-sensitive behavior
 
 ### 6. Demo-Ready Outputs
 
 - Simulation outputs that are readable by someone other than the implementer
 - Metrics and events named clearly
-- One concise example run that shows:
+- A runnable `generate / stage / view` workflow
+- A dashboard-backed example run that shows:
   - workload in
-  - responses
   - resource usage
   - estimated cost
-  - timing and performance observations
+  - timing-sensitive behavior
+  - variation across repeated trials
 
 ### 7. Documentation
 
 - Architecture docs for the DynamoDB table model
 - Phase-1 scope documented clearly
 - Clear statement of what is modeled vs not modeled
-- Short demo walkthrough notes
+- Demo runbook for the Docker, CLI, Postgres, and Grafana flow
 
 ### 8. Test Confidence
 
 - `sbt test` green
 - Focused tests for key DynamoDB table behaviors
 - Tests covering timing/control-stream correctness
-- Tests covering at least the visible demo path
+- Tests covering the visible demo path
 
-## Should Have Soon
+## Phase-1 Delivered Shape
 
-### 10. Write Operations
+The delivered phase-1 demo now includes:
 
-- `PutItem`
-- `UpdateItem`
-- `DeleteItem`
-- State-mutation tests for write paths
-- Resource and metric emission for writes
-
-Current status:
-`PutItem`, `UpdateItem`, and `DeleteItem` plus state-mutation tests and write-side resource/metric emission are now implemented.
-
-### 11. Better Metric Model
-
-- Additive Stage 4 metric events with stable semantics
-- Metric aggregation helpers for assertions and reporting
-- Demo-visible metrics aligned with the public story
-
-### 12. Better Scenario Coverage
-
-- At least one scenario with mixed reads and writes
-- At least one scenario with meaningful item sizes, skew, or hit/miss behavior
-- At least one non-trivial table-only story that is easy to explain publicly
-
-### 13. Presentation Polish
-
-- A simple command or entrypoint for running the demo
-- Predictable output formatting
-- A small set of example workloads or configs
+- an `order-tracking` table-only scenario
+- host-side CLI subcommands:
+  - `generate`
+  - `stage`
+  - `view`
+- Postgres-backed staged record families:
+  - raw trial time-series
+  - raw aggregate time-series
+  - trial summary
+  - aggregate summary
+  - trial window time-series
+  - aggregate window time-series
+- a provisioned Grafana dashboard that reads the staged records through Postgres
+- percentile-band read/write panels over windowed per-trial data
+- central-range summary presentation for total cost and final storage
 
 ## Nice To Have Later
 
-### 14. More Realistic DynamoDB Behavior
+### 9. More Realistic DynamoDB Behavior
 
 - Richer capacity behavior
 - Throttling and admission stages above `TableStage4`
 - Burst or adaptive-capacity behavior
 - More precise billing rules
 
-### 15. Broader AWS System Story
+### 10. Broader AWS System Story
 
 - Additional AWS resource types beyond DynamoDB
 - Cross-resource interactions
 - Larger system-level scenario modeling
 
-## Suggested Near-Term Order
+## Next Planning Anchor
 
-1. Build one strong end-to-end demo scenario.
-2. Improve demo-facing output and reporting.
-3. Tighten docs around scope, assumptions, and outputs.
-4. Keep `sbt test` green throughout.
+Phase 2 should now be the planning anchor for new feature work:
+
+- DynamoDB indexes
+- `Query`
+- `Scan`
+- PartiQL queries
+- table-plus-index composition

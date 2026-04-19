@@ -315,12 +315,19 @@ This means it is reasonable to:
 
 - compute a final total price from all consumption events in a timed event stream
 - use time-windowed usage as an intermediate accounting representation
+- export derived time-windowed records for reporting and dashboard use
 
 It is not automatically reasonable to:
 
 - assign an authoritative billed price to each minute or other time window in that stream
 
 Per-window values may still be useful for explanation or debugging, but they should be treated as derived diagnostics unless the simulator explicitly chooses to present them as estimated prorated breakdowns.
+
+Current phase-1 implementation note:
+
+- raw timed records remain the source of truth
+- downstream export and reporting derives `60s` and `300s` windowed records from those raw records
+- the Grafana dashboard reads those derived windowed records through the Postgres bridge
 
 ## Open Questions
 

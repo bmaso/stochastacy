@@ -2,20 +2,20 @@
 
 ## Purpose
 
-This note describes the architecture of the phase-1 demo for the initial public showing.
+This note describes the implemented architecture of the phase-1 demo for the initial public showing.
 
-The phase-1 demo should:
+The phase-1 demo:
 
-- use a table-only DynamoDB simulation
-- use an `order-tracking` scenario
-- exercise all currently implemented Stage 4 operations:
+- uses a table-only DynamoDB simulation
+- uses an `order-tracking` scenario
+- exercises all currently implemented Stage 4 operations:
   - `GetItem`
   - `PutItem`
   - `UpdateItem`
   - `DeleteItem`
-- support repeated trial execution
-- produce time-series-friendly output for dashboarding
-- produce mean and variance statistics across multiple trials
+- supports repeated trial execution
+- produces raw per-tick and windowed time-series output for dashboarding
+- produces mean and standard-deviation statistics across multiple trials
 
 ## Demo Goals
 
@@ -31,24 +31,23 @@ The demo is not intended to prove exact DynamoDB billing fidelity.
 
 ## Phase-1 Execution Model
 
-The phase-1 demo should use a headless execution model.
+The phase-1 demo uses a headless execution model.
 
 That means:
 
 - a JVM process runs the simulation trials
 - the process exports structured results
-- a dashboard tool such as Grafana reads those results and visualizes them
+- a host-side CLI stages those results into Postgres
+- Grafana reads the staged Postgres records and visualizes them
 
 This is preferred over a live interactive dashboard for phase 1 because it:
 
 - keeps the simulator and demo output architecture simpler
 - makes repeated Monte Carlo execution easier to control
-- reaches time-series and mean/variance reporting faster
+- reaches time-series and statistical reporting faster
 - avoids coupling the first public showing to UI input plumbing
 
 ## Architectural Layers
-
-The demo should be structured as the following layers.
 
 ### 1. Scenario Definition
 
@@ -65,7 +64,7 @@ Responsibilities:
 - trial count
 - trial parallelism
 
-This layer should be plain configuration, not dashboard code.
+This layer is plain configuration, not dashboard code.
 
 ### 2. Single-Trial Runner
 
@@ -78,20 +77,16 @@ Responsibilities:
 - collect responses, metric events, and consumption events
 - derive trial-local summaries from those outputs
 
-Each trial should have isolated execution state, including:
+Each trial has isolated execution state, including:
 
 - its own table state
 - its own graph materialization
 - its own random seed or random state
 - its own result buffers
 
-This isolation is required so multi-trial execution can run safely.
-
 ### 3. Multi-Trial Executor
 
 Runs many trials for the same scenario configuration.
-
-This layer is required for the phase-1 demo. A single-trial runner by itself is not enough.
 
 Responsibilities:
 
@@ -100,17 +95,7 @@ Responsibilities:
 - support sequential execution as a fallback
 - preserve trial identity in the emitted results
 
-Recommended controls:
-
-- `trialCount`
-- `parallelism`
-
-Recommended default behavior:
-
-- use bounded parallelism in normal runs
-- allow `parallelism = 1` for simpler debug or deterministic runs
-
-The purpose of this layer is practical as well as architectural: if the demo runs 100 trials, it should not take multiple minutes under normal development conditions.
+The practical purpose of this layer is to keep 100-trial runs comfortably fast for demo use.
 
 ### 4. Monte Carlo Aggregator
 
@@ -120,72 +105,46 @@ Responsibilities:
 
 - align time buckets across trials
 - compute per-time-bucket mean
-- compute per-time-bucket variance
+- compute per-time-bucket standard deviation
 - compute whole-run mean
-- compute whole-run variance
-
-This layer should treat per-time-series data and whole-run totals as related but distinct outputs.
+- compute whole-run standard deviation
 
 ### 5. Export / Reporting Layer
 
 Transforms simulation results into dashboard-friendly records.
 
-Responsibilities:
-
-- flatten trial results into exportable records
-- flatten aggregate statistics into exportable records
-- preserve enough metadata for dashboards to group and filter correctly
-
-Recommended initial output format:
+Implemented output format:
 
 - JSON Lines (`.jsonl`)
 
-This is preferred for phase 1 because it:
+The export preserves both:
 
-- handles multiple record shapes cleanly
-- is easy to generate from the JVM
-- is easy to ingest into downstream tools
+- raw per-tick records
+- derived `60s` and `300s` windowed records
 
-CSV may still be useful later, but JSON Lines is the better initial fit.
+### 6. Bridge And Dashboard Layer
 
-### 6. Dashboard / Viewer Layer
+Stages exported data into Postgres and visualizes it through Grafana.
 
-Reads exported data and visualizes it.
+Current implementation:
 
-Phase-1 goal:
-
-- display results from exported batch data
-
-Deferred beyond phase 1:
-
-- live dashboard controls that mutate simulation parameters and rerun batches interactively
+- Postgres schema and views are provisioned by Docker init SQL
+- Grafana datasource and dashboard are provisioned from checked-in assets
+- a host-side CLI exposes:
+  - `generate`
+  - `stage`
+  - `view`
 
 ## Output Model
 
-The demo output should support both:
+The demo output supports both:
 
 - time-series views
 - whole-run summary statistics
 
-### Time-Series Output
-
-Time-series output should make the simulator's dynamic behavior visible.
-
-Examples:
-
-- read-capacity consumption over time
-- write-capacity consumption over time
-- storage occupancy over time
-- cumulative estimated cost over time
-
-These can be represented either as:
-
-- raw per-trial time-series points
-- aggregate per-time-bucket statistics across trials
-
 ### Whole-Run Summary Output
 
-Whole-run summaries should support statistical panels and rollups.
+Whole-run summaries support statistical panels and rollups.
 
 Examples:
 
@@ -195,10 +154,10 @@ Examples:
 - final storage bytes
 - total estimated cost
 
-These should be available both:
+These are available both:
 
 - per trial
-- aggregated across trials as mean and variance
+- aggregated across trials as mean and standard deviation
 
 ## Time-Series And Pricing Principle
 
@@ -206,59 +165,44 @@ Time-series and time windows are important for representing consumption over sim
 
 They are not automatically the same thing as billed price outputs.
 
-The intended relationship is:
+The implemented relationship is:
 
 - timed windows represent how usage evolves during a run
+- exported windowed records are derived from raw timed records
 - final pricing integrates usage over the whole run
 
-So the demo should support:
+The demo therefore supports:
 
 - time-series visualization of usage and cumulative cost behavior
 - final total cost for each trial
-- mean and variance of total cost across trials
+- mean and standard deviation of total cost across trials
 
-The demo should not assume that each minute or time bucket needs its own authoritative billed price.
+Per-window values are reporting and explanation artifacts, not authoritative billed prices.
 
-Per-time-bucket values may still be useful for explanation and visualization, but whole-run totals remain the primary pricing outputs.
+## Implemented Record Families
 
-## Recommended Record Families
-
-The export layer should likely produce at least these record families.
-
-### Trial Time-Series Records
+### Raw Trial Time-Series Records
 
 One record per:
 
 - scenario
 - trial
-- time bucket
+- tick
 - metric
 
-Examples of fields:
-
-- scenario id
-- trial id
-- tick or window index
-- metric name
-- value
-- statistic kind = `raw`
-
-### Aggregate Time-Series Records
+### Raw Aggregate Time-Series Records
 
 One record per:
 
 - scenario
-- time bucket
+- tick
 - metric
 - statistic kind
 
-Examples of fields:
+Current aggregate statistic kinds:
 
-- scenario id
-- tick or window index
-- metric name
-- statistic kind = `mean` or `variance`
-- value
+- `mean`
+- `stddev`
 
 ### Trial Summary Records
 
@@ -266,54 +210,51 @@ One record per:
 
 - scenario
 - trial
-- metric total
+- summary metric
 
 ### Aggregate Summary Records
 
 One record per:
 
 - scenario
-- metric total
+- summary metric
 - statistic kind
 
-## Suggested Code Structure
+### Trial Window Time-Series Records
 
-A reasonable initial package structure could be:
+One record per:
 
-- `stochastacy.demo`
-- `stochastacy.demo.scenarios`
-- `stochastacy.demo.runner`
-- `stochastacy.demo.reporting`
+- scenario
+- trial
+- window size
+- window start tick
+- metric
 
-Possible core types:
+Current phase-1 window sizes:
 
-- `OrderTrackingScenarioConfig`
-- `TrialResult`
-- `MonteCarloResult`
-- `TimeSeriesPoint`
-- `SummaryStat`
-- `SingleTrialRunner`
-- `TrialExecutor`
-- `DemoExporter`
+- `60`
+- `300`
 
-## Recommended Phase-1 Build Order
+### Aggregate Window Time-Series Records
 
-1. define the demo data model
-2. define the `order-tracking` scenario config
-3. implement the single-trial runner
-4. implement the multi-trial executor with bounded parallelism
-5. implement the Monte Carlo aggregation layer
-6. implement JSON Lines export
-7. connect the exported data to a dashboard view
+One record per:
 
-## Deferred Beyond Phase 1
+- scenario
+- window size
+- window start tick
+- metric
+- statistic kind
 
-The following are intentionally out of scope for this demo architecture:
+Current aggregate statistic kinds:
 
-- index-aware demo scenarios
-- `Query`
-- `Scan`
-- PartiQL query support
-- live dashboard parameter controls
-- distributed execution of trials
-- exact AWS billing semantics
+- `mean`
+- `stddev`
+
+## Current Serving Path
+
+The implemented serving path is:
+
+1. run the `order-tracking` scenario for many trials
+2. export raw and windowed JSONL records
+3. stage the JSONL into Postgres
+4. read the staged records through the provisioned Grafana dashboard
