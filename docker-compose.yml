@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: stochastacy-postgres
+    environment:
+      POSTGRES_DB: stochastacy_demo
+      POSTGRES_USER: stochastacy
+      POSTGRES_PASSWORD: stochastacy
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./examples/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stochastacy -d stochastacy_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  grafana:
+    image: grafana/grafana-oss:10.4.2
+    container_name: stochastacy-grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/order-tracking-phase1-dashboard.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./examples/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./examples/grafana/order-tracking-phase1-dashboard.json:/var/lib/grafana/dashboards/order-tracking-phase1-dashboard.json:ro
+
+volumes:
+  postgres_data:
+  grafana_data:

@@ -58,8 +58,7 @@ A stochastic data generator, utilizing the Pekko Streaming API.
 
 ## DynamoDB Table simulator development curriculum
 
-1. Phase 1 - Permanent cache lookup
-2. Phase 2 - Multiple independent cache clients
-3. Phase 3 - Provisioned read capacity (whole-table)
-4. Phase 4 - Hot vs. cold keys (Skewed access)
-5. Phase 5 - Write operations and WCU tracking
+1. Phase 1 - Table data plane with usecases consisting of `GetItem` and `PutItem` operations 
+2. Phase 2 - Table data plane with usecases consisting of _all_ possible table query and write operations
+3. Phase 3 - Table data plane as Phase 2, with RCU, WCU, and other resources consumable by the data plane
+4. Phase 4 - Table data plane as Phase 3, with _all_ consumable resources and metrics

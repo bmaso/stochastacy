@@ -1,0 +1,52 @@
+package stochastacy.sim.stream
+
+import org.apache.pekko.NotUsed
+import org.apache.pekko.stream.scaladsl.{Flow, Source}
+import stochastacy.sim.*
+import stochastacy.sim.TimedControlEvent.{EndOfTime, Tick}
+
+/**
+ * This pass-through flow verifies the content of a `Source[TimedEvent]` conforms to the
+ * restrictions of the "timed event stream". Specifically:
+ *
+ * - the first stream element must be a `Tick`
+ * - for every pair of elements (prev, next):
+ *   - if next is not a `Tick` then it must have the same clock value as prev
+ *   - if prev and next have different clock values then
+ *     - next must be a tick
+ *     - prev and next clock times must differ by exactly 1
+ **/
+object TimedEventSourceVerifier:
+
+  def apply[Mat](timedEventSource: Source[TimedEvent, Mat]): Source[TimedEvent, Mat] =
+    timedEventSource.verifyTimedEventSource()
+
+  /**
+   * provides an extension method to `Source[TimedEvent, Mat]`: `verifyTimedEventSource`.
+   * `source.verifyTimedEventSource(clockIncrement)` is equivalent to
+   * `TimedEventSourceVerifier(source, clockIncrement)`.
+   */
+  extension [Mat](timedEventSource: Source[TimedEvent, Mat])
+    def verifyTimedEventSource(): Source[TimedEvent, Mat] =
+    timedEventSource.concat(Source.single(TimedControlEvent.EndOfTime))
+      .sliding(2)
+      .statefulMap(() => false)({
+        case (false, Seq(prev, _)) if (prev.usecase != CoordinatedTimingUsecase) =>
+          throw new IllegalArgumentException("First source element must be a \"Tick\"")
+        case (false, Seq(prev@Tick(_), next)) =>
+          (true, List(prev, next)) // ...the very first tick and first element are preserved...
+        case (false, _) =>
+          // ...this case shouldn't ever happen...
+          throw new IllegalArgumentException("unexpected sliding window condition")
+        case (true, Seq(prev, TimedControlEvent.Tick(cl2))) if prev.eventTime.gte(cl2) =>
+          throw new IllegalArgumentException("Rule violation: a clock tick must increase clock time vs previous element")
+        case (true, Seq(prev, next)) if prev.eventTime.gt(next.eventTime) =>
+          throw new IllegalArgumentException("Rule violation: clock time must increase monotonically")
+        case (true, Seq(prev, next)) if prev.eventTime != next.eventTime && next.usecase != CoordinatedTimingUsecase =>
+          throw new IllegalArgumentException("Rule violation: a tick must be interleaved between clock time changes")
+        case (true, Seq(prev, next)) if prev.eventTime != next.eventTime && prev.eventTime != next.eventTime.prevTime && next != EndOfTime =>
+          throw new IllegalArgumentException(s"Rule violation: clock time must increase by no more than 1 unit(s)")
+        case (true, p) => (true, p.tail) // ...drop the first element, use the second...
+      }, _ => None)
+      .flatMap(Source(_))
+      .filterNot(_ == EndOfTime)
