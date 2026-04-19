@@ -6,6 +6,20 @@ A future complete DynamoDB `Table` component should be a composed Pekko graph bu
 
 `TableStage4` is the storage-facing core of that future `Table` simulator. It represents the part of the table that actually touches simulated storage: the place where item existence, item size, table byte totals, and direct read/write physical effects are determined.
 
+For phase 2, this architecture should be extended into a larger **table-and-indexes mono-component** rather than a set of separately wired public index components.
+
+That means:
+
+- the public simulator surface should expose one composed DynamoDB table resource
+- that resource may internally contain:
+  - one base-table execution unit
+  - zero or more GSI execution units
+  - zero or more LSI execution units
+- requests should be dispatched internally within the graph based on target selection
+- writes against the base table should propagate internally to the relevant index execution units
+
+The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
+
 ## Layering
 
 In the full `Table` component, requests would ideally flow through several conceptual layers before reaching `TableStage4`:
@@ -13,7 +27,15 @@ In the full `Table` component, requests would ideally flow through several conce
 1. Request admission and shaping
 2. Provisioned-capacity and throttling logic
 3. Burst and adaptive-capacity behavior
-4. Data-plane storage execution in `TableStage4`
+4. Data-plane storage execution in the table-and-indexes storage layer
+
+That storage layer should itself be internally composed of:
+
+- base-table execution
+- internal request dispatch or branching logic
+- internal index execution units
+- internal write-propagation logic from the base table into indexes
+- merged response, consumption, and telemetry outputs
 
 Earlier layers can model whether a request is delayed, throttled, rejected, or otherwise transformed before it reaches storage. `TableStage4` sits below those concerns. By the time a request arrives here, the simulator should treat it as an operation that has already been admitted to the table's physical data plane.
 
@@ -22,6 +44,8 @@ Earlier layers can model whether a request is delayed, throttled, rejected, or o
 This separation is useful because it lets the future `Table` component be composed from simpler Pekko graphs with clear boundaries. `TableStage4` can stay focused on storage semantics and physical effects, while outer stages stay focused on scheduling, admission, and capacity policy.
 
 That makes `TableStage4` the authoritative source of truth for the question: "what would the table itself do with this request if it were allowed to execute?"
+
+Phase 2 should preserve that idea while broadening the internal storage model. The base table and its indexes should still be treated as parts of one larger DynamoDB table resource, not as independent public resources that the caller assembles manually.
 
 ## Responsibilities Of TableStage4
 
@@ -38,6 +62,23 @@ It is not responsible for account-wide limits, retries, or upstream admission de
 
 A complete future `Table` component can therefore be viewed as:
 
-`incoming table request -> admission/capacity stages -> TableStage4 -> response/consumption/telemetry outputs`
+`incoming table request -> admission/capacity stages -> composed table-and-indexes storage graph -> response/consumption/telemetry outputs`
+
+The composed storage graph should be public as one table resource, but internally structured from smaller execution units.
+
+Conceptually, that internal structure should include:
+
+- request dispatch to the correct read target
+- base-table write execution
+- internal index-state updates caused by base-table writes
+- merged response, consumption, and metric streams
+
+This is intentionally different from a design where a caller constructs:
+
+- one public table component
+- one public index component per index
+- manual wiring between them
+
+That more manual style would make it too easy to construct invalid or internally inconsistent graphs.
 
 This structure keeps the simulator extensible. As the model becomes more realistic, we should be able to add outer stages without needing to redesign `TableStage4` itself.

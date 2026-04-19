@@ -234,9 +234,28 @@ The current implementation has progressed beyond that initial slice and now also
 - time-based storage usage aggregation
 - downstream pricing derived from those usage layers
 
+The public request surface has also now been expanded to include:
+
+- `Query`
+- `Scan`
+- `PartiQLQuery`
+
+Current phase-2 step-1 note:
+
+- those request types now exist in the public simulator surface
+- `TableStage4` still rejects them explicitly
+- real read-path execution for those operations remains a later phase-2 step
+
+Phase-2 composition note:
+
+- the future index-aware DynamoDB table simulator should remain one larger public table-and-indexes graph
+- GSIs and LSIs should be represented as internal execution units within that graph
+- request dispatch to the base table vs an index should happen internally inside the composed graph
+- write propagation from the base table into indexes should also happen internally inside that graph
+
 ## Deferred To Phase 2
 
-The current phase-1 plan intentionally leaves these outside `TableStage4`'s required surface area:
+The current phase-1 plan intentionally left these outside `TableStage4`'s required executable surface area:
 
 - `Query`
 - `Scan`

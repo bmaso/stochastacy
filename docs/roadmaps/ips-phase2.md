@@ -51,11 +51,19 @@ Testing strategy:
 
 Feature goal:
 
-- add GSI and LSI modeling as part of a composed table-plus-index resource
+- add GSI and LSI modeling as part of one composed table-and-indexes resource
 
 Why this step comes second:
 
 - `Query` and `Scan` need a target model before they can behave differently for the base table vs an index
+- the simulator needs to decide index ownership and composition before real index-aware read execution is added
+
+Composition recommendation:
+
+- expose one public table-and-indexes graph component
+- represent GSIs and LSIs as internal execution units inside that larger graph
+- do not require callers to construct or wire separate public index graph components
+- keep request dispatch and write propagation inside the composed graph
 
 Testing strategy:
 
@@ -166,6 +174,8 @@ The overall phase-2 testing strategy should stay layered:
 - PartiQL is parser-stub-only in phase 2
 - cross-region replication is out of scope
 - phase-2 work should extend the phase-1 layers rather than bypass them
+- indexes should be represented as internal graph components inside one larger table-and-indexes mono-component
+- request dispatch and write propagation should be internal graph behavior, not caller-managed wiring
 
 ## Current Next Step
 

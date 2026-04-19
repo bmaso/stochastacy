@@ -3,7 +3,7 @@ package stochastacy.aws.dynamodb.table
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL}
 import org.apache.pekko.stream.{FanOutShape3, Graph}
-import stochastacy.aws.dynamodb.{DeleteItemRequest, DeleteItemResponse, DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, PutItemRequest, PutItemResponse, UpdateItemRequest, UpdateItemResponse}
+import stochastacy.aws.dynamodb.{DeleteItemRequest, DeleteItemResponse, DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, PartiQLQueryRequest, PutItemRequest, PutItemResponse, QueryRequest, ScanRequest, UpdateItemRequest, UpdateItemResponse}
 import stochastacy.sim.*
 
 /**
@@ -98,6 +98,15 @@ object TableStage4:
               val sample = sampler.deleteItem(r, stateModel)
               stateModel.recordSuccessfulDelete(sample.deletedItemBytes)
               TimedDeleteItemSample(r, sample)
+
+            case _: QueryRequest =>
+              throw new UnsupportedOperationException("Query is not yet supported")
+
+            case _: ScanRequest =>
+              throw new UnsupportedOperationException("Scan is not yet supported")
+
+            case _: PartiQLQueryRequest =>
+              throw new UnsupportedOperationException("PartiQL query execution is not yet supported")
   
             case t: TimedControlEvent => t // ...everything else, which should just be TimedEvent elements, gets passed through
           }
