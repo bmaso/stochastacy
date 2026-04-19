@@ -57,7 +57,9 @@ lazy val examples = (project in file("examples"))
     // examples often want logging + runtime deps
     libraryDependencies ++= Seq(
       "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion,
-      "org.scalatest" %% "scalatest" % Versions.scalatestVersion % "test"
+      "org.postgresql" % "postgresql" % "42.7.4",
+      "org.scalatest" %% "scalatest" % Versions.scalatestVersion % "test",
+      "com.h2database" % "h2" % "2.2.224" % "test"
     )
   )
 

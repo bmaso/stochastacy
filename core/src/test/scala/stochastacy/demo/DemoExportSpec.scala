@@ -28,7 +28,7 @@ class DemoExportSpec extends AnyWordSpec with should.Matchers:
           AggregatedTimeSeriesPoint(1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Mean, BigDecimal(3))
         ),
         summary = Vector(
-          AggregatedSummaryValue(DemoMetric.TotalEstimatedCost, AggregateStatistic.Variance, BigDecimal(4))
+          AggregatedSummaryValue(DemoMetric.TotalEstimatedCost, AggregateStatistic.StdDev, BigDecimal(2))
         )
       )
 
@@ -61,8 +61,8 @@ class DemoExportSpec extends AnyWordSpec with should.Matchers:
           scenarioId = "orders",
           trialCount = 2,
           metric = "TotalEstimatedCost",
-          statistic = "variance",
-          value = BigDecimal(4)
+          statistic = "stddev",
+          value = BigDecimal(2)
         )
       )
     }

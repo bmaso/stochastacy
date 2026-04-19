@@ -2,12 +2,12 @@ package stochastacy.demo
 
 enum AggregateStatistic:
   case Mean
-  case Variance
+  case StdDev
 
   def exportName: String =
     this match
       case Mean => "mean"
-      case Variance => "variance"
+      case StdDev => "stddev"
 
 final case class AggregatedTimeSeriesPoint(
                                             tick: Long,
@@ -92,8 +92,9 @@ object MonteCarloAggregator:
         val deviation = value - mean
         deviation * deviation
       }.sum / BigDecimal(values.size)
+    val stddev = BigDecimal.decimal(math.sqrt(variance.toDouble))
 
     Vector(
       AggregateStatistic.Mean -> mean,
-      AggregateStatistic.Variance -> variance
+      AggregateStatistic.StdDev -> stddev
     )

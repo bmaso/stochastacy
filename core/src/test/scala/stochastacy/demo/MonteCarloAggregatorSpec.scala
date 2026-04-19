@@ -6,7 +6,7 @@ import org.scalatest.wordspec.AnyWordSpec
 class MonteCarloAggregatorSpec extends AnyWordSpec with should.Matchers:
 
   "MonteCarloAggregator" should {
-    "compute mean and variance for time-series and summary values" in {
+    "compute mean and standard deviation for time-series and summary values" in {
       val trials = Vector(
         TrialResult(
           scenarioId = "orders",
@@ -37,13 +37,13 @@ class MonteCarloAggregatorSpec extends AnyWordSpec with should.Matchers:
       result.trialCount shouldBe 2
       result.timeSeries should contain allElementsOf Vector(
         AggregatedTimeSeriesPoint(1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Mean, BigDecimal(3)),
-        AggregatedTimeSeriesPoint(1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Variance, BigDecimal(1)),
+        AggregatedTimeSeriesPoint(1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.StdDev, BigDecimal(1)),
         AggregatedTimeSeriesPoint(1L, DemoMetric.WriteCapacityUnits, AggregateStatistic.Mean, BigDecimal(6)),
-        AggregatedTimeSeriesPoint(1L, DemoMetric.WriteCapacityUnits, AggregateStatistic.Variance, BigDecimal(4))
+        AggregatedTimeSeriesPoint(1L, DemoMetric.WriteCapacityUnits, AggregateStatistic.StdDev, BigDecimal(2))
       )
       result.summary should contain allElementsOf Vector(
         AggregatedSummaryValue(DemoMetric.TotalEstimatedCost, AggregateStatistic.Mean, BigDecimal(12)),
-        AggregatedSummaryValue(DemoMetric.TotalEstimatedCost, AggregateStatistic.Variance, BigDecimal(4))
+        AggregatedSummaryValue(DemoMetric.TotalEstimatedCost, AggregateStatistic.StdDev, BigDecimal(2))
       )
     }
 
@@ -69,7 +69,7 @@ class MonteCarloAggregatorSpec extends AnyWordSpec with should.Matchers:
 
       result.timeSeries should contain allElementsOf Vector(
         AggregatedTimeSeriesPoint(2L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Mean, BigDecimal("2.5")),
-        AggregatedTimeSeriesPoint(2L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Variance, BigDecimal("6.25"))
+        AggregatedTimeSeriesPoint(2L, DemoMetric.ReadCapacityUnits, AggregateStatistic.StdDev, BigDecimal("2.5"))
       )
     }
 
@@ -93,15 +93,15 @@ class MonteCarloAggregatorSpec extends AnyWordSpec with should.Matchers:
 
       result.timeSeries.map(point => (point.tick, point.metric, point.statistic)) shouldBe Vector(
         (1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Mean),
-        (1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Variance),
+        (1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.StdDev),
         (2L, DemoMetric.WriteCapacityUnits, AggregateStatistic.Mean),
-        (2L, DemoMetric.WriteCapacityUnits, AggregateStatistic.Variance)
+        (2L, DemoMetric.WriteCapacityUnits, AggregateStatistic.StdDev)
       )
       result.summary.map(value => (value.metric, value.statistic)) shouldBe Vector(
         (DemoMetric.FinalStorageBytes, AggregateStatistic.Mean),
-        (DemoMetric.FinalStorageBytes, AggregateStatistic.Variance),
+        (DemoMetric.FinalStorageBytes, AggregateStatistic.StdDev),
         (DemoMetric.TotalEstimatedCost, AggregateStatistic.Mean),
-        (DemoMetric.TotalEstimatedCost, AggregateStatistic.Variance)
+        (DemoMetric.TotalEstimatedCost, AggregateStatistic.StdDev)
       )
     }
 

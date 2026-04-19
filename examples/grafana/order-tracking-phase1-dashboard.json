@@ -1,0 +1,1386 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Scenario Summary",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "description": "Context panel driven by dashboard variables sourced from Postgres.",
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "code": {
+          "language": "markdown",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "## Order Tracking Phase 1\n\n- Batch ID: `${batch_id}`\n- Scenario ID: `${scenarioId}`\n- Trial Count: `${trialCount}`\n- Simulation Ticks: `${simulationTicks}`\n- Read Consistency: `${readConsistency}`\n- Table Name: `${tableName}`",
+        "mode": "markdown"
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [],
+      "title": "Scenario",
+      "type": "text"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "aggregate-summary where metric = TotalEstimatedCost and statistic = mean",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select \"value\"\nfrom stochastacy_demo.aggregate_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'TotalEstimatedCost'\n  and statistic = 'mean';",
+          "refId": "A"
+        }
+      ],
+      "title": "Mean Total Estimated Cost",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "aggregate-summary where metric = TotalEstimatedCost and statistic = stddev",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select \"value\"\nfrom stochastacy_demo.aggregate_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'TotalEstimatedCost'\n  and statistic = 'stddev';",
+          "refId": "A"
+        }
+      ],
+      "title": "StdDev of Total Estimated Cost",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "aggregate-summary where metric = FinalStorageBytes and statistic = mean",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1048576
+              },
+              {
+                "color": "red",
+                "value": 10485760
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select \"value\"\nfrom stochastacy_demo.aggregate_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'FinalStorageBytes'\n  and statistic = 'mean';",
+          "refId": "A"
+        }
+      ],
+      "title": "Mean Final Storage Bytes",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "aggregate-summary where metric = FinalStorageBytes and statistic = stddev",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1048576
+              },
+              {
+                "color": "red",
+                "value": 10485760
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "id": 6,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select \"value\"\nfrom stochastacy_demo.aggregate_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'FinalStorageBytes'\n  and statistic = 'stddev';",
+          "refId": "A"
+        }
+      ],
+      "title": "StdDev of Final Storage Bytes",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "id": 7,
+      "panels": [],
+      "title": "Time-Series Usage",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "trial_time_series percentiles for ReadCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FFFFFF",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#A9A9A9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P5"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#A9A9A9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#A9A9A9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P25"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#A9A9A9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Band P95-P75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#2E2E2E",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 55
+              },
+              {
+                "id": "custom.fillBelowTo",
+                "value": "P75"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Band P75-P25"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#4A4A4A",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 55
+              },
+              {
+                "id": "custom.fillBelowTo",
+                "value": "P25"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Band P25-P5"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#2E2E2E",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 55
+              },
+              {
+                "id": "custom.fillBelowTo",
+                "value": "P5"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "with percentiles as (\n  select\n    tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.25) within group (order by \"value\") as p25,\n    percentile_cont(0.75) within group (order by \"value\") as p75,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'ReadCapacityUnits'\n  group by tick\n)\nselect\n  to_timestamp(tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p75 as \"P75\",\n  p25 as \"P25\",\n  p5 as \"P5\",\n  p95 as \"Band P95-P75\",\n  p75 as \"Band P75-P25\",\n  p25 as \"Band P25-P5\"\nfrom percentiles\norder by tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Read Capacity Units by Tick",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "trial_time_series percentiles for WriteCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FFFFFF",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#A9A9A9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P5"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#A9A9A9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#A9A9A9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P25"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#A9A9A9",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Band P95-P75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#2E2E2E",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 55
+              },
+              {
+                "id": "custom.fillBelowTo",
+                "value": "P75"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Band P75-P25"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#4A4A4A",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 55
+              },
+              {
+                "id": "custom.fillBelowTo",
+                "value": "P25"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Band P25-P5"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#2E2E2E",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 55
+              },
+              {
+                "id": "custom.fillBelowTo",
+                "value": "P5"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "with percentiles as (\n  select\n    tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.25) within group (order by \"value\") as p25,\n    percentile_cont(0.75) within group (order by \"value\") as p75,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'WriteCapacityUnits'\n  group by tick\n)\nselect\n  to_timestamp(tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p75 as \"P75\",\n  p25 as \"P25\",\n  p5 as \"P5\",\n  p95 as \"Band P95-P75\",\n  p75 as \"Band P75-P25\",\n  p25 as \"Band P25-P5\"\nfrom percentiles\norder by tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Write Capacity Units by Tick",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 12,
+      "panels": [],
+      "title": "Storage And Cost Over Time",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "aggregate-time-series for StorageBytes with mean, mean + stddev, and mean - stddev",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "showPoints": "auto",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean Storage Bytes"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean + StdDev"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    6,
+                    4
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean - StdDev"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "light-blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    6,
+                    4
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(mean_series.tick) as \"time\",\n  mean_series.\"value\" as \"Mean Storage Bytes\",\n  mean_series.\"value\" + stddev_series.\"value\" as \"Mean + StdDev\",\n  mean_series.\"value\" - stddev_series.\"value\" as \"Mean - StdDev\"\nfrom stochastacy_demo.aggregate_time_series mean_series\nleft join stochastacy_demo.aggregate_time_series stddev_series\n  on stddev_series.batch_id = mean_series.batch_id\n and stddev_series.scenario_id = mean_series.scenario_id\n and stddev_series.metric = mean_series.metric\n and stddev_series.tick = mean_series.tick\n and stddev_series.statistic = 'stddev'\nwhere mean_series.batch_id = '${batch_id}'\n  and mean_series.scenario_id = '${scenarioId}'\n  and mean_series.metric = 'StorageBytes'\n  and mean_series.statistic = 'mean'\norder by mean_series.tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Storage Bytes by Tick (Mean +/- StdDev)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "aggregate-time-series for CumulativeEstimatedCost with mean, mean + stddev, and mean - stddev",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 3,
+            "showPoints": "auto",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean Cumulative Estimated Cost"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean + StdDev"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    6,
+                    4
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean - StdDev"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "light-blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    6,
+                    4
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(mean_series.tick) as \"time\",\n  mean_series.\"value\" as \"Mean Cumulative Estimated Cost\",\n  mean_series.\"value\" + stddev_series.\"value\" as \"Mean + StdDev\",\n  mean_series.\"value\" - stddev_series.\"value\" as \"Mean - StdDev\"\nfrom stochastacy_demo.aggregate_time_series mean_series\nleft join stochastacy_demo.aggregate_time_series stddev_series\n  on stddev_series.batch_id = mean_series.batch_id\n and stddev_series.scenario_id = mean_series.scenario_id\n and stddev_series.metric = mean_series.metric\n and stddev_series.tick = mean_series.tick\n and stddev_series.statistic = 'stddev'\nwhere mean_series.batch_id = '${batch_id}'\n  and mean_series.scenario_id = '${scenarioId}'\n  and mean_series.metric = 'CumulativeEstimatedCost'\n  and mean_series.statistic = 'mean'\norder by mean_series.tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Cumulative Estimated Cost by Tick (Mean +/- StdDev)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "stochastacy",
+    "phase1",
+    "dynamodb",
+    "order-tracking"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "select batch_id __text, batch_id __value from stochastacy_demo.demo_batches order by generated_at desc",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Batch ID",
+        "multi": false,
+        "name": "batch_id",
+        "options": [],
+        "query": "select batch_id __text, batch_id __value from stochastacy_demo.demo_batches order by generated_at desc",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "order-tracking-phase1",
+          "value": "order-tracking-phase1"
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "select distinct scenario_id __text, scenario_id __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}' order by scenario_id",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Scenario ID",
+        "multi": false,
+        "name": "scenarioId",
+        "options": [],
+        "query": "select distinct scenario_id __text, scenario_id __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}' order by scenario_id",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "select trial_count::text __text, trial_count::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Trial Count",
+        "multi": false,
+        "name": "trialCount",
+        "options": [],
+        "query": "select trial_count::text __text, trial_count::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "select simulation_ticks::text __text, simulation_ticks::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Simulation Ticks",
+        "multi": false,
+        "name": "simulationTicks",
+        "options": [],
+        "query": "select simulation_ticks::text __text, simulation_ticks::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "select read_consistency __text, read_consistency __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Read Consistency",
+        "multi": false,
+        "name": "readConsistency",
+        "options": [],
+        "query": "select read_consistency __text, read_consistency __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "postgres",
+          "uid": "stochastacy-postgres"
+        },
+        "definition": "select table_name __text, table_name __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Table Name",
+        "multi": false,
+        "name": "tableName",
+        "options": [],
+        "query": "select table_name __text, table_name __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "IPS Phase 1 - Order Tracking DynamoDB Simulation",
+  "uid": "ips-phase1-order-tracking",
+  "version": 2,
+  "weekStart": ""
+}
