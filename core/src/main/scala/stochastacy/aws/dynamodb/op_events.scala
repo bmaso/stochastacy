@@ -44,7 +44,8 @@ case class QueryRequest(
 case class ScanRequest(
                         override val eventTime: SimTime,
                         override val usecase: Any,
-                        target: DynamoDbReadTarget
+                        target: DynamoDbReadTarget,
+                        readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
                       ) extends DynamoDBRequest
 
 case class PartiQLQueryRequest(
@@ -100,7 +101,12 @@ case class QueryResponse(
 case class ScanResponse(
                          override val eventTime: SimTime,
                          override val usecase: Any,
-                         target: DynamoDbReadTarget
+                         target: DynamoDbReadTarget,
+                         readConsistency: ReadConsistency,
+                         evaluatedItemCount: Long,
+                         evaluatedBytes: Long,
+                         returnedItemCount: Long,
+                         returnedBytes: Long
                        ) extends DynamoDBResponse
 
 case class PartiQLQueryResponse(

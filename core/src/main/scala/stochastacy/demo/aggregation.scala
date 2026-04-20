@@ -53,9 +53,9 @@ object MonteCarloAggregator:
     }
 
     val timeSeriesKeys = timeSeriesByTrial.iterator.flatMap(_.keySet).toSet.toVector
-      .sortBy { case (tick, metric) => (tick, metric.ordinal) }
+      .sortBy { case (tick, metric) => (tick, metric.sortKey) }
     val summaryKeys = summaryByTrial.iterator.flatMap(_.keySet).toSet.toVector
-      .sortBy(_.ordinal)
+      .sortBy(_.sortKey)
 
     MonteCarloResult(
       scenarioId = scenarioId,

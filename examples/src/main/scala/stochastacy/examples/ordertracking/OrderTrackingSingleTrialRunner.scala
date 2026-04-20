@@ -9,7 +9,7 @@ import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
 import stochastacy.aws.dynamodb.*
 import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates}
 import stochastacy.aws.dynamodb.table.*
-import stochastacy.aws.dynamodb.usage.{DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
+import stochastacy.aws.dynamodb.usage.{DynamoDbTargetUsageTotals, DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 import stochastacy.demo.*
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent, ticks}
 
@@ -37,10 +37,9 @@ final class OrderTrackingSingleTrialRunner(
     val materialized =
       runTable(
         requestSource = requestSource,
+        config = config,
         tableState = tableState,
-        behaviors = behaviors,
-        tableTarget = DynamoDbTarget.Table(config.tableName),
-        readConsistency = config.readConsistency
+        behaviors = behaviors
       )
     val responseFuture = materialized._1
     val consumptionFuture = materialized._2
@@ -53,6 +52,7 @@ final class OrderTrackingSingleTrialRunner(
     yield buildTrialResult(
       scenarioId = config.scenarioId,
       trialId = run.trialId,
+      configuredGlobalSecondaryIndexes = config.globalSecondaryIndexNames,
       timedConsumption = timedConsumption.collect {
         case evt: DynamoDbConsumptionEvent => evt
         case tick: TimedControlEvent => tick
@@ -67,6 +67,10 @@ final class OrderTrackingSingleTrialRunner(
     val fetchSampler = poissonSampler(config.fetchRatePerTick, rng)
     val updateSampler = poissonSampler(config.updateRatePerTick, rng)
     val deleteSampler = poissonSampler(config.deleteRatePerTick, rng)
+    val tableQuerySampler = poissonSampler(config.tableQueryRatePerTick, rng)
+    val tableScanSampler = poissonSampler(config.tableScanRatePerTick, rng)
+    val gsiQuerySampler = poissonSampler(config.gsiQueryRatePerTick, rng)
+    val gsiScanSampler = poissonSampler(config.gsiScanRatePerTick, rng)
 
     (1L to config.simulationTicks).foldLeft(Vector.empty[TimedElement[DynamoDBRequest]]) {
       case (acc, tick) =>
@@ -98,8 +102,50 @@ final class OrderTrackingSingleTrialRunner(
               eventTime = SimTime.of(tick),
               usecase = config.scenarioId
             ): TimedElement[DynamoDBRequest]
+          } ++
+          (0 until tableQuerySampler()).map { _ =>
+            QueryRequest(
+              eventTime = SimTime.of(tick),
+              usecase = config.scenarioId,
+              target = DynamoDbReadTarget.Table(config.tableName),
+              readConsistency = config.readConsistency
+            ): TimedElement[DynamoDBRequest]
+          } ++
+          (0 until tableScanSampler()).map { _ =>
+            ScanRequest(
+              eventTime = SimTime.of(tick),
+              usecase = config.scenarioId,
+              target = DynamoDbReadTarget.Table(config.tableName),
+              readConsistency = config.readConsistency
+            ): TimedElement[DynamoDBRequest]
+          } ++
+          (0 until gsiQuerySampler()).map { sampleIndex =>
+            QueryRequest(
+              eventTime = SimTime.of(tick),
+              usecase = config.scenarioId,
+              target = nextGlobalSecondaryIndexTarget(config, tick, sampleIndex),
+              readConsistency = ReadConsistency.EventuallyConsistent
+            ): TimedElement[DynamoDBRequest]
+          } ++
+          (0 until gsiScanSampler()).map { sampleIndex =>
+            ScanRequest(
+              eventTime = SimTime.of(tick),
+              usecase = config.scenarioId,
+              target = nextGlobalSecondaryIndexTarget(config, tick, sampleIndex + 13),
+              readConsistency = ReadConsistency.EventuallyConsistent
+            ): TimedElement[DynamoDBRequest]
           }
     } :+ TimedControlEvent.Tick(SimTime.of(config.simulationTicks + 1L))
+
+  private def nextGlobalSecondaryIndexTarget(
+                                              config: OrderTrackingScenarioConfig,
+                                              tick: Long,
+                                              sampleIndex: Int
+                                            ): DynamoDbReadTarget =
+    val names = config.globalSecondaryIndexNames
+    require(names.nonEmpty, "nextGlobalSecondaryIndexTarget requires at least one configured global secondary index")
+    val indexName = names(((tick - 1L + sampleIndex.toLong) % names.size).toInt)
+    DynamoDbReadTarget.GlobalSecondaryIndex(config.tableName, indexName)
 
   private def poissonSampler(
                               mean: Double,
@@ -120,10 +166,9 @@ final class OrderTrackingSingleTrialRunner(
 
   private def runTable(
                         requestSource: Source[TimedElement[DynamoDBRequest], ?],
+                        config: OrderTrackingScenarioConfig,
                         tableState: TableState,
-                        behaviors: Map[Any, UseCaseSampler[TableState]],
-                        tableTarget: DynamoDbTarget,
-                        readConsistency: ReadConsistency
+                        behaviors: Map[Any, UseCaseSampler[TableState]]
                       ): (
                         Future[Seq[TimedEvent]],
                         Future[Seq[TimedEvent]],
@@ -140,7 +185,22 @@ final class OrderTrackingSingleTrialRunner(
         (respSink, consSink, metrSink) =>
           import GraphDSL.Implicits._
 
-          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency))
+          val table = b.add(
+            DynamoDbTable.componentOf(
+              DynamoDbTable.Config(
+                tableName = config.tableName,
+                stateModel = tableState,
+                useCaseBehaviors = behaviors,
+                readConsistency = config.readConsistency,
+                globalSecondaryIndexes = config.globalSecondaryIndexNames.map { indexName =>
+                  DynamoDbTable.GlobalSecondaryIndexDefinition(indexName, tableState)
+                },
+                localSecondaryIndexes = config.localSecondaryIndexNames.map { indexName =>
+                  DynamoDbTable.LocalSecondaryIndexDefinition(indexName, tableState)
+                }
+              )
+            )
+          )
 
           requestSource ~> table.in
           table.out0 ~> respSink
@@ -154,6 +214,7 @@ final class OrderTrackingSingleTrialRunner(
   private def buildTrialResult(
                                 scenarioId: String,
                                 trialId: Int,
+                                configuredGlobalSecondaryIndexes: Vector[String],
                                 timedConsumption: Seq[TimedElement[DynamoDbConsumptionEvent]]
                               ): TrialResult =
     val usageTotals =
@@ -171,28 +232,47 @@ final class OrderTrackingSingleTrialRunner(
         rates = pricingRates
       )
 
-    val timeSeries = buildTimeSeries(timedConsumption)
+    val gsiUsageTotals = globalSecondaryIndexUsageTotals(usageTotals, configuredGlobalSecondaryIndexes)
 
     TrialResult(
       scenarioId = scenarioId,
       trialId = trialId,
-      timeSeries = timeSeries,
+      timeSeries = buildTimeSeries(timedConsumption, configuredGlobalSecondaryIndexes),
       summary = Vector(
         TrialSummaryValue(DemoMetric.TotalReadCapacityUnits, usageTotals.overall.readCapacityUnits),
         TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, usageTotals.overall.writeCapacityUnits),
         TrialSummaryValue(DemoMetric.TotalStorageByteTicks, BigDecimal(timeBasedTotals.overallStorageByteTicks)),
         TrialSummaryValue(DemoMetric.FinalStorageBytes, BigDecimal(timeBasedTotals.endingOverallStorageBytes)),
         TrialSummaryValue(DemoMetric.TotalEstimatedCost, totalCostBreakdown.totalCost)
-      )
+      ) ++ configuredGlobalSecondaryIndexes.flatMap { indexName =>
+        val totals = gsiUsageTotals(indexName)
+        Vector(
+          TrialSummaryValue(DemoMetric.TotalGsiReadCapacityUnits(indexName), totals.readCapacityUnits),
+          TrialSummaryValue(DemoMetric.TotalGsiWriteCapacityUnits(indexName), totals.writeCapacityUnits)
+        )
+      }.sortBy(_.metric.sortKey)
     )
 
+  private def globalSecondaryIndexUsageTotals(
+                                               usageTotals: DynamoDbUsageTotals,
+                                               configuredGlobalSecondaryIndexes: Vector[String]
+                                             ): Map[String, DynamoDbTargetUsageTotals] =
+    configuredGlobalSecondaryIndexes.sorted.map { indexName =>
+      indexName -> usageTotals.byTarget.collectFirst {
+        case (DynamoDbTarget.GlobalSecondaryIndex(_, `indexName`), totals) => totals
+      }.getOrElse(DynamoDbTargetUsageTotals())
+    }.toMap
+
   private def buildTimeSeries(
-                               timedConsumption: Seq[TimedElement[DynamoDbConsumptionEvent]]
+                               timedConsumption: Seq[TimedElement[DynamoDbConsumptionEvent]],
+                               configuredGlobalSecondaryIndexes: Vector[String]
                              ): Vector[SimulationTimeSeriesPoint] =
     final case class Bucket(
                              tick: Long,
                              readUnits: BigDecimal = BigDecimal(0),
-                             writeUnits: BigDecimal = BigDecimal(0)
+                             writeUnits: BigDecimal = BigDecimal(0),
+                             gsiReadUnits: Map[String, BigDecimal] = Map.empty,
+                             gsiWriteUnits: Map[String, BigDecimal] = Map.empty
                            )
 
     final case class State(
@@ -226,6 +306,20 @@ final class OrderTrackingSingleTrialRunner(
             points = state.points ++ Vector(
               SimulationTimeSeriesPoint(bucket.tick, DemoMetric.ReadCapacityUnits, bucket.readUnits),
               SimulationTimeSeriesPoint(bucket.tick, DemoMetric.WriteCapacityUnits, bucket.writeUnits),
+            ) ++ configuredGlobalSecondaryIndexes.sorted.flatMap { indexName =>
+              Vector(
+                SimulationTimeSeriesPoint(
+                  bucket.tick,
+                  DemoMetric.GsiReadCapacityUnits(indexName),
+                  bucket.gsiReadUnits.getOrElse(indexName, BigDecimal(0))
+                ),
+                SimulationTimeSeriesPoint(
+                  bucket.tick,
+                  DemoMetric.GsiWriteCapacityUnits(indexName),
+                  bucket.gsiWriteUnits.getOrElse(indexName, BigDecimal(0))
+                )
+              )
+            } ++ Vector(
               SimulationTimeSeriesPoint(bucket.tick, DemoMetric.StorageBytes, BigDecimal(state.currentStorageBytes)),
               SimulationTimeSeriesPoint(bucket.tick, DemoMetric.CumulativeEstimatedCost, cumulativeCost)
             )
@@ -235,17 +329,37 @@ final class OrderTrackingSingleTrialRunner(
       case (state, tick: TimedControlEvent.Tick) =>
         finalizeBucket(state).copy(activeBucket = Some(Bucket(tick = tick.eventTime.ticks)))
 
-      case (state, DynamoDbConsumptionEvent.ReadCapacityConsumed(_, _, _, units, _)) =>
+      case (state, DynamoDbConsumptionEvent.ReadCapacityConsumed(_, _, target, units, _)) =>
         state.copy(
           activeBucket = state.activeBucket.map { bucket =>
-            bucket.copy(readUnits = bucket.readUnits + units)
+            target match
+              case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
+                bucket.copy(
+                  readUnits = bucket.readUnits + units,
+                  gsiReadUnits = bucket.gsiReadUnits.updated(
+                    indexName,
+                    bucket.gsiReadUnits.getOrElse(indexName, BigDecimal(0)) + units
+                  )
+                )
+              case _ =>
+                bucket.copy(readUnits = bucket.readUnits + units)
           }
         )
 
-      case (state, DynamoDbConsumptionEvent.WriteCapacityConsumed(_, _, _, units)) =>
+      case (state, DynamoDbConsumptionEvent.WriteCapacityConsumed(_, _, target, units)) =>
         state.copy(
           activeBucket = state.activeBucket.map { bucket =>
-            bucket.copy(writeUnits = bucket.writeUnits + units)
+            target match
+              case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
+                bucket.copy(
+                  writeUnits = bucket.writeUnits + units,
+                  gsiWriteUnits = bucket.gsiWriteUnits.updated(
+                    indexName,
+                    bucket.gsiWriteUnits.getOrElse(indexName, BigDecimal(0)) + units
+                  )
+                )
+              case _ =>
+                bucket.copy(writeUnits = bucket.writeUnits + units)
           }
         )
 
@@ -277,6 +391,26 @@ final class OrderTrackingSingleTrialRunner(
       else
         Some(FixedGetItemSample(sampleBytes(state.averageItemBytes.getOrElse(config.initialAverageItemBytes), rng)))
 
+    override def query(request: QueryRequest, state: TableState): QuerySample =
+      sampleReadShape(request.target, state) { (evaluatedItemCount, evaluatedBytes, returnedItemCount, returnedBytes) =>
+        QuerySample(
+          evaluatedItemCount = evaluatedItemCount,
+          evaluatedBytes = evaluatedBytes,
+          returnedItemCount = returnedItemCount,
+          returnedBytes = returnedBytes
+        )
+      }
+
+    override def scan(request: ScanRequest, state: TableState): ScanSample =
+      sampleReadShape(request.target, state) { (evaluatedItemCount, evaluatedBytes, returnedItemCount, returnedBytes) =>
+        ScanSample(
+          evaluatedItemCount = evaluatedItemCount,
+          evaluatedBytes = evaluatedBytes,
+          returnedItemCount = returnedItemCount,
+          returnedBytes = returnedBytes
+        )
+      }
+
     override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
       FixedPutItemSample(
         writtenItemBytes = request.itemBytes,
@@ -299,6 +433,49 @@ final class OrderTrackingSingleTrialRunner(
         else None
 
       FixedDeleteItemSample(deletedItemBytes)
+
+    private def sampleReadShape[A](
+                                    target: DynamoDbReadTarget,
+                                    state: TableState
+                                  )(
+                                    build: (Long, Long, Long, Long) => A
+                                  ): A =
+      val averageItemBytes = state.averageItemBytes.getOrElse(config.initialAverageItemBytes)
+      val availableItems = state.itemCount
+
+      if availableItems <= 0L then build(0L, 0L, 0L, 0L)
+      else
+        val (evaluatedBase, returnedFraction) =
+          target match
+            case _: DynamoDbReadTarget.Table =>
+              (math.min(availableItems, 4L), BigDecimal("0.75"))
+            case _: DynamoDbReadTarget.GlobalSecondaryIndex =>
+              (math.min(availableItems, 6L), BigDecimal("0.65"))
+            case _: DynamoDbReadTarget.LocalSecondaryIndex =>
+              (math.min(availableItems, 5L), BigDecimal("0.70"))
+
+        val evaluatedItemCount =
+          math.max(1L, sampleReadItemCount(evaluatedBase))
+        val evaluatedBytes = evaluatedItemCount * averageItemBytes
+        val returnedItemCount =
+          math.min(
+            evaluatedItemCount,
+            math.max(
+              0L,
+              (BigDecimal(evaluatedItemCount) * returnedFraction * BigDecimal(0.7 + (rng.nextDouble() * 0.6)))
+                .setScale(0, BigDecimal.RoundingMode.HALF_UP)
+                .toLong
+            )
+          )
+        val returnedBytes =
+          if returnedItemCount <= 0L then 0L
+          else returnedItemCount * averageItemBytes
+
+        build(evaluatedItemCount, evaluatedBytes, returnedItemCount, returnedBytes)
+
+    private def sampleReadItemCount(maxItems: Long): Long =
+      if maxItems <= 1L then 1L
+      else 1L + rng.nextLong(maxItems)
 
   private final case class FixedGetItemSample(
                                                override val getItemBytes: Long

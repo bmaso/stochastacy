@@ -6,10 +6,10 @@ import org.scalatest.wordspec.AnyWordSpec
 class OrderTrackingScenarioConfigSpec extends AnyWordSpec with should.Matchers:
 
   "OrderTrackingScenarioConfig" should {
-    "provide a coherent phase-1 default" in {
-      val config = OrderTrackingScenarioConfig.phase1Default
+    "provide a coherent phase-2 default" in {
+      val config = OrderTrackingScenarioConfig.phase2Default
 
-      config.scenarioId shouldBe "order-tracking-phase1"
+      config.scenarioId shouldBe "order-tracking-phase2"
       config.simulationTicks should be > 0L
       config.trialCount should be > 0
       config.parallelism should be > 0
@@ -22,7 +22,7 @@ class OrderTrackingScenarioConfigSpec extends AnyWordSpec with should.Matchers:
 
     "reject invalid obvious values" in {
       val thrown = the[IllegalArgumentException] thrownBy {
-        OrderTrackingScenarioConfig.phase1Default.copy(
+        OrderTrackingScenarioConfig.phase2Default.copy(
           simulationTicks = 0L
         )
       }

@@ -30,7 +30,7 @@ class OrderTrackingAggregationExportIntegrationSpec extends AnyWordSpec with sho
 
       val trials = Await.result(
         executor.runTrials(
-          config = OrderTrackingScenarioConfig.phase1Default.copy(
+          config = OrderTrackingScenarioConfig.phase2Default.copy(
             simulationTicks = 5L,
             trialCount = 3,
             parallelism = 2
@@ -50,6 +50,10 @@ class OrderTrackingAggregationExportIntegrationSpec extends AnyWordSpec with sho
         jsonl.linesIterator.toVector.filter(_.nonEmpty).map { line =>
           (parse(line) \ "recordType").extract[String]
         }.toSet
+      val metrics =
+        jsonl.linesIterator.toVector.filter(_.nonEmpty).map { line =>
+          (parse(line) \ "metric").extract[String]
+        }.toSet
 
       recordTypes shouldBe Set(
         "trial-time-series",
@@ -59,5 +63,7 @@ class OrderTrackingAggregationExportIntegrationSpec extends AnyWordSpec with sho
         "trial-window-time-series",
         "aggregate-window-time-series"
       )
+      metrics should contain("ReadCapacityUnits")
+      metrics.exists(_.startsWith("GSI:")) shouldBe true
     }
   }

@@ -39,7 +39,7 @@ Default credentials:
 Choose a fresh batch id for each run. Example:
 
 ```bash
-sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase1Bridge generate --batch-id order-tracking-phase1-demo-001 --output /tmp/order-tracking-phase1-demo-001.jsonl --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge generate --batch-id order-tracking-phase2-demo-001 --output /tmp/order-tracking-phase2-demo-001.jsonl --trial-count 100 --parallelism 8 --simulation-ticks 1200'
 ```
 
 Notes:
@@ -53,7 +53,7 @@ Notes:
 Use the same batch id and the same trial-count, parallelism, and simulation-ticks metadata that were used during generation.
 
 ```bash
-sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase1Bridge stage --input /tmp/order-tracking-phase1-demo-001.jsonl --batch-id order-tracking-phase1-demo-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge stage --input /tmp/order-tracking-phase2-demo-001.jsonl --batch-id order-tracking-phase2-demo-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
 ```
 
 Notes:
@@ -67,7 +67,7 @@ Notes:
 Print the Grafana URL:
 
 ```bash
-sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase1Bridge view --batch-id order-tracking-phase1-demo-001'
+sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge view --batch-id order-tracking-phase2-demo-001'
 ```
 
 Then open the printed URL in a browser and log into Grafana with:
@@ -82,7 +82,8 @@ For the normal happy path:
 1. select the staged `batch_id`
 2. confirm the `scenarioId`
 3. choose a `Window Size` of `60` or `300`
-4. inspect the Scenario Summary, time-series usage, storage, and cumulative cost panels
+4. choose a `GSI Index Name` to inspect per-GSI consumed read and write capacity
+5. inspect the Scenario Summary, consumed-capacity summary, time-series usage, storage, and cumulative cost panels
 
 Operational notes:
 

@@ -15,20 +15,20 @@ class DemoExportSpec extends AnyWordSpec with should.Matchers:
         scenarioId = "orders",
         trialId = 3,
         timeSeries = Vector(
-          SimulationTimeSeriesPoint(1L, DemoMetric.ReadCapacityUnits, BigDecimal(2))
+          SimulationTimeSeriesPoint(1L, DemoMetric.GsiReadCapacityUnits("status"), BigDecimal(2))
         ),
         summary = Vector(
-          TrialSummaryValue(DemoMetric.TotalEstimatedCost, BigDecimal(9))
+          TrialSummaryValue(DemoMetric.TotalGsiWriteCapacityUnits("status"), BigDecimal(9))
         )
       )
       val aggregate = MonteCarloResult(
         scenarioId = "orders",
         trialCount = 2,
         timeSeries = Vector(
-          AggregatedTimeSeriesPoint(1L, DemoMetric.ReadCapacityUnits, AggregateStatistic.Mean, BigDecimal(3))
+          AggregatedTimeSeriesPoint(1L, DemoMetric.GsiReadCapacityUnits("status"), AggregateStatistic.Mean, BigDecimal(3))
         ),
         summary = Vector(
-          AggregatedSummaryValue(DemoMetric.TotalEstimatedCost, AggregateStatistic.StdDev, BigDecimal(2))
+          AggregatedSummaryValue(DemoMetric.TotalGsiWriteCapacityUnits("status"), AggregateStatistic.StdDev, BigDecimal(2))
         )
       )
 
@@ -37,13 +37,13 @@ class DemoExportSpec extends AnyWordSpec with should.Matchers:
           scenarioId = "orders",
           trialId = 3,
           tick = 1L,
-          metric = "ReadCapacityUnits",
+          metric = "GSI:status:ReadCapacityUnits",
           value = BigDecimal(2)
         ),
         DemoExportRecord.TrialSummaryRecord(
           scenarioId = "orders",
           trialId = 3,
-          metric = "TotalEstimatedCost",
+          metric = "GSI:status:TotalWriteCapacityUnits",
           value = BigDecimal(9)
         )
       )
@@ -53,14 +53,14 @@ class DemoExportSpec extends AnyWordSpec with should.Matchers:
           scenarioId = "orders",
           trialCount = 2,
           tick = 1L,
-          metric = "ReadCapacityUnits",
+          metric = "GSI:status:ReadCapacityUnits",
           statistic = "mean",
           value = BigDecimal(3)
         ),
         DemoExportRecord.AggregateSummaryRecord(
           scenarioId = "orders",
           trialCount = 2,
-          metric = "TotalEstimatedCost",
+          metric = "GSI:status:TotalWriteCapacityUnits",
           statistic = "stddev",
           value = BigDecimal(2)
         )

@@ -150,13 +150,12 @@ object DynamoDbTable:
         )
       }
 
-  private object QueryEnabledIndexStage:
+  private object QueryAndScanEnabledIndexStage:
     def componentOf(
                      stateModel: TableState,
                      useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
-                     queryTarget: DynamoDbTarget,
-                     unexpectedRequestDescription: String,
-                     scanUnsupportedMessage: String
+                     dataPlaneTarget: DynamoDbTarget,
+                     unexpectedRequestDescription: String
                    ): Graph[
       FanOutShape3[
         TimedElement[DynamoDBRequest],
@@ -181,86 +180,22 @@ object DynamoDbTable:
           }
         )
 
-        val broadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](2))
-
-        val queryFilter = b.add(
-          Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
-            case t: TimedControlEvent => t
-            case q: QueryRequest => q
-          }
-        )
-
-        val scanFilter = b.add(
-          Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
-            case s: ScanRequest => s
-          }
-        )
-
-        val queryStage = b.add(
+        val dataPlaneStage = b.add(
           TableStage4.componentOf(
             stateModel = stateModel,
             useCaseBehaviors = useCaseBehaviors,
-            tableTarget = queryTarget,
+            tableTarget = dataPlaneTarget,
             readConsistency = ReadConsistency.EventuallyConsistent
           )
         )
 
-        val scanBroadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](3))
-
-        val scanResponseFlow = b.add(
-          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDBResponse]] {
-            case t: TimedControlEvent => t
-            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
-            case other: DynamoDBRequest =>
-              throw new IllegalArgumentException(
-                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
-              )
-          }
-        )
-
-        val scanConsumptionFlow = b.add(
-          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDbConsumptionEvent]] {
-            case t: TimedControlEvent => t
-            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
-            case other: DynamoDBRequest =>
-              throw new IllegalArgumentException(
-                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
-              )
-          }
-        )
-
-        val scanMetricFlow = b.add(
-          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[Stage4MetricEvent]] {
-            case t: TimedControlEvent => t
-            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
-            case other: DynamoDBRequest =>
-              throw new IllegalArgumentException(
-                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
-              )
-          }
-        )
-
-        val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
-        val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](2))
-        val metricMerge = b.add(Merge[TimedElement[Stage4MetricEvent]](2))
-
-        requestFlow.out ~> broadcast.in
-        broadcast.out(0) ~> queryFilter ~> queryStage.in
-        broadcast.out(1) ~> scanFilter ~> scanBroadcast.in
-
-        queryStage.out0 ~> responseMerge.in(0)
-        queryStage.out1 ~> consumptionMerge.in(0)
-        queryStage.out2 ~> metricMerge.in(0)
-
-        scanBroadcast.out(0) ~> scanResponseFlow ~> responseMerge.in(1)
-        scanBroadcast.out(1) ~> scanConsumptionFlow ~> consumptionMerge.in(1)
-        scanBroadcast.out(2) ~> scanMetricFlow ~> metricMerge.in(1)
+        requestFlow.out ~> dataPlaneStage.in
 
         new FanOutShape3(
           requestFlow.in,
-          responseMerge.out,
-          consumptionMerge.out,
-          metricMerge.out
+          dataPlaneStage.out0,
+          dataPlaneStage.out1,
+          dataPlaneStage.out2
         )
       }
 
@@ -270,22 +205,33 @@ object DynamoDbTable:
         RouteBranch.BaseTable
 
       case QueryRequest(_, _, target, _) => routeForReadTarget(config, target)
-      case ScanRequest(_, _, target) => routeForReadTarget(config, target)
+      case ScanRequest(_, _, target, _) => routeForReadTarget(config, target)
 
   private def validateRequest(config: Config, request: DynamoDBRequest): Unit =
     request match
       case queryRequest: QueryRequest =>
         routeForReadTarget(config, queryRequest.target)
-        queryRequest.target match
-          case DynamoDbReadTarget.GlobalSecondaryIndex(_, indexName)
-              if queryRequest.readConsistency == ReadConsistency.StronglyConsistent =>
-            throw new IllegalArgumentException(
-              s"Strongly consistent Query is not supported for global secondary index '$indexName'"
-            )
-          case _ => ()
+        validateReadConsistency(queryRequest.target, queryRequest.readConsistency, "Query")
+
+      case scanRequest: ScanRequest =>
+        routeForReadTarget(config, scanRequest.target)
+        validateReadConsistency(scanRequest.target, scanRequest.readConsistency, "Scan")
 
       case other =>
         routeFor(config, other)
+
+  private def validateReadConsistency(
+                                       target: DynamoDbReadTarget,
+                                       consistency: ReadConsistency,
+                                       operationName: String
+                                     ): Unit =
+    target match
+      case DynamoDbReadTarget.GlobalSecondaryIndex(_, indexName)
+          if consistency == ReadConsistency.StronglyConsistent =>
+        throw new IllegalArgumentException(
+          s"Strongly consistent $operationName is not supported for global secondary index '$indexName'"
+        )
+      case _ => ()
 
   private def routeForReadTarget(config: Config, target: DynamoDbReadTarget): RouteBranch =
     val globalIndexNames = config.globalSecondaryIndexes.map(_.indexName).toSet
@@ -530,22 +476,20 @@ object DynamoDbTable:
             throw new IllegalStateException(s"Missing runtime for global secondary index '${indexDefinition.indexName}'")
           )
 
-          val queryEnabledStage = b.add(
-            QueryEnabledIndexStage.componentOf(
+          val queryAndScanEnabledStage = b.add(
+            QueryAndScanEnabledIndexStage.componentOf(
               stateModel = indexRuntime.stateModel,
               useCaseBehaviors = config.useCaseBehaviors,
-              queryTarget = indexRuntime.target,
+              dataPlaneTarget = indexRuntime.target,
               unexpectedRequestDescription =
-                s"global secondary index '${indexDefinition.indexName}' query stage",
-              scanUnsupportedMessage =
-                s"Scan is not yet supported for global secondary index '${indexDefinition.indexName}'",
+                s"global secondary index '${indexDefinition.indexName}' data-plane stage",
             )
           )
 
-          requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> queryEnabledStage.in
-          queryEnabledStage.out0 ~> responseMerge.in(mergeInputIndex)
-          queryEnabledStage.out1 ~> consumptionMerge.in(mergeInputIndex)
-          queryEnabledStage.out2 ~> metricMerge.in(mergeInputIndex)
+          requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> queryAndScanEnabledStage.in
+          queryAndScanEnabledStage.out0 ~> responseMerge.in(mergeInputIndex)
+          queryAndScanEnabledStage.out1 ~> consumptionMerge.in(mergeInputIndex)
+          queryAndScanEnabledStage.out2 ~> metricMerge.in(mergeInputIndex)
 
           mergeInputIndex = mergeInputIndex + 1
         }
@@ -565,22 +509,20 @@ object DynamoDbTable:
             throw new IllegalStateException(s"Missing runtime for local secondary index '${indexDefinition.indexName}'")
           )
 
-          val queryEnabledStage = b.add(
-            QueryEnabledIndexStage.componentOf(
+          val queryAndScanEnabledStage = b.add(
+            QueryAndScanEnabledIndexStage.componentOf(
               stateModel = indexRuntime.stateModel,
               useCaseBehaviors = config.useCaseBehaviors,
-              queryTarget = indexRuntime.target,
+              dataPlaneTarget = indexRuntime.target,
               unexpectedRequestDescription =
-                s"local secondary index '${indexDefinition.indexName}' query stage",
-              scanUnsupportedMessage =
-                s"Scan is not yet supported for local secondary index '${indexDefinition.indexName}'",
+                s"local secondary index '${indexDefinition.indexName}' data-plane stage",
             )
           )
 
-          requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> queryEnabledStage.in
-          queryEnabledStage.out0 ~> responseMerge.in(mergeInputIndex)
-          queryEnabledStage.out1 ~> consumptionMerge.in(mergeInputIndex)
-          queryEnabledStage.out2 ~> metricMerge.in(mergeInputIndex)
+          requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> queryAndScanEnabledStage.in
+          queryAndScanEnabledStage.out0 ~> responseMerge.in(mergeInputIndex)
+          queryAndScanEnabledStage.out1 ~> consumptionMerge.in(mergeInputIndex)
+          queryAndScanEnabledStage.out2 ~> metricMerge.in(mergeInputIndex)
 
           mergeInputIndex = mergeInputIndex + 1
         }

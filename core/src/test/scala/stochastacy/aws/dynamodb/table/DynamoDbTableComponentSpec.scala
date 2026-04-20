@@ -225,7 +225,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
     }
 
     "execute table-targeted Query requests through the base-table path" in {
-      val config = queryCapableIndexedConfig()
+      val config = readCapableIndexedConfig()
 
       val (responseFuture, resourceFuture, metricsFuture) =
         runComponent(
@@ -263,7 +263,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
     }
 
     "execute GSI and LSI Query requests against internal index state" in {
-      val config = queryCapableIndexedConfig()
+      val config = readCapableIndexedConfig()
 
       val gsiResponses =
         Await.result(
@@ -305,7 +305,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
     }
 
     "reject strongly consistent GSI Query requests" in {
-      val config = queryCapableIndexedConfig()
+      val config = readCapableIndexedConfig()
 
       val responseError =
         Await.result(
@@ -326,8 +326,8 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       responseError.getMessage should include("Strongly consistent Query is not supported for global secondary index 'status-index'")
     }
 
-    "route index-targeted reads to the configured placeholder execution unit" in {
-      val config = indexedConfig()
+    "execute table-targeted Scan requests through the base-table path" in {
+      val config = readCapableIndexedConfig()
 
       val (responseFuture, resourceFuture, metricsFuture) =
         runComponent(
@@ -335,19 +335,97 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
             ScanRequest(
               eventTime = SimTime.of(1L),
               usecase = "scan-usecase",
-              target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index")
+              target = DynamoDbReadTarget.Table("orders"),
+              readConsistency = ReadConsistency.StronglyConsistent
             )
           ),
           config
         )
 
-      val responseError = Await.result(responseFuture.failed, 3.seconds)
-      val resourceError = Await.result(resourceFuture.failed, 3.seconds)
-      val metricsError = Await.result(metricsFuture.failed, 3.seconds)
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
 
-      responseError.getMessage should include("Scan is not yet supported for local secondary index 'created-at-index'")
-      resourceError.getMessage should include("Scan is not yet supported for local secondary index 'created-at-index'")
-      metricsError.getMessage should include("Scan is not yet supported for local secondary index 'created-at-index'")
+      responses.collect { case response: ScanResponse => response } shouldBe Vector(
+        ScanResponse(
+          eventTime = SimTime.of(1L),
+          usecase = "scan-usecase",
+          target = DynamoDbReadTarget.Table("orders"),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          evaluatedItemCount = 14L,
+          evaluatedBytes = 8192L,
+          returnedItemCount = 3L,
+          returnedBytes = 1536L
+        )
+      )
+
+      resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.target -> evt.units } should contain
+        (DynamoDbTarget.Table("orders") -> BigDecimal(2))
+      metrics.collect { case evt: Stage4MetricEvent.ScanObserved => evt.target } should contain(DynamoDbReadTarget.Table("orders"))
+    }
+
+    "execute GSI and LSI Scan requests against internal index state" in {
+      val config = readCapableIndexedConfig()
+
+      val gsiResponses =
+        Await.result(
+          runComponent(
+            Source.single(
+              ScanRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "scan-usecase",
+                target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+              )
+            ),
+            config
+          )._1,
+          3.seconds
+        )
+
+      val lsiResponses =
+        Await.result(
+          runComponent(
+            Source.single(
+              ScanRequest(
+                eventTime = SimTime.of(2L),
+                usecase = "scan-usecase",
+                target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+                readConsistency = ReadConsistency.StronglyConsistent
+              )
+            ),
+            config
+          )._1,
+          3.seconds
+        )
+
+      gsiResponses.collect { case response: ScanResponse => response.target } shouldBe Vector(
+        DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+      )
+      lsiResponses.collect { case response: ScanResponse => response.target } shouldBe Vector(
+        DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index")
+      )
+    }
+
+    "reject strongly consistent GSI Scan requests" in {
+      val config = readCapableIndexedConfig()
+
+      val responseError =
+        Await.result(
+          runComponent(
+            Source.single(
+              ScanRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "scan-usecase",
+                target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index"),
+                readConsistency = ReadConsistency.StronglyConsistent
+              )
+            ),
+            config
+          )._1.failed,
+          3.seconds
+        )
+
+      responseError.getMessage should include("Strongly consistent Scan is not supported for global secondary index 'status-index'")
     }
 
     "fail fast for mismatched table names, unknown indexes, and wrong target kinds" in {
@@ -451,11 +529,14 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
     )
 
-  private def queryCapableIndexedConfig(): DynamoDbTable.Config =
+  private def readCapableIndexedConfig(): DynamoDbTable.Config =
     DynamoDbTable.Config(
       tableName = "orders",
       stateModel = FixedTableState(itemCount = 10L, totalItemBytes = 10000L),
-      useCaseBehaviors = Map("query-usecase" -> FixedQueryBehavior),
+      useCaseBehaviors = Map(
+        "query-usecase" -> FixedQueryBehavior,
+        "scan-usecase" -> FixedScanBehavior
+      ),
       readConsistency = ReadConsistency.StronglyConsistent,
       globalSecondaryIndexes = Vector(
         DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = FixedTableState(4L, 4096L))
@@ -540,4 +621,13 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         evaluatedBytes = 4096L,
         returnedItemCount = 2L,
         returnedBytes = 1024L
+      )
+
+  private object FixedScanBehavior extends UseCaseSampler[TableState]:
+    override def scan(request: ScanRequest, state: TableState): ScanSample =
+      ScanSample(
+        evaluatedItemCount = 14L,
+        evaluatedBytes = 8192L,
+        returnedItemCount = 3L,
+        returnedBytes = 1536L
       )

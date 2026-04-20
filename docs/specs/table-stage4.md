@@ -271,6 +271,16 @@ Current phase-2 step-4 note:
 - GSI queries are eventually consistent only; base-table and LSI queries may be eventual or strong
 - `Scan` and PartiQL query execution remain deferred
 
+Current phase-2 step-5 note:
+
+- `Scan` is now executable on the base table, GSIs, and LSIs
+- the current `Scan` surface remains intentionally opaque and usecase-driven
+- `ScanResponse` is summary-oriented rather than item-oriented
+- scan modeling distinguishes evaluated item and byte totals from returned item and byte totals
+- scan read consumption is derived from evaluated bytes, not returned bytes
+- GSI scans are eventually consistent only; base-table and LSI scans may be eventual or strong
+- PartiQL query execution remains deferred
+
 Phase-2 composition note:
 
 - the future index-aware DynamoDB table simulator should remain one larger public table-and-indexes graph
@@ -283,8 +293,7 @@ Phase-2 composition note:
 
 The current implementation still leaves these outside `TableStage4`'s required executable surface area:
 
-- `Scan`
 - PartiQL query execution
 - item-oriented query payload modeling
-- typed key-condition, filter, projection, pagination, or ordering query shapes
+- typed key-condition, filter, projection, pagination, ordering, or parallel-scan query shapes
 - index-specific metric streams beyond the current summary-oriented query telemetry

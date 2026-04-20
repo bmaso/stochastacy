@@ -52,9 +52,9 @@ The implemented design direction is:
 - [DynamoDbPricing.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/pricing/DynamoDbPricing.scala)
 - [rollup.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/demo/rollup.scala)
 - [report.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/demo/report.scala)
-- [OrderTrackingPhase1Demo.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/main/scala/stochastacy/examples/ordertracking/OrderTrackingPhase1Demo.scala)
+- [OrderTrackingPhase2Demo.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/main/scala/stochastacy/examples/ordertracking/OrderTrackingPhase2Demo.scala)
 - [001-schema.sql](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/postgres/init/001-schema.sql)
-- [order-tracking-phase1-dashboard.json](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/grafana/order-tracking-phase1-dashboard.json)
+- [order-tracking-phase2-dashboard.json](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/grafana/order-tracking-phase2-dashboard.json)
 
 ## Key Proof Tests
 
@@ -65,7 +65,7 @@ The implemented design direction is:
 - [TableStage4UsageAggregationIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/usage/TableStage4UsageAggregationIntegrationSpec.scala)
 - [TableStage4TimeBasedUsageIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/usage/TableStage4TimeBasedUsageIntegrationSpec.scala)
 - [TableStage4PricingIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/pricing/TableStage4PricingIntegrationSpec.scala)
-- [OrderTrackingPhase1DemoRunnerSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPhase1DemoRunnerSpec.scala)
+- [OrderTrackingPhase2DemoRunnerSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPhase2DemoRunnerSpec.scala)
 - [OrderTrackingPostgresBridgeSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPostgresBridgeSpec.scala)
 
 ## Current Operator Workflow

@@ -46,6 +46,31 @@ object Stage4MetricEvent:
                                   bytes: Long
                                 ) extends Stage4MetricEvent
 
+  /** One Scan request reached the data plane */
+  final case class ScanObserved(
+                                 eventTime: SimTime,
+                                 usecase: Any,
+                                 target: DynamoDbReadTarget
+                               ) extends Stage4MetricEvent
+
+  /** A Scan evaluated data while executing */
+  final case class ScanEvaluated(
+                                  eventTime: SimTime,
+                                  usecase: Any,
+                                  target: DynamoDbReadTarget,
+                                  itemCount: Long,
+                                  bytes: Long
+                                ) extends Stage4MetricEvent
+
+  /** A Scan returned data to the caller */
+  final case class ScanReturned(
+                                 eventTime: SimTime,
+                                 usecase: Any,
+                                 target: DynamoDbReadTarget,
+                                 itemCount: Long,
+                                 bytes: Long
+                               ) extends Stage4MetricEvent
+
   /** One PutItem request reached the data plane */
   final case class PutItemObserved(
                                     eventTime: SimTime,

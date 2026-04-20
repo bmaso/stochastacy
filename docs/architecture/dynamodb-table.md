@@ -45,6 +45,18 @@ In step 4:
   - read consumption is derived from evaluated bytes
 - `Scan` remains deferred
 
+In step 5:
+
+- `Scan` is now executable across the public `DynamoDbTable` component for:
+  - the base table
+  - configured GSIs
+  - configured LSIs
+- the first scan slice also remains intentionally opaque and usecase-driven rather than modeling full DynamoDB scan shapes
+- scan execution is summary-oriented:
+  - evaluated item and byte totals are tracked separately from returned item and byte totals
+  - read consumption is derived from evaluated bytes
+- GSI scans are eventually-consistent only; base-table and LSI scans may be eventual or strong
+
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
 ## Layering

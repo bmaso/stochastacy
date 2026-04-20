@@ -136,6 +136,15 @@ Feature goal:
 
 - add real `Scan` execution for the base table and supported index targets
 
+Current status:
+
+- complete for the first summary-oriented slice
+- `ScanRequest` now carries explicit `readConsistency`
+- `ScanResponse` now reports evaluated vs returned item and byte totals
+- scan execution remains intentionally opaque and usecase-driven rather than exposing typed filter, limit, projection, or parallel-scan models
+- read consumption is derived from evaluated bytes
+- GSI scans are eventually-consistent only
+
 Why this step follows `Query`:
 
 - `Scan` should reuse the already-established component composition, target selection, and index-state ownership rather than inventing them while scan semantics are also being introduced
@@ -154,6 +163,17 @@ Testing strategy:
 Feature goal:
 
 - make the downstream layers fully aware of index-targeted and propagated index activity so the simulator can support a phase-2 demo with indexed tables
+
+Current status:
+
+- complete for the first reporting slice
+- backend accounting remains target-aware through `byTarget`
+- visible reporting now preserves:
+  - overall read and write capacity
+  - per-GSI read and write capacity
+  - overall-only storage and cost
+- JSONL export and the Postgres bridge remain schema-stable by introducing new metric names rather than new record shapes
+- the provisioned Grafana dashboard now includes a selected-GSI variable and per-GSI read/write panels
 
 Why this is a major phase-2 step:
 
@@ -234,7 +254,7 @@ The overall phase-2 testing strategy should stay layered:
 
 The recommended next implementation slice is:
 
-- implement `Scan` on top of the now-established table-and-indexes component, internal index state ownership, and real `Query` behavior
-- do not jump ahead to broader reporting work or PartiQL behavior before `Scan` is in place
+- finish phase-2 demo finalization on top of the now-established indexed-table accounting and reporting path
+- keep PartiQL as the remaining narrow parser/classification stub rather than treating it as a blocker for the indexed-table demo
 
 This roadmap should remain the canonical planning anchor for future phase-2 work.

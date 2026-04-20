@@ -76,3 +76,12 @@ object Stage4MetricTotals:
 
       case _: Stage4MetricEvent.QueryReturned =>
         acc
+
+      case _: Stage4MetricEvent.ScanObserved =>
+        acc
+
+      case _: Stage4MetricEvent.ScanEvaluated =>
+        acc
+
+      case _: Stage4MetricEvent.ScanReturned =>
+        acc

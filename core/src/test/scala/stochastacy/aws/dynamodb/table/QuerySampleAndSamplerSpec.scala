@@ -2,7 +2,7 @@ package stochastacy.aws.dynamodb.table
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.{DynamoDbReadTarget, QueryRequest}
+import stochastacy.aws.dynamodb.{DynamoDbReadTarget, QueryRequest, ScanRequest}
 import stochastacy.sim.SimTime
 
 class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
@@ -45,6 +45,44 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
     }
   }
 
+  "ScanSample" should {
+    "accept valid evaluated and returned summary values" in {
+      val sample = ScanSample(
+        evaluatedItemCount = 12L,
+        evaluatedBytes = 12288L,
+        returnedItemCount = 4L,
+        returnedBytes = 2048L
+      )
+
+      sample.evaluatedItemCount shouldBe 12L
+      sample.evaluatedBytes shouldBe 12288L
+      sample.returnedItemCount shouldBe 4L
+      sample.returnedBytes shouldBe 2048L
+    }
+
+    "reject invalid evaluated and returned relationships" in {
+      val itemCountError = the[IllegalArgumentException] thrownBy {
+        ScanSample(
+          evaluatedItemCount = 1L,
+          evaluatedBytes = 100L,
+          returnedItemCount = 2L,
+          returnedBytes = 50L
+        )
+      }
+      itemCountError.getMessage should include("returnedItemCount")
+
+      val returnedBytesError = the[IllegalArgumentException] thrownBy {
+        ScanSample(
+          evaluatedItemCount = 2L,
+          evaluatedBytes = 100L,
+          returnedItemCount = 1L,
+          returnedBytes = 200L
+        )
+      }
+      returnedBytesError.getMessage should include("returnedBytes")
+    }
+  }
+
   "UseCaseSampler" should {
     "reject query use-cases by default when query behavior is not implemented" in {
       val sampler = new UseCaseSampler[TableState] {}
@@ -59,5 +97,20 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
       }
 
       error.getMessage should include("Query is not supported for use-case 'unsupported-query'")
+    }
+
+    "reject scan use-cases by default when scan behavior is not implemented" in {
+      val sampler = new UseCaseSampler[TableState] {}
+      val request = ScanRequest(
+        eventTime = SimTime.of(1L),
+        usecase = "unsupported-scan",
+        target = DynamoDbReadTarget.Table("orders")
+      )
+
+      val error = the[UnsupportedOperationException] thrownBy {
+        sampler.scan(request, FixedTableState(itemCount = 0L, totalItemBytes = 0L))
+      }
+
+      error.getMessage should include("Scan is not supported for use-case 'unsupported-scan'")
     }
   }
