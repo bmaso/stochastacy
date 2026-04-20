@@ -8,9 +8,17 @@ import stochastacy.sim.*
 
 object DynamoDbTable:
 
-  final case class GlobalSecondaryIndexDefinition(indexName: String)
+  private val BytesPerWriteCapacityUnitChunk = 1024L
 
-  final case class LocalSecondaryIndexDefinition(indexName: String)
+  final case class GlobalSecondaryIndexDefinition(
+                                                   indexName: String,
+                                                   stateModel: TableState = SummaryTableState(0L, 0L)
+                                                 )
+
+  final case class LocalSecondaryIndexDefinition(
+                                                  indexName: String,
+                                                  stateModel: TableState = SummaryTableState(0L, 0L)
+                                                )
 
   final case class Config(
                            tableName: String,
@@ -42,6 +50,24 @@ object DynamoDbTable:
     case BaseTable
     case GlobalSecondaryIndex(indexName: String)
     case LocalSecondaryIndex(indexName: String)
+
+  private sealed trait InternalIndexRuntime:
+    def indexName: String
+    def stateModel: TableState
+    def target: DynamoDbTarget
+
+  private object InternalIndexRuntime:
+    final case class GlobalSecondaryIndex(
+                                           indexName: String,
+                                           stateModel: TableState,
+                                           target: DynamoDbTarget.GlobalSecondaryIndex
+                                         ) extends InternalIndexRuntime
+
+    final case class LocalSecondaryIndex(
+                                          indexName: String,
+                                          stateModel: TableState,
+                                          target: DynamoDbTarget.LocalSecondaryIndex
+                                        ) extends InternalIndexRuntime
 
   private object UnsupportedIndexStage:
     def componentOf(
@@ -171,6 +197,33 @@ object DynamoDbTable:
         s"Read target table '$targetTableName' does not match configured table '${config.tableName}'"
       )
 
+  private def writeCapacityUnitsFor(itemBytes: Long): BigDecimal =
+    val chunkCount =
+      if itemBytes > 0 then ((itemBytes - 1L) / BytesPerWriteCapacityUnitChunk) + 1L
+      else 1L
+    BigDecimal(chunkCount)
+
+  private def indexRuntimesFor(config: Config): Vector[InternalIndexRuntime] =
+    val globalSecondaryIndexes =
+      config.globalSecondaryIndexes.map { definition =>
+        InternalIndexRuntime.GlobalSecondaryIndex(
+          indexName = definition.indexName,
+          stateModel = definition.stateModel,
+          target = DynamoDbTarget.GlobalSecondaryIndex(config.tableName, definition.indexName)
+        )
+      }
+
+    val localSecondaryIndexes =
+      config.localSecondaryIndexes.map { definition =>
+        InternalIndexRuntime.LocalSecondaryIndex(
+          indexName = definition.indexName,
+          stateModel = definition.stateModel,
+          target = DynamoDbTarget.LocalSecondaryIndex(config.tableName, definition.indexName)
+        )
+      }
+
+    globalSecondaryIndexes ++ localSecondaryIndexes
+
   def componentOf(config: Config): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -190,6 +243,7 @@ object DynamoDbTable:
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
     val localSecondaryIndexes = config.localSecondaryIndexes
+    val indexRuntimes = indexRuntimesFor(config)
 
     if globalSecondaryIndexes.isEmpty && localSecondaryIndexes.isEmpty then
       baseTableGraph
@@ -212,7 +266,7 @@ object DynamoDbTable:
         val requestBroadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](branchCount))
 
         val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](branchCount))
-        val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](branchCount))
+        val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](branchCount + 1))
         val metricMerge = b.add(Merge[TimedElement[Stage4MetricEvent]](branchCount))
 
         val baseRequestFilter = b.add(
@@ -223,10 +277,110 @@ object DynamoDbTable:
         )
 
         val baseTable = b.add(baseTableGraph)
+        val baseResponseBroadcast = b.add(Broadcast[TimedElement[DynamoDBResponse]](2))
+        val indexPropagationConsumptionFlow = b.add(
+          Flow[TimedElement[DynamoDBResponse]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
+            case _: TimedControlEvent => Nil
+
+            case response: PutItemResponse =>
+              indexRuntimes.flatMap { indexRuntime =>
+                indexRuntime.stateModel.recordSuccessfulPut(
+                  response.storedItemBytes,
+                  response.previousItemBytes
+                )
+
+                List(
+                  DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                    eventTime = response.eventTime,
+                    usecase = response.usecase,
+                    target = indexRuntime.target,
+                    units = writeCapacityUnitsFor(response.storedItemBytes)
+                  ),
+                  DynamoDbConsumptionEvent.StorageBytesWritten(
+                    eventTime = response.eventTime,
+                    usecase = response.usecase,
+                    target = indexRuntime.target,
+                    bytes = response.storedItemBytes
+                  ),
+                  DynamoDbConsumptionEvent.StorageBytesDelta(
+                    eventTime = response.eventTime,
+                    usecase = response.usecase,
+                    target = indexRuntime.target,
+                    bytesDelta = response.storedItemBytes - response.previousItemBytes.getOrElse(0L)
+                  )
+                )
+              }
+
+            case response: UpdateItemResponse =>
+              indexRuntimes.flatMap { indexRuntime =>
+                indexRuntime.stateModel.recordSuccessfulUpdate(
+                  response.storedItemBytes,
+                  response.previousItemBytes
+                )
+
+                List(
+                  DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                    eventTime = response.eventTime,
+                    usecase = response.usecase,
+                    target = indexRuntime.target,
+                    units = writeCapacityUnitsFor(response.storedItemBytes)
+                  ),
+                  DynamoDbConsumptionEvent.StorageBytesWritten(
+                    eventTime = response.eventTime,
+                    usecase = response.usecase,
+                    target = indexRuntime.target,
+                    bytes = response.storedItemBytes
+                  ),
+                  DynamoDbConsumptionEvent.StorageBytesDelta(
+                    eventTime = response.eventTime,
+                    usecase = response.usecase,
+                    target = indexRuntime.target,
+                    bytesDelta = response.storedItemBytes - response.previousItemBytes.getOrElse(0L)
+                  )
+                )
+              }
+
+            case response: DeleteItemResponse =>
+              indexRuntimes.flatMap { indexRuntime =>
+                indexRuntime.stateModel.recordSuccessfulDelete(response.deletedItemBytes)
+
+                val deletedEvents =
+                  response.deletedItemBytes.toList.map { bytes =>
+                    DynamoDbConsumptionEvent.StorageBytesDeleted(
+                      eventTime = response.eventTime,
+                      usecase = response.usecase,
+                      target = indexRuntime.target,
+                      bytes = bytes
+                    )
+                  }
+
+                List(
+                  DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                    eventTime = response.eventTime,
+                    usecase = response.usecase,
+                    target = indexRuntime.target,
+                    units = writeCapacityUnitsFor(response.deletedItemBytes.getOrElse(0L))
+                  )
+                ) ++ deletedEvents ++ List(
+                  DynamoDbConsumptionEvent.StorageBytesDelta(
+                    eventTime = response.eventTime,
+                    usecase = response.usecase,
+                    target = indexRuntime.target,
+                    bytesDelta = -response.deletedItemBytes.getOrElse(0L)
+                  )
+                )
+              }
+
+            case _: DynamoDBResponse =>
+              Nil
+          }
+        )
 
         validationFlow.out ~> requestBroadcast.in
         requestBroadcast.out(0) ~> baseRequestFilter ~> baseTable.in
-        baseTable.out0 ~> responseMerge.in(0)
+        baseTable.out0 ~> baseResponseBroadcast.in
+        baseResponseBroadcast.out(0) ~> responseMerge.in(0)
+        baseResponseBroadcast.out(1) ~> indexPropagationConsumptionFlow ~> consumptionMerge.in(branchCount)
         baseTable.out1 ~> consumptionMerge.in(0)
         baseTable.out2 ~> metricMerge.in(0)
 

@@ -253,6 +253,14 @@ Current phase-2 step-2 note:
 - GSIs and LSIs now exist as internal placeholder execution units in that graph
 - real index state and write propagation are still deferred to the next phase-2 step
 
+Current phase-2 step-3 note:
+
+- `DynamoDbTable` now owns internal `TableState` for each configured GSI and LSI
+- successful base-table writes are now propagated into those internal index states
+- propagation currently mirrors summary-level write effects into every configured index
+- propagation now emits index-targeted write consumption events
+- real index reads and index-specific metrics are still deferred
+
 Phase-2 composition note:
 
 - the future index-aware DynamoDB table simulator should remain one larger public table-and-indexes graph

@@ -88,6 +88,142 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       metrics.collect { case Stage4MetricEvent.TableBytesChanged(_, _, delta) => delta }.sum shouldBe 1024L
     }
 
+    "propagate successful writes into configured index state and emit index-targeted write consumption" in {
+      val statusIndexState = FixedTableState(itemCount = 0L, totalItemBytes = 0L)
+      val createdAtIndexState = FixedTableState(itemCount = 0L, totalItemBytes = 0L)
+
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map("put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L, previousItemBytes = None)),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = statusIndexState)
+          ),
+          localSecondaryIndexes = Vector(
+            DynamoDbTable.LocalSecondaryIndexDefinition("created-at-index", stateModel = createdAtIndexState)
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(
+          Source.single(PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)),
+          config
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case r: PutItemResponse => r } should have size 1
+
+      statusIndexState.itemCount shouldBe 1L
+      statusIndexState.totalItemBytes shouldBe 1024L
+      createdAtIndexState.itemCount shouldBe 1L
+      createdAtIndexState.totalItemBytes shouldBe 1024L
+
+      val writeCapacityByTarget =
+        resources.collect { case evt: DynamoDbConsumptionEvent.WriteCapacityConsumed => evt.target -> evt.units }.groupMapReduce(_._1)(_._2)(_ + _)
+      writeCapacityByTarget shouldBe Map(
+        DynamoDbTarget.Table("orders") -> BigDecimal(1),
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> BigDecimal(1),
+        DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> BigDecimal(1)
+      )
+
+      val deltaByTarget =
+        resources.collect { case evt: DynamoDbConsumptionEvent.StorageBytesDelta => evt.target -> evt.bytesDelta }.groupMapReduce(_._1)(_._2)(_ + _)
+      deltaByTarget shouldBe Map(
+        DynamoDbTarget.Table("orders") -> 1024L,
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 1024L,
+        DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 1024L
+      )
+
+      metrics.collect { case _: Stage4MetricEvent.PutItemObserved => 1 }.size shouldBe 1
+    }
+
+    "propagate update and delete write effects into configured index state" in {
+      val statusIndexState = FixedTableState(itemCount = 1L, totalItemBytes = 512L)
+      val createdAtIndexState = FixedTableState(itemCount = 1L, totalItemBytes = 512L)
+
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 512L),
+          useCaseBehaviors = Map(
+            "update-existing" -> FixedUpdateItemBehavior(writtenItemBytes = 768L, previousItemBytes = Some(512L)),
+            "delete-existing" -> FixedDeleteItemBehavior(deletedItemBytes = Some(768L))
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = statusIndexState)
+          ),
+          localSecondaryIndexes = Vector(
+            DynamoDbTable.LocalSecondaryIndexDefinition("created-at-index", stateModel = createdAtIndexState)
+          )
+        )
+
+      val (_, resourceFuture, _) =
+        runComponent(
+          Source(
+            Seq[TimedElement[DynamoDBRequest]](
+              UpdateItemRequest(eventTime = SimTime.of(1L), usecase = "update-existing", itemBytes = 768L),
+              DeleteItemRequest(eventTime = SimTime.of(2L), usecase = "delete-existing")
+            )
+          ),
+          config
+        )
+
+      val resources = Await.result(resourceFuture, 3.seconds)
+
+      statusIndexState.itemCount shouldBe 0L
+      statusIndexState.totalItemBytes shouldBe 0L
+      createdAtIndexState.itemCount shouldBe 0L
+      createdAtIndexState.totalItemBytes shouldBe 0L
+
+      val deletedBytesByTarget =
+        resources.collect { case evt: DynamoDbConsumptionEvent.StorageBytesDeleted => evt.target -> evt.bytes }.groupMapReduce(_._1)(_._2)(_ + _)
+      deletedBytesByTarget shouldBe Map(
+        DynamoDbTarget.Table("orders") -> 768L,
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 768L,
+        DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 768L
+      )
+    }
+
+    "not propagate read-only requests into index state" in {
+      val statusIndexState = FixedTableState(itemCount = 2L, totalItemBytes = 400L)
+      val createdAtIndexState = FixedTableState(itemCount = 3L, totalItemBytes = 900L)
+
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 256L),
+          useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(256L)),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = statusIndexState)
+          ),
+          localSecondaryIndexes = Vector(
+            DynamoDbTable.LocalSecondaryIndexDefinition("created-at-index", stateModel = createdAtIndexState)
+          )
+        )
+
+      val (_, resourceFuture, _) =
+        runComponent(
+          Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
+          config
+        )
+
+      val resources = Await.result(resourceFuture, 3.seconds)
+
+      statusIndexState.itemCount shouldBe 2L
+      statusIndexState.totalItemBytes shouldBe 400L
+      createdAtIndexState.itemCount shouldBe 3L
+      createdAtIndexState.totalItemBytes shouldBe 900L
+
+      resources.collect { case evt: DynamoDbConsumptionEvent => evt.target }.toSet shouldBe Set(DynamoDbTarget.Table("orders"))
+    }
+
     "route table-targeted Query requests to the base-table path" in {
       val config = indexedConfig()
 
@@ -272,6 +408,15 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
                                          override val previousItemBytes: Option[Long]
                                        ) extends PutItemSample
 
+  private case class FixedUpdateItemSample(
+                                            override val writtenItemBytes: Long,
+                                            override val previousItemBytes: Option[Long]
+                                          ) extends UpdateItemSample
+
+  private case class FixedDeleteItemSample(
+                                            override val deletedItemBytes: Option[Long]
+                                          ) extends DeleteItemSample
+
   private case class FixedHitGetItemBehavior(bytes: Long) extends UseCaseSampler[TableState]:
     override def getItem(request: GetItemRequest, state: TableState): Option[GetItemSample] =
       Some(FixedGetItemSample(bytes))
@@ -282,3 +427,16 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
                                          ) extends UseCaseSampler[TableState]:
     override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
       FixedPutItemSample(writtenItemBytes, previousItemBytes)
+
+  private case class FixedUpdateItemBehavior(
+                                              writtenItemBytes: Long,
+                                              previousItemBytes: Option[Long]
+                                            ) extends UseCaseSampler[TableState]:
+    override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
+      FixedUpdateItemSample(writtenItemBytes, previousItemBytes)
+
+  private case class FixedDeleteItemBehavior(
+                                              deletedItemBytes: Option[Long]
+                                            ) extends UseCaseSampler[TableState]:
+    override def deleteItem(request: DeleteItemRequest, state: TableState): DeleteItemSample =
+      FixedDeleteItemSample(deletedItemBytes)

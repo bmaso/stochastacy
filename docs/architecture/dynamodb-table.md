@@ -25,6 +25,14 @@ In step 2 specifically:
 - GSI and LSI execution units are placeholder internal components
 - real index state and write propagation are still deferred to the next phase-2 step
 
+In step 3:
+
+- configured GSIs and LSIs now own internal `TableState`
+- successful base-table writes propagate into those internal index states
+- propagation currently mirrors summary-level write effects into every configured index
+- index propagation now emits index-targeted write consumption facts
+- real index reads are still deferred
+
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
 ## Layering
