@@ -1,5 +1,6 @@
 package stochastacy.aws.dynamodb.table
 
+import stochastacy.aws.dynamodb.DynamoDbReadTarget
 import stochastacy.aws.MetricEvent
 import stochastacy.sim.SimTime
 
@@ -19,6 +20,31 @@ object Stage4MetricEvent:
                                     usecase: Any,
                                     bytes: Long
                                   ) extends Stage4MetricEvent
+
+  /** One Query request reached the data plane */
+  final case class QueryObserved(
+                                  eventTime: SimTime,
+                                  usecase: Any,
+                                  target: DynamoDbReadTarget
+                                ) extends Stage4MetricEvent
+
+  /** A Query evaluated data while executing */
+  final case class QueryEvaluated(
+                                   eventTime: SimTime,
+                                   usecase: Any,
+                                   target: DynamoDbReadTarget,
+                                   itemCount: Long,
+                                   bytes: Long
+                                 ) extends Stage4MetricEvent
+
+  /** A Query returned data to the caller */
+  final case class QueryReturned(
+                                  eventTime: SimTime,
+                                  usecase: Any,
+                                  target: DynamoDbReadTarget,
+                                  itemCount: Long,
+                                  bytes: Long
+                                ) extends Stage4MetricEvent
 
   /** One PutItem request reached the data plane */
   final case class PutItemObserved(

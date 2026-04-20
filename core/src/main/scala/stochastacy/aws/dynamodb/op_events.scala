@@ -1,5 +1,6 @@
 package stochastacy.aws.dynamodb
 
+import stochastacy.aws.dynamodb.table.ReadConsistency
 import stochastacy.aws.{AWSServiceRequestEvent, AWSServiceResponseEvent}
 import stochastacy.sim.SimTime
 
@@ -36,7 +37,8 @@ case class DeleteItemRequest(
 case class QueryRequest(
                          override val eventTime: SimTime,
                          override val usecase: Any,
-                         target: DynamoDbReadTarget
+                         target: DynamoDbReadTarget,
+                         readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
                        ) extends DynamoDBRequest
 
 case class ScanRequest(
@@ -87,7 +89,12 @@ case class DeleteItemResponse(
 case class QueryResponse(
                           override val eventTime: SimTime,
                           override val usecase: Any,
-                          target: DynamoDbReadTarget
+                          target: DynamoDbReadTarget,
+                          readConsistency: ReadConsistency,
+                          evaluatedItemCount: Long,
+                          evaluatedBytes: Long,
+                          returnedItemCount: Long,
+                          returnedBytes: Long
                         ) extends DynamoDBResponse
 
 case class ScanResponse(

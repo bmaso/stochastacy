@@ -261,6 +261,16 @@ Current phase-2 step-3 note:
 - propagation now emits index-targeted write consumption events
 - real index reads and index-specific metrics are still deferred
 
+Current phase-2 step-4 note:
+
+- `Query` is now executable on the base table, GSIs, and LSIs
+- the current `Query` surface remains intentionally opaque and usecase-driven
+- `QueryResponse` is summary-oriented rather than item-oriented
+- query modeling now distinguishes evaluated item and byte totals from returned item and byte totals
+- query read consumption is derived from evaluated bytes, not returned bytes
+- GSI queries are eventually consistent only; base-table and LSI queries may be eventual or strong
+- `Scan` and PartiQL query execution remain deferred
+
 Phase-2 composition note:
 
 - the future index-aware DynamoDB table simulator should remain one larger public table-and-indexes graph
@@ -269,11 +279,12 @@ Phase-2 composition note:
 - write propagation from the base table into indexes should also happen internally inside that graph
 - phase-2 should treat that composed graph as the public indexed-table resource needed for later usage and cost-range estimation
 
-## Deferred To Phase 2
+## Still Deferred
 
-The current phase-1 plan intentionally left these outside `TableStage4`'s required executable surface area:
+The current implementation still leaves these outside `TableStage4`'s required executable surface area:
 
-- `Query`
 - `Scan`
-- PartiQL query support
-- index-targeted execution paths
+- PartiQL query execution
+- item-oriented query payload modeling
+- typed key-condition, filter, projection, pagination, or ordering query shapes
+- index-specific metric streams beyond the current summary-oriented query telemetry

@@ -107,6 +107,15 @@ Feature goal:
   - GSIs
   - LSIs
 
+Current status:
+
+- complete for the first summary-oriented slice
+- `QueryRequest` now carries explicit `readConsistency`
+- `QueryResponse` now reports evaluated vs returned item and byte totals
+- query execution remains intentionally opaque and usecase-driven rather than exposing typed key-condition or filter models
+- read consumption is derived from evaluated bytes
+- GSI queries are eventually-consistent only
+
 Why this step comes before `Scan`:
 
 - `Query` is the tighter and more index-native read path, so it should lead the read-path expansion once index ownership and propagation exist
@@ -225,7 +234,7 @@ The overall phase-2 testing strategy should stay layered:
 
 The recommended next implementation slice is:
 
-- start with the public table-and-indexes component and its internal composition groundwork
-- do not start with full `Scan`, broader reporting work, or full PartiQL behavior first
+- implement `Scan` on top of the now-established table-and-indexes component, internal index state ownership, and real `Query` behavior
+- do not jump ahead to broader reporting work or PartiQL behavior before `Scan` is in place
 
 This roadmap should remain the canonical planning anchor for future phase-2 work.

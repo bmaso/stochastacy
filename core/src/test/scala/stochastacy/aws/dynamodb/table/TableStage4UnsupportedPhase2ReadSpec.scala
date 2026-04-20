@@ -5,7 +5,7 @@ import org.apache.pekko.stream.{ClosedShape, Materializer}
 import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.{DynamoDBRequest, DynamoDbReadTarget, PartiQLQueryRequest, QueryRequest, ScanRequest}
+import stochastacy.aws.dynamodb.{DynamoDBRequest, DynamoDbReadTarget, PartiQLQueryRequest, ScanRequest}
 import stochastacy.sim.{SimTime, TimedEvent}
 
 import scala.concurrent.duration.*
@@ -17,27 +17,6 @@ class TableStage4UnsupportedPhase2ReadSpec extends AnyWordSpec with should.Match
   given Materializer = Materializer.matFromSystem
 
   "Stage 4 Table component" should {
-    "fail fast for Query requests without emitting synthetic outputs" in {
-      val (responseFuture, resourceFuture, metricsFuture) =
-        runTable(
-          requestSource = Source.single[DynamoDBRequest](
-            QueryRequest(
-              eventTime = SimTime.of(1L),
-              usecase = "query-usecase",
-              target = DynamoDbReadTarget.Table("orders")
-            )
-          )
-        )
-
-      val responseError = Await.result(responseFuture.failed, 3.seconds)
-      val resourceError = Await.result(resourceFuture.failed, 3.seconds)
-      val metricsError = Await.result(metricsFuture.failed, 3.seconds)
-
-      responseError.getMessage should include("Query is not yet supported")
-      resourceError.getMessage should include("Query is not yet supported")
-      metricsError.getMessage should include("Query is not yet supported")
-    }
-
     "fail fast for Scan requests without emitting synthetic outputs" in {
       val (responseFuture, resourceFuture, metricsFuture) =
         runTable(

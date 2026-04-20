@@ -150,13 +150,142 @@ object DynamoDbTable:
         )
       }
 
+  private object QueryEnabledIndexStage:
+    def componentOf(
+                     stateModel: TableState,
+                     useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
+                     queryTarget: DynamoDbTarget,
+                     unexpectedRequestDescription: String,
+                     scanUnsupportedMessage: String
+                   ): Graph[
+      FanOutShape3[
+        TimedElement[DynamoDBRequest],
+        TimedElement[DynamoDBResponse],
+        TimedElement[DynamoDbConsumptionEvent],
+        TimedElement[Stage4MetricEvent]
+      ],
+      NotUsed
+    ] =
+      GraphDSL.create() { implicit b =>
+        import GraphDSL.Implicits.*
+
+        val requestFlow = b.add(
+          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDBRequest]] {
+            case q: QueryRequest => q
+            case s: ScanRequest => s
+            case t: TimedControlEvent => t
+            case other: DynamoDBRequest =>
+              throw new IllegalArgumentException(
+                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
+              )
+          }
+        )
+
+        val broadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](2))
+
+        val queryFilter = b.add(
+          Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
+            case t: TimedControlEvent => t
+            case q: QueryRequest => q
+          }
+        )
+
+        val scanFilter = b.add(
+          Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
+            case s: ScanRequest => s
+          }
+        )
+
+        val queryStage = b.add(
+          TableStage4.componentOf(
+            stateModel = stateModel,
+            useCaseBehaviors = useCaseBehaviors,
+            tableTarget = queryTarget,
+            readConsistency = ReadConsistency.EventuallyConsistent
+          )
+        )
+
+        val scanBroadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](3))
+
+        val scanResponseFlow = b.add(
+          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDBResponse]] {
+            case t: TimedControlEvent => t
+            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
+            case other: DynamoDBRequest =>
+              throw new IllegalArgumentException(
+                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
+              )
+          }
+        )
+
+        val scanConsumptionFlow = b.add(
+          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDbConsumptionEvent]] {
+            case t: TimedControlEvent => t
+            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
+            case other: DynamoDBRequest =>
+              throw new IllegalArgumentException(
+                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
+              )
+          }
+        )
+
+        val scanMetricFlow = b.add(
+          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[Stage4MetricEvent]] {
+            case t: TimedControlEvent => t
+            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
+            case other: DynamoDBRequest =>
+              throw new IllegalArgumentException(
+                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
+              )
+          }
+        )
+
+        val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+        val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](2))
+        val metricMerge = b.add(Merge[TimedElement[Stage4MetricEvent]](2))
+
+        requestFlow.out ~> broadcast.in
+        broadcast.out(0) ~> queryFilter ~> queryStage.in
+        broadcast.out(1) ~> scanFilter ~> scanBroadcast.in
+
+        queryStage.out0 ~> responseMerge.in(0)
+        queryStage.out1 ~> consumptionMerge.in(0)
+        queryStage.out2 ~> metricMerge.in(0)
+
+        scanBroadcast.out(0) ~> scanResponseFlow ~> responseMerge.in(1)
+        scanBroadcast.out(1) ~> scanConsumptionFlow ~> consumptionMerge.in(1)
+        scanBroadcast.out(2) ~> scanMetricFlow ~> metricMerge.in(1)
+
+        new FanOutShape3(
+          requestFlow.in,
+          responseMerge.out,
+          consumptionMerge.out,
+          metricMerge.out
+        )
+      }
+
   private def routeFor(config: Config, request: DynamoDBRequest): RouteBranch =
     request match
       case _: GetItemRequest | _: PutItemRequest | _: UpdateItemRequest | _: DeleteItemRequest | _: PartiQLQueryRequest =>
         RouteBranch.BaseTable
 
-      case QueryRequest(_, _, target) => routeForReadTarget(config, target)
+      case QueryRequest(_, _, target, _) => routeForReadTarget(config, target)
       case ScanRequest(_, _, target) => routeForReadTarget(config, target)
+
+  private def validateRequest(config: Config, request: DynamoDBRequest): Unit =
+    request match
+      case queryRequest: QueryRequest =>
+        routeForReadTarget(config, queryRequest.target)
+        queryRequest.target match
+          case DynamoDbReadTarget.GlobalSecondaryIndex(_, indexName)
+              if queryRequest.readConsistency == ReadConsistency.StronglyConsistent =>
+            throw new IllegalArgumentException(
+              s"Strongly consistent Query is not supported for global secondary index '$indexName'"
+            )
+          case _ => ()
+
+      case other =>
+        routeFor(config, other)
 
   private def routeForReadTarget(config: Config, target: DynamoDbReadTarget): RouteBranch =
     val globalIndexNames = config.globalSecondaryIndexes.map(_.indexName).toSet
@@ -256,7 +385,7 @@ object DynamoDbTable:
         val validationFlow = b.add(
           Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDBRequest]] {
             case request: DynamoDBRequest =>
-              routeFor(config, request)
+              validateRequest(config, request)
               request
 
             case t: TimedControlEvent => t
@@ -395,21 +524,28 @@ object DynamoDbTable:
             }
           )
 
-          val placeholderStage = b.add(
-            UnsupportedIndexStage.componentOf(
-              queryUnsupportedMessage =
-                s"Query is not yet supported for global secondary index '${indexDefinition.indexName}'",
+          val indexRuntime = indexRuntimes.collectFirst {
+            case gsi: InternalIndexRuntime.GlobalSecondaryIndex if gsi.indexName == indexDefinition.indexName => gsi
+          }.getOrElse(
+            throw new IllegalStateException(s"Missing runtime for global secondary index '${indexDefinition.indexName}'")
+          )
+
+          val queryEnabledStage = b.add(
+            QueryEnabledIndexStage.componentOf(
+              stateModel = indexRuntime.stateModel,
+              useCaseBehaviors = config.useCaseBehaviors,
+              queryTarget = indexRuntime.target,
+              unexpectedRequestDescription =
+                s"global secondary index '${indexDefinition.indexName}' query stage",
               scanUnsupportedMessage =
                 s"Scan is not yet supported for global secondary index '${indexDefinition.indexName}'",
-              unexpectedRequestDescription =
-                s"global secondary index '${indexDefinition.indexName}' placeholder stage"
             )
           )
 
-          requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> placeholderStage.in
-          placeholderStage.out0 ~> responseMerge.in(mergeInputIndex)
-          placeholderStage.out1 ~> consumptionMerge.in(mergeInputIndex)
-          placeholderStage.out2 ~> metricMerge.in(mergeInputIndex)
+          requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> queryEnabledStage.in
+          queryEnabledStage.out0 ~> responseMerge.in(mergeInputIndex)
+          queryEnabledStage.out1 ~> consumptionMerge.in(mergeInputIndex)
+          queryEnabledStage.out2 ~> metricMerge.in(mergeInputIndex)
 
           mergeInputIndex = mergeInputIndex + 1
         }
@@ -423,21 +559,28 @@ object DynamoDbTable:
             }
           )
 
-          val placeholderStage = b.add(
-            UnsupportedIndexStage.componentOf(
-              queryUnsupportedMessage =
-                s"Query is not yet supported for local secondary index '${indexDefinition.indexName}'",
+          val indexRuntime = indexRuntimes.collectFirst {
+            case lsi: InternalIndexRuntime.LocalSecondaryIndex if lsi.indexName == indexDefinition.indexName => lsi
+          }.getOrElse(
+            throw new IllegalStateException(s"Missing runtime for local secondary index '${indexDefinition.indexName}'")
+          )
+
+          val queryEnabledStage = b.add(
+            QueryEnabledIndexStage.componentOf(
+              stateModel = indexRuntime.stateModel,
+              useCaseBehaviors = config.useCaseBehaviors,
+              queryTarget = indexRuntime.target,
+              unexpectedRequestDescription =
+                s"local secondary index '${indexDefinition.indexName}' query stage",
               scanUnsupportedMessage =
                 s"Scan is not yet supported for local secondary index '${indexDefinition.indexName}'",
-              unexpectedRequestDescription =
-                s"local secondary index '${indexDefinition.indexName}' placeholder stage"
             )
           )
 
-          requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> placeholderStage.in
-          placeholderStage.out0 ~> responseMerge.in(mergeInputIndex)
-          placeholderStage.out1 ~> consumptionMerge.in(mergeInputIndex)
-          placeholderStage.out2 ~> metricMerge.in(mergeInputIndex)
+          requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> queryEnabledStage.in
+          queryEnabledStage.out0 ~> responseMerge.in(mergeInputIndex)
+          queryEnabledStage.out1 ~> consumptionMerge.in(mergeInputIndex)
+          queryEnabledStage.out2 ~> metricMerge.in(mergeInputIndex)
 
           mergeInputIndex = mergeInputIndex + 1
         }

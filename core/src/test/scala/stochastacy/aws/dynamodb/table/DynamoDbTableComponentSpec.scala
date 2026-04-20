@@ -224,8 +224,8 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       resources.collect { case evt: DynamoDbConsumptionEvent => evt.target }.toSet shouldBe Set(DynamoDbTarget.Table("orders"))
     }
 
-    "route table-targeted Query requests to the base-table path" in {
-      val config = indexedConfig()
+    "execute table-targeted Query requests through the base-table path" in {
+      val config = queryCapableIndexedConfig()
 
       val (responseFuture, resourceFuture, metricsFuture) =
         runComponent(
@@ -233,19 +233,97 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
             QueryRequest(
               eventTime = SimTime.of(1L),
               usecase = "query-usecase",
-              target = DynamoDbReadTarget.Table("orders")
+              target = DynamoDbReadTarget.Table("orders"),
+              readConsistency = ReadConsistency.StronglyConsistent
             )
           ),
           config
         )
 
-      val responseError = Await.result(responseFuture.failed, 3.seconds)
-      val resourceError = Await.result(resourceFuture.failed, 3.seconds)
-      val metricsError = Await.result(metricsFuture.failed, 3.seconds)
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
 
-      responseError.getMessage should include("Query is not yet supported")
-      resourceError.getMessage should include("Query is not yet supported")
-      metricsError.getMessage should include("Query is not yet supported")
+      responses.collect { case response: QueryResponse => response } shouldBe Vector(
+        QueryResponse(
+          eventTime = SimTime.of(1L),
+          usecase = "query-usecase",
+          target = DynamoDbReadTarget.Table("orders"),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          evaluatedItemCount = 8L,
+          evaluatedBytes = 4096L,
+          returnedItemCount = 2L,
+          returnedBytes = 1024L
+        )
+      )
+
+      resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.target -> evt.units } should contain
+        (DynamoDbTarget.Table("orders") -> BigDecimal(1))
+      metrics.collect { case evt: Stage4MetricEvent.QueryObserved => evt.target } should contain(DynamoDbReadTarget.Table("orders"))
+    }
+
+    "execute GSI and LSI Query requests against internal index state" in {
+      val config = queryCapableIndexedConfig()
+
+      val gsiResponses =
+        Await.result(
+          runComponent(
+            Source.single(
+              QueryRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "query-usecase",
+                target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+              )
+            ),
+            config
+          )._1,
+          3.seconds
+        )
+
+      val lsiResponses =
+        Await.result(
+          runComponent(
+            Source.single(
+              QueryRequest(
+                eventTime = SimTime.of(2L),
+                usecase = "query-usecase",
+                target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+                readConsistency = ReadConsistency.StronglyConsistent
+              )
+            ),
+            config
+          )._1,
+          3.seconds
+        )
+
+      gsiResponses.collect { case response: QueryResponse => response.target } shouldBe Vector(
+        DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+      )
+      lsiResponses.collect { case response: QueryResponse => response.target } shouldBe Vector(
+        DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index")
+      )
+    }
+
+    "reject strongly consistent GSI Query requests" in {
+      val config = queryCapableIndexedConfig()
+
+      val responseError =
+        Await.result(
+          runComponent(
+            Source.single(
+              QueryRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "query-usecase",
+                target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index"),
+                readConsistency = ReadConsistency.StronglyConsistent
+              )
+            ),
+            config
+          )._1.failed,
+          3.seconds
+        )
+
+      responseError.getMessage should include("Strongly consistent Query is not supported for global secondary index 'status-index'")
     }
 
     "route index-targeted reads to the configured placeholder execution unit" in {
@@ -373,6 +451,20 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
     )
 
+  private def queryCapableIndexedConfig(): DynamoDbTable.Config =
+    DynamoDbTable.Config(
+      tableName = "orders",
+      stateModel = FixedTableState(itemCount = 10L, totalItemBytes = 10000L),
+      useCaseBehaviors = Map("query-usecase" -> FixedQueryBehavior),
+      readConsistency = ReadConsistency.StronglyConsistent,
+      globalSecondaryIndexes = Vector(
+        DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = FixedTableState(4L, 4096L))
+      ),
+      localSecondaryIndexes = Vector(
+        DynamoDbTable.LocalSecondaryIndexDefinition("created-at-index", stateModel = FixedTableState(5L, 5120L))
+      )
+    )
+
   private def runComponent(
                             requestSource: Source[TimedElement[DynamoDBRequest], ?],
                             config: DynamoDbTable.Config
@@ -440,3 +532,12 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
                                             ) extends UseCaseSampler[TableState]:
     override def deleteItem(request: DeleteItemRequest, state: TableState): DeleteItemSample =
       FixedDeleteItemSample(deletedItemBytes)
+
+  private object FixedQueryBehavior extends UseCaseSampler[TableState]:
+    override def query(request: QueryRequest, state: TableState): QuerySample =
+      QuerySample(
+        evaluatedItemCount = 8L,
+        evaluatedBytes = 4096L,
+        returnedItemCount = 2L,
+        returnedBytes = 1024L
+      )

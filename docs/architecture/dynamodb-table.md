@@ -33,6 +33,18 @@ In step 3:
 - index propagation now emits index-targeted write consumption facts
 - real index reads are still deferred
 
+In step 4:
+
+- `Query` is now executable across the public `DynamoDbTable` component for:
+  - the base table
+  - configured GSIs
+  - configured LSIs
+- the first query slice remains intentionally opaque and usecase-driven rather than modeling full DynamoDB query ASTs
+- query execution is summary-oriented:
+  - evaluated item and byte totals are tracked separately from returned item and byte totals
+  - read consumption is derived from evaluated bytes
+- `Scan` remains deferred
+
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
 ## Layering

@@ -2,6 +2,7 @@ package stochastacy.aws.dynamodb
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
+import stochastacy.aws.dynamodb.table.ReadConsistency
 import stochastacy.sim.SimTime
 
 class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
@@ -11,7 +12,8 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
       val queryRequest = QueryRequest(
         eventTime = SimTime.of(1L),
         usecase = "query-usecase",
-        target = DynamoDbReadTarget.Table("orders")
+        target = DynamoDbReadTarget.Table("orders"),
+        readConsistency = ReadConsistency.StronglyConsistent
       )
       val scanRequest = ScanRequest(
         eventTime = SimTime.of(2L),
@@ -29,6 +31,7 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
       lsiRequest shouldBe a[DynamoDBRequest]
 
       queryRequest.target shouldBe DynamoDbReadTarget.Table("orders")
+      queryRequest.readConsistency shouldBe ReadConsistency.StronglyConsistent
       scanRequest.target shouldBe DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
       lsiRequest.target shouldBe DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index")
     }
@@ -42,7 +45,12 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
       val queryResponse = QueryResponse(
         eventTime = SimTime.of(5L),
         usecase = "query-response-usecase",
-        target = DynamoDbReadTarget.Table("orders")
+        target = DynamoDbReadTarget.Table("orders"),
+        readConsistency = ReadConsistency.EventuallyConsistent,
+        evaluatedItemCount = 4L,
+        evaluatedBytes = 4096L,
+        returnedItemCount = 2L,
+        returnedBytes = 1024L
       )
       val scanResponse = ScanResponse(
         eventTime = SimTime.of(6L),
@@ -61,6 +69,11 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
       partiqlResponse shouldBe a[DynamoDBResponse]
 
       partiqlRequest.queryText shouldBe "select * from orders"
+      queryResponse.readConsistency shouldBe ReadConsistency.EventuallyConsistent
+      queryResponse.evaluatedItemCount shouldBe 4L
+      queryResponse.evaluatedBytes shouldBe 4096L
+      queryResponse.returnedItemCount shouldBe 2L
+      queryResponse.returnedBytes shouldBe 1024L
       partiqlResponse.queryText shouldBe "select * from orders"
     }
   }
