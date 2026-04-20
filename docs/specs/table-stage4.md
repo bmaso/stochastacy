@@ -246,6 +246,13 @@ Current phase-2 step-1 note:
 - `TableStage4` still rejects them explicitly
 - real read-path execution for those operations remains a later phase-2 step
 
+Current phase-2 step-2 note:
+
+- `DynamoDbTable` is now the public table-and-indexes mono-component
+- `TableStage4` remains the storage-facing base-table core inside that public graph
+- GSIs and LSIs now exist as internal placeholder execution units in that graph
+- real index state and write propagation are still deferred to the next phase-2 step
+
 Phase-2 composition note:
 
 - the future index-aware DynamoDB table simulator should remain one larger public table-and-indexes graph

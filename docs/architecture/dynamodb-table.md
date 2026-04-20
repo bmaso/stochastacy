@@ -6,17 +6,24 @@ A future complete DynamoDB `Table` component should be a composed Pekko graph bu
 
 `TableStage4` is the storage-facing core of that future `Table` simulator. It represents the part of the table that actually touches simulated storage: the place where item existence, item size, table byte totals, and direct read/write physical effects are determined.
 
-For phase 2, this architecture should be extended into a larger **table-and-indexes mono-component** rather than a set of separately wired public index components.
+Phase-2 step 2 now introduces `DynamoDbTable` as the first public **table-and-indexes mono-component** rather than exposing a set of separately wired public index components.
 
 That means:
 
-- the public simulator surface should expose one composed DynamoDB **table-and-indexes** resource
+- the public simulator surface should expose one composed DynamoDB **table-and-indexes** resource via `DynamoDbTable`
 - that resource may internally contain:
   - one base-table execution unit
   - zero or more GSI execution units
   - zero or more LSI execution units
 - requests should be dispatched internally within the graph based on target selection
 - writes against the base table should propagate internally to the relevant index execution units
+
+In step 2 specifically:
+
+- `DynamoDbTable` is public
+- `TableStage4` remains the base-table execution unit inside it
+- GSI and LSI execution units are placeholder internal components
+- real index state and write propagation are still deferred to the next phase-2 step
 
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
