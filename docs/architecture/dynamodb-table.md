@@ -10,7 +10,7 @@ For phase 2, this architecture should be extended into a larger **table-and-inde
 
 That means:
 
-- the public simulator surface should expose one composed DynamoDB table resource
+- the public simulator surface should expose one composed DynamoDB **table-and-indexes** resource
 - that resource may internally contain:
   - one base-table execution unit
   - zero or more GSI execution units
@@ -81,4 +81,6 @@ This is intentionally different from a design where a caller constructs:
 
 That more manual style would make it too easy to construct invalid or internally inconsistent graphs.
 
-This structure keeps the simulator extensible. As the model becomes more realistic, we should be able to add outer stages without needing to redesign `TableStage4` itself.
+This structure also keeps the phase-2 demo target clear: the public graph should remain one indexed-table resource that can later support usage and cost-range estimation without asking the caller to assemble table and index behavior manually.
+
+As the model becomes more realistic, we should be able to add outer stages without needing to redesign `TableStage4` itself.

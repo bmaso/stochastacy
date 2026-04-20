@@ -2,7 +2,7 @@
 
 ## Goal
 
-Extend the initial public showing from table-only DynamoDB simulation into index-aware and query-oriented DynamoDB simulation.
+Extend the simulator from a table-only DynamoDB model into a demo-usable **table-and-indexes** model that can estimate usage and cost ranges for a table that has indexes.
 
 Phase 2 should be treated as an incremental continuation of phase 1, not as one giant implementation task.
 
@@ -14,30 +14,43 @@ Phase 2 is in scope for:
 - local secondary indexes
 - `Query`
 - `Scan`
-- PartiQL parser support at the request-shape level
-- table-plus-index composition
-- index-aware resource consumption, usage aggregation, and pricing extension
+- index-aware resource consumption, usage aggregation, and pricing
+- demo-ready indexed-table simulation
+- a public **table-and-indexes** graph component
 
 Phase 2 is out of scope for:
 
 - cross-region replication
 - global table behavior
-- replicated index update behavior
+- replicated cross-region index update behavior
 - full PartiQL execution semantics
+
+PartiQL remains in scope only as a parser and request-classification stub.
+
+## Architectural Direction
+
+Phase 2 should now be planned around one explicit architectural commitment:
+
+- the public simulator surface should expose one **table-and-indexes** graph component
+- GSIs and LSIs should be represented as internal execution units inside that component
+- callers should not construct or wire separate public index graph components
+- request dispatch and write propagation should be internal graph behavior
+
+This matters because the end-of-phase demo is no longer just "table simulation plus a few extra operations." It is an indexed-table simulation that can produce credible usage and cost ranges for a table whose writes and reads interact with indexes.
 
 ## Phase-2 Development Steps
 
 Future implementation work should be planned and executed one numbered step at a time.
 
-### 1. Execution Surface Expansion
+### 1. Execution Surface Foundation
 
 Feature goal:
 
-- expand the request and response surface so phase-2 read operations and index-targeted requests can exist cleanly beside the phase-1 CRUD surface
+- establish the public request and response surface for index-aware read operations without implying that real execution already exists
 
 Why this step comes first:
 
-- later work on indexes, `Query`, `Scan`, and PartiQL needs a stable phase-2 request surface before deeper behavior can be added
+- later composition, propagation, and read-path work need a stable public request surface before deeper behavior can be added
 
 Testing strategy:
 
@@ -46,126 +59,155 @@ Testing strategy:
   - base-table reads
   - index-targeted reads
   - unsupported PartiQL execution paths
+- keep explicit fail-fast behavior for unsupported phase-2 reads
 
-### 2. Index Modeling And Composition
+### 2. Public Table-And-Indexes Component
 
 Feature goal:
 
-- add GSI and LSI modeling as part of one composed table-and-indexes resource
+- introduce one public **table-and-indexes** graph component that callers use instead of manually assembling table plus index graph pieces
 
 Why this step comes second:
 
-- `Query` and `Scan` need a target model before they can behave differently for the base table vs an index
-- the simulator needs to decide index ownership and composition before real index-aware read execution is added
-
-Composition recommendation:
-
-- expose one public table-and-indexes graph component
-- represent GSIs and LSIs as internal execution units inside that larger graph
-- do not require callers to construct or wire separate public index graph components
-- keep request dispatch and write propagation inside the composed graph
+- later `Query`, `Scan`, accounting, and demo work should all be built on the real public component shape rather than on a temporary composition assumption
 
 Testing strategy:
 
-- add composition tests for request routing between base table, GSI, and LSI
-- add propagation tests showing base-table writes update index-facing state appropriately
-- add accounting-separation tests for base-table vs index usage
+- add composition tests proving:
+  - the public component can be instantiated with no indexes
+  - it can be instantiated with GSIs and LSIs
+  - base-table-targeted and index-targeted requests are dispatched internally to the correct execution path
+- add compatibility tests proving a table-only configuration still behaves like the phase-1 path
 
-### 3. `Query`
+### 3. Internal Index State And Write Propagation
 
 Feature goal:
 
-- add `Query` semantics for both base-table and index-targeted reads
+- make the table-and-indexes component actually own index-facing state and propagate base-table writes into the relevant internal index execution units
+
+Why this step comes before real index-aware reads:
+
+- a useful phase-2 demo needs indexes that are updated by writes, not just syntactically targetable indexes
+- `Query` against an index is not credible if the simulator has not first established how that index tracks the table
+
+Testing strategy:
+
+- add propagation tests showing:
+  - base-table writes affect the correct internal indexes
+  - unaffected indexes remain unchanged
+  - table and index consumption can be separated downstream
+- add regression tests proving base-table CRUD responses remain stable
+
+### 4. `Query`
+
+Feature goal:
+
+- add real `Query` execution for:
+  - the base table
+  - GSIs
+  - LSIs
 
 Why this step comes before `Scan`:
 
-- `Query` is the tighter, more index-native read path and is the better first expansion of read behavior beyond `GetItem`
+- `Query` is the tighter and more index-native read path, so it should lead the read-path expansion once index ownership and propagation exist
 
 Testing strategy:
 
 - add focused `Query` tests for:
-  - table-targeted queries
-  - GSI-targeted queries
-  - LSI-targeted queries
-  - empty vs non-empty result sets
-  - differing read and byte-usage profiles by target
-- add integration tests proving `Query` output feeds cleanly into usage, pricing, and reporting layers
+  - base-table targets
+  - GSI targets
+  - LSI targets
+  - empty vs non-empty results
+  - target-specific read and byte-consumption behavior
+- add integration tests proving `Query` works through the public table-and-indexes component rather than bypassing it
 
-### 4. `Scan`
+### 5. `Scan`
 
 Feature goal:
 
-- add `Scan` semantics for the base table and any index targets phase 2 allows
+- add real `Scan` execution for the base table and supported index targets
 
 Why this step follows `Query`:
 
-- `Scan` should reuse the already-established routing and target model rather than forcing it to be invented while scan semantics are also being introduced
+- `Scan` should reuse the already-established component composition, target selection, and index-state ownership rather than inventing them while scan semantics are also being introduced
 
 Testing strategy:
 
-- add `Scan` tests that contrast table scans vs index scans
-- add tests that verify `Scan` produces a distinct consumption signature from `Query`
-- add regression tests ensuring `Scan` does not disturb phase-1 CRUD behavior
+- add `Scan` tests contrasting:
+  - table scans vs index scans
+  - scan vs query consumption signatures
+- add regression tests ensuring `Scan` does not disturb:
+  - phase-1 CRUD behavior
+  - earlier phase-2 `Query` behavior
 
-### 5. Accounting, Usage, And Pricing Extension
+### 6. Accounting, Pricing, Export, And Reporting Extension
 
 Feature goal:
 
-- extend raw consumption events, usage rollups, and pricing support so phase-2 reads can be attributed to base tables vs GSIs vs LSIs
+- make the downstream layers fully aware of index-targeted and propagated index activity so the simulator can support a phase-2 demo with indexed tables
 
-Why this step comes after core read semantics:
+Why this is a major phase-2 step:
 
-- the accounting and pricing layers should extend the concrete execution behavior, not guess at it in advance
+- this is where the indexed-table behavior becomes operationally and financially meaningful rather than just behaviorally richer
 
 Testing strategy:
 
-- add accounting tests proving base-table and index usage are rolled up separately
-- add pricing tests proving index-targeted read behavior produces coherent downstream estimates
-- add export and bridge tests confirming phase-2 records remain stageable and dashboard-compatible
+- add accounting tests for separate table and index rollups
+- add pricing tests for indexed read paths
+- add export and bridge tests proving phase-2 records stage and visualize cleanly
+- add acceptance checks confirming the simulator can produce usage and cost ranges for an indexed-table scenario
 
-### 6. PartiQL Parser Stub
+### 7. PartiQL Parser Stub
 
 Feature goal:
 
-- add a shallow PartiQL request surface that can parse and classify supported phase-2 request shapes without attempting full execution
+- add a shallow PartiQL parser and classification layer without full execution semantics
 
-Why this step is intentionally narrow:
+Why this step is intentionally late and narrow:
 
-- full PartiQL execution would materially expand scope; phase 2 only needs the parser stub so future phases have a clean place to continue from
+- it is not required to make the indexed-table demo real
+- it should not distract from establishing actual index-aware execution and costing first
 
 Testing strategy:
 
-- add parser and classification tests for accepted PartiQL request forms
-- add explicit tests showing execution is stubbed or rejected in the intended way
-- add tests proving PartiQL support does not silently bypass the lower-level operation model
+- add parser and classification tests for accepted phase-2 forms
+- add explicit unsupported-execution tests
+- add tests proving PartiQL does not bypass the lower-level operation model
 
-### 7. Phase-2 Demo And Reporting Refresh
+### 8. Phase-2 Demo Finalization
 
 Feature goal:
 
-- refresh the demo and reporting path so phase 2 can visibly show index-aware read behavior
+- finish phase 2 with one strong indexed-table demo path using the public table-and-indexes component
 
-Why this step comes last:
+End-of-phase expectation:
 
-- the demo should reflect the actual implemented phase-2 behavior rather than lead the implementation
+- the demo should show a table that has indexes
+- writes should update table and index state coherently
+- reads should be able to target the base table or indexes
+- the system should estimate usage and cost ranges over multiple trials
+- staged, exported, and dashboarded outputs should preserve table-vs-index visibility
 
 Testing strategy:
 
-- add one end-to-end phase-2 scenario that includes:
+- add one end-to-end acceptance path that includes:
   - base-table writes
-  - index-aware reads
-  - staged output through Postgres
-  - dashboard-visible separation of read behavior
+  - index propagation
+  - index-targeted reads
+  - staged output through the Postgres bridge
+  - dashboard-visible usage and cost ranges for the indexed-table scenario
 
 ## Testing Strategy By Stage
 
 The overall phase-2 testing strategy should stay layered:
 
-- operation specs for `Query` and `Scan`
-- composition tests for table-plus-index routing and write propagation
-- accounting and pricing tests for target-aware usage totals and estimates
-- regression tests keeping phase-1 CRUD, usage, pricing, and demo paths green
-- one end-to-end phase-2 scenario for acceptance confidence
+- surface tests for request and response types plus explicit unsupported handling
+- composition tests for the public table-and-indexes component, internal dispatch, and merged outputs
+- propagation tests for base-table writes affecting internal index state correctly
+- operation specs for `Query` and `Scan` on both base-table and index targets
+- accounting, pricing, export, and reporting tests for target-aware usage totals and coherent cost estimates
+- regression tests keeping phase-1 CRUD, usage, pricing, export, and demo paths green
+- one indexed-table scenario for end-to-end demo acceptance
 
 ## Working Assumptions
 
@@ -174,14 +216,16 @@ The overall phase-2 testing strategy should stay layered:
 - PartiQL is parser-stub-only in phase 2
 - cross-region replication is out of scope
 - phase-2 work should extend the phase-1 layers rather than bypass them
-- indexes should be represented as internal graph components inside one larger table-and-indexes mono-component
-- request dispatch and write propagation should be internal graph behavior, not caller-managed wiring
+- the public simulator surface should expose one table-and-indexes graph component
+- indexes should be represented as internal execution units, not separately wired public graph components
+- request dispatch and write propagation should be internal graph behavior
+- the end-of-phase demo must be able to estimate usage and cost ranges for a table that has indexes
 
 ## Current Next Step
 
-The recommended first implementation slice is:
+The recommended next implementation slice is:
 
-- start with execution surface expansion and index-aware composition groundwork
-- do not start with full `Scan` or broader demo/reporting work first
+- start with the public table-and-indexes component and its internal composition groundwork
+- do not start with full `Scan`, broader reporting work, or full PartiQL behavior first
 
-This roadmap should be the canonical planning anchor for future phase-2 requests.
+This roadmap should remain the canonical planning anchor for future phase-2 work.

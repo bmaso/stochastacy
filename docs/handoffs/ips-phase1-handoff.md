@@ -84,9 +84,11 @@ Phase 1 is now effectively complete. Remaining work is documentation and operato
 
 For phase 2:
 
-1. add index architecture and table-plus-index composition
-2. add `Query`, `Scan`, and PartiQL query support
-3. add GSI and LSI modeling
+1. introduce the public **table-and-indexes** component as the new phase-2 composition target
+2. add internal index-state ownership and write propagation from the base table into GSIs and LSIs
+3. add index-aware read execution, starting with `Query` and then `Scan`
+4. extend accounting, pricing, export, and reporting so indexed-table scenarios can produce usage and cost ranges
+5. treat [ips-phase2.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/roadmaps/ips-phase2.md) as the canonical planning anchor for future phase-2 work
 
 ## Notes For A Fresh Session
 
@@ -94,4 +96,4 @@ For phase 2:
 - countable usage is priced from totals, while storage-like duration pricing is derived from timed streams
 - raw per-tick records remain the source of truth, while windowed records are derived for reporting and dashboard use
 - per-window values are reporting artifacts, not authoritative billed prices
-- if the next session starts by discussing indexes, use the phase-2 roadmap as the planning anchor
+- if the next session starts by discussing indexes, use the revised phase-2 roadmap as the planning anchor

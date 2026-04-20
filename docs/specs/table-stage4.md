@@ -252,6 +252,7 @@ Phase-2 composition note:
 - GSIs and LSIs should be represented as internal execution units within that graph
 - request dispatch to the base table vs an index should happen internally inside the composed graph
 - write propagation from the base table into indexes should also happen internally inside that graph
+- phase-2 should treat that composed graph as the public indexed-table resource needed for later usage and cost-range estimation
 
 ## Deferred To Phase 2
 
