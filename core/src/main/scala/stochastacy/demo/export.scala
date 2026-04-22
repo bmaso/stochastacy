@@ -73,14 +73,14 @@ object DemoExportRecord:
         scenarioId = trial.scenarioId,
         trialId = trial.trialId,
         tick = point.tick,
-        metric = point.metric.toString,
+        metric = point.metric.exportName,
         value = point.value
       )
     } ++ trial.summary.map { summary =>
       TrialSummaryRecord(
         scenarioId = trial.scenarioId,
         trialId = trial.trialId,
-        metric = summary.metric.toString,
+        metric = summary.metric.exportName,
         value = summary.value
       )
     }
@@ -91,7 +91,7 @@ object DemoExportRecord:
         scenarioId = result.scenarioId,
         trialCount = result.trialCount,
         tick = point.tick,
-        metric = point.metric.toString,
+        metric = point.metric.exportName,
         statistic = point.statistic.exportName,
         value = point.value
       )
@@ -99,7 +99,7 @@ object DemoExportRecord:
       AggregateSummaryRecord(
         scenarioId = result.scenarioId,
         trialCount = result.trialCount,
-        metric = summary.metric.toString,
+        metric = summary.metric.exportName,
         statistic = summary.statistic.exportName,
         value = summary.value
       )
@@ -116,7 +116,7 @@ object DemoExportRecord:
         trialId = trialId,
         windowSizeSeconds = point.windowSizeSeconds,
         windowStartTick = point.windowStartTick,
-        metric = point.metric.toString,
+        metric = point.metric.exportName,
         value = point.value
       )
     }
@@ -132,7 +132,7 @@ object DemoExportRecord:
         trialCount = trialCount,
         windowSizeSeconds = point.windowSizeSeconds,
         windowStartTick = point.windowStartTick,
-        metric = point.metric.toString,
+        metric = point.metric.exportName,
         statistic = point.statistic.exportName,
         value = point.value
       )

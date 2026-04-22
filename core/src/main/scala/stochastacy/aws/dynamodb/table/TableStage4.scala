@@ -3,7 +3,7 @@ package stochastacy.aws.dynamodb.table
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL}
 import org.apache.pekko.stream.{FanOutShape3, Graph}
-import stochastacy.aws.dynamodb.{DeleteItemRequest, DeleteItemResponse, DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, PutItemRequest, PutItemResponse, UpdateItemRequest, UpdateItemResponse}
+import stochastacy.aws.dynamodb.{DeleteItemRequest, DeleteItemResponse, DynamoDBRequest, DynamoDBResponse, GetItemRequest, GetItemResponse, PartiQLQueryRequest, PutItemRequest, PutItemResponse, QueryRequest, QueryResponse, ScanRequest, ScanResponse, UpdateItemRequest, UpdateItemResponse}
 import stochastacy.sim.*
 
 /**
@@ -23,6 +23,10 @@ object TableStage4:
     override val usecase: Any = req.usecase
 
   private case class TimedGetItemSample(req: GetItemRequest, sample: Option[GetItemSample]) extends TimedRequestSample
+
+  private case class TimedQuerySample(req: QueryRequest, sample: QuerySample) extends TimedRequestSample
+
+  private case class TimedScanSample(req: ScanRequest, sample: ScanSample) extends TimedRequestSample
 
   private case class TimedPutItemSample(req: PutItemRequest, sample: PutItemSample) extends TimedRequestSample
 
@@ -44,11 +48,10 @@ object TableStage4:
     ],
     NotUsed
   ] = {
-    val readCapacityUnitMultiplier = readConsistency match
-      case ReadConsistency.EventuallyConsistent => BigDecimal("0.5")
-      case ReadConsistency.StronglyConsistent => BigDecimal(1)
-
-    def readCapacityUnitsFor(itemBytes: Option[Long]): BigDecimal =
+    def readCapacityUnitsFor(itemBytes: Option[Long], consistency: ReadConsistency): BigDecimal =
+      val readCapacityUnitMultiplier = consistency match
+        case ReadConsistency.EventuallyConsistent => BigDecimal("0.5")
+        case ReadConsistency.StronglyConsistent => BigDecimal(1)
       val chunkCount = itemBytes match
         case Some(bytes) if bytes > 0 =>
           ((bytes - 1L) / BytesPerReadCapacityUnitChunk) + 1L
@@ -67,6 +70,15 @@ object TableStage4:
         request.usecase,
         throw new IllegalArgumentException(s"No table behavior for '${request.usecase}'")
       )
+
+    def targetFor(readTarget: stochastacy.aws.dynamodb.DynamoDbReadTarget): DynamoDbTarget =
+      readTarget match
+        case stochastacy.aws.dynamodb.DynamoDbReadTarget.Table(tableName) =>
+          DynamoDbTarget.Table(tableName)
+        case stochastacy.aws.dynamodb.DynamoDbReadTarget.GlobalSecondaryIndex(tableName, indexName) =>
+          DynamoDbTarget.GlobalSecondaryIndex(tableName, indexName)
+        case stochastacy.aws.dynamodb.DynamoDbReadTarget.LocalSecondaryIndex(tableName, indexName) =>
+          DynamoDbTarget.LocalSecondaryIndex(tableName, indexName)
 
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits._
@@ -87,6 +99,14 @@ object TableStage4:
               stateModel.recordSuccessfulPut(sample.writtenItemBytes, sample.previousItemBytes)
               TimedPutItemSample(r, sample)
 
+            case r: QueryRequest =>
+              val sampler = samplerFor(r)
+              TimedQuerySample(r, sampler.query(r, stateModel))
+
+            case r: ScanRequest =>
+              val sampler = samplerFor(r)
+              TimedScanSample(r, sampler.scan(r, stateModel))
+
             case r: UpdateItemRequest =>
               val sampler = samplerFor(r)
               val sample = sampler.updateItem(r, stateModel)
@@ -98,6 +118,9 @@ object TableStage4:
               val sample = sampler.deleteItem(r, stateModel)
               stateModel.recordSuccessfulDelete(sample.deletedItemBytes)
               TimedDeleteItemSample(r, sample)
+
+            case _: PartiQLQueryRequest =>
+              throw new UnsupportedOperationException("PartiQL query execution is not yet supported")
   
             case t: TimedControlEvent => t // ...everything else, which should just be TimedEvent elements, gets passed through
           }
@@ -127,6 +150,30 @@ object TableStage4:
                 usecase   = r.usecase,
                 itemFound = false,
                 itemBytes = None
+              )
+
+            case TimedQuerySample(r: QueryRequest, s: QuerySample) =>
+              QueryResponse(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                target = r.target,
+                readConsistency = r.readConsistency,
+                evaluatedItemCount = s.evaluatedItemCount,
+                evaluatedBytes = s.evaluatedBytes,
+                returnedItemCount = s.returnedItemCount,
+                returnedBytes = s.returnedBytes
+              )
+
+            case TimedScanSample(r: ScanRequest, s: ScanSample) =>
+              ScanResponse(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                target = r.target,
+                readConsistency = r.readConsistency,
+                evaluatedItemCount = s.evaluatedItemCount,
+                evaluatedBytes = s.evaluatedBytes,
+                returnedItemCount = s.returnedItemCount,
+                returnedBytes = s.returnedBytes
               )
 
             case TimedPutItemSample(r: PutItemRequest, s: PutItemSample) =>
@@ -184,6 +231,62 @@ object TableStage4:
                   usecase = r.usecase
                 )
               )
+
+            case TimedQuerySample(r: QueryRequest, s: QuerySample) =>
+              val returnedEvents =
+                if s.returnedItemCount > 0L || s.returnedBytes > 0L then
+                  List(
+                    Stage4MetricEvent.QueryReturned(
+                      eventTime = r.eventTime,
+                      usecase = r.usecase,
+                      target = r.target,
+                      itemCount = s.returnedItemCount,
+                      bytes = s.returnedBytes
+                    )
+                  )
+                else Nil
+              List(
+                Stage4MetricEvent.QueryObserved(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = r.target
+                ),
+                Stage4MetricEvent.QueryEvaluated(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = r.target,
+                  itemCount = s.evaluatedItemCount,
+                  bytes = s.evaluatedBytes
+                )
+              ) ++ returnedEvents
+
+            case TimedScanSample(r: ScanRequest, s: ScanSample) =>
+              val returnedEvents =
+                if s.returnedItemCount > 0L || s.returnedBytes > 0L then
+                  List(
+                    Stage4MetricEvent.ScanReturned(
+                      eventTime = r.eventTime,
+                      usecase = r.usecase,
+                      target = r.target,
+                      itemCount = s.returnedItemCount,
+                      bytes = s.returnedBytes
+                    )
+                  )
+                else Nil
+              List(
+                Stage4MetricEvent.ScanObserved(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = r.target
+                ),
+                Stage4MetricEvent.ScanEvaluated(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = r.target,
+                  itemCount = s.evaluatedItemCount,
+                  bytes = s.evaluatedBytes
+                )
+              ) ++ returnedEvents
 
             case TimedPutItemSample(r: PutItemRequest, s: PutItemSample) =>
               List(
@@ -276,7 +379,7 @@ object TableStage4:
                   eventTime = r.eventTime,
                   usecase = r.usecase,
                   target = tableTarget,
-                  units = readCapacityUnitsFor(Some(s.getItemBytes)),
+                  units = readCapacityUnitsFor(Some(s.getItemBytes), readConsistency),
                   consistency = readConsistency
                 ),
                 DynamoDbConsumptionEvent.StorageBytesRead(
@@ -293,10 +396,60 @@ object TableStage4:
                   eventTime = r.eventTime,
                   usecase = r.usecase,
                   target = tableTarget,
-                  units = readCapacityUnitsFor(None),
+                  units = readCapacityUnitsFor(None, readConsistency),
                   consistency = readConsistency
                 )
               )
+
+            case TimedQuerySample(r: QueryRequest, s: QuerySample) =>
+              val queryTarget = targetFor(r.target)
+
+              val bytesReadEvents =
+                if s.evaluatedBytes > 0L then
+                  List(
+                    DynamoDbConsumptionEvent.StorageBytesRead(
+                      eventTime = r.eventTime,
+                      usecase = r.usecase,
+                      target = queryTarget,
+                      bytes = s.evaluatedBytes
+                    )
+                  )
+                else Nil
+
+              List(
+                DynamoDbConsumptionEvent.ReadCapacityConsumed(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = queryTarget,
+                  units = readCapacityUnitsFor(Some(s.evaluatedBytes), r.readConsistency),
+                  consistency = r.readConsistency
+                )
+              ) ++ bytesReadEvents
+
+            case TimedScanSample(r: ScanRequest, s: ScanSample) =>
+              val scanTarget = targetFor(r.target)
+
+              val bytesReadEvents =
+                if s.evaluatedBytes > 0L then
+                  List(
+                    DynamoDbConsumptionEvent.StorageBytesRead(
+                      eventTime = r.eventTime,
+                      usecase = r.usecase,
+                      target = scanTarget,
+                      bytes = s.evaluatedBytes
+                    )
+                  )
+                else Nil
+
+              List(
+                DynamoDbConsumptionEvent.ReadCapacityConsumed(
+                  eventTime = r.eventTime,
+                  usecase = r.usecase,
+                  target = scanTarget,
+                  units = readCapacityUnitsFor(Some(s.evaluatedBytes), r.readConsistency),
+                  consistency = r.readConsistency
+                )
+              ) ++ bytesReadEvents
 
             case TimedPutItemSample(r: PutItemRequest, s: PutItemSample) =>
               List(

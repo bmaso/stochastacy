@@ -9,7 +9,7 @@ object TimeWindowRollups:
     points
       .groupBy(point => (windowStartTick(point.tick, windowSize), point.metric))
       .toVector
-      .sortBy { case ((windowStart, metric), _) => (windowStart, metric.ordinal) }
+      .sortBy { case ((windowStart, metric), _) => (windowStart, metric.sortKey) }
       .map { case ((windowStart, metric), groupedPoints) =>
         WindowedTimeSeriesPoint(
           windowSizeSeconds = windowSize.seconds,
@@ -33,7 +33,7 @@ object TimeWindowRollups:
 
     val keys =
       byTrial.iterator.flatMap(_.keySet).toSet.toVector
-        .sortBy { case (windowStart, metric) => (windowStart, metric.ordinal) }
+        .sortBy { case (windowStart, metric) => (windowStart, metric.sortKey) }
 
     keys.flatMap { case (windowStart, metric) =>
       val values = byTrial.map(_.getOrElse((windowStart, metric), BigDecimal(0)))
@@ -60,7 +60,8 @@ object TimeWindowRollups:
                             points: Vector[SimulationTimeSeriesPoint]
                           ): BigDecimal =
     metric match
-      case DemoMetric.ReadCapacityUnits | DemoMetric.WriteCapacityUnits =>
+      case DemoMetric.ReadCapacityUnits | DemoMetric.WriteCapacityUnits |
+          DemoMetric.GsiReadCapacityUnits(_) | DemoMetric.GsiWriteCapacityUnits(_) =>
         points.map(_.value).sum
       case DemoMetric.StorageBytes =>
         points.map(_.value).sum / BigDecimal(points.size)

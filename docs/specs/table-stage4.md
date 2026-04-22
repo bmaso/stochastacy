@@ -234,11 +234,66 @@ The current implementation has progressed beyond that initial slice and now also
 - time-based storage usage aggregation
 - downstream pricing derived from those usage layers
 
-## Deferred To Phase 2
-
-The current phase-1 plan intentionally leaves these outside `TableStage4`'s required surface area:
+The public request surface has also now been expanded to include:
 
 - `Query`
 - `Scan`
-- PartiQL query support
-- index-targeted execution paths
+- `PartiQLQuery`
+
+Current phase-2 step-1 note:
+
+- those request types now exist in the public simulator surface
+- `TableStage4` still rejects them explicitly
+- real read-path execution for those operations remains a later phase-2 step
+
+Current phase-2 step-2 note:
+
+- `DynamoDbTable` is now the public table-and-indexes mono-component
+- `TableStage4` remains the storage-facing base-table core inside that public graph
+- GSIs and LSIs now exist as internal placeholder execution units in that graph
+- real index state and write propagation are still deferred to the next phase-2 step
+
+Current phase-2 step-3 note:
+
+- `DynamoDbTable` now owns internal `TableState` for each configured GSI and LSI
+- successful base-table writes are now propagated into those internal index states
+- propagation currently mirrors summary-level write effects into every configured index
+- propagation now emits index-targeted write consumption events
+- real index reads and index-specific metrics are still deferred
+
+Current phase-2 step-4 note:
+
+- `Query` is now executable on the base table, GSIs, and LSIs
+- the current `Query` surface remains intentionally opaque and usecase-driven
+- `QueryResponse` is summary-oriented rather than item-oriented
+- query modeling now distinguishes evaluated item and byte totals from returned item and byte totals
+- query read consumption is derived from evaluated bytes, not returned bytes
+- GSI queries are eventually consistent only; base-table and LSI queries may be eventual or strong
+- `Scan` and PartiQL query execution remain deferred
+
+Current phase-2 step-5 note:
+
+- `Scan` is now executable on the base table, GSIs, and LSIs
+- the current `Scan` surface remains intentionally opaque and usecase-driven
+- `ScanResponse` is summary-oriented rather than item-oriented
+- scan modeling distinguishes evaluated item and byte totals from returned item and byte totals
+- scan read consumption is derived from evaluated bytes, not returned bytes
+- GSI scans are eventually consistent only; base-table and LSI scans may be eventual or strong
+- PartiQL query execution remains deferred
+
+Phase-2 composition note:
+
+- the future index-aware DynamoDB table simulator should remain one larger public table-and-indexes graph
+- GSIs and LSIs should be represented as internal execution units within that graph
+- request dispatch to the base table vs an index should happen internally inside the composed graph
+- write propagation from the base table into indexes should also happen internally inside that graph
+- phase-2 should treat that composed graph as the public indexed-table resource needed for later usage and cost-range estimation
+
+## Still Deferred
+
+The current implementation still leaves these outside `TableStage4`'s required executable surface area:
+
+- PartiQL query execution
+- item-oriented query payload modeling
+- typed key-condition, filter, projection, pagination, ordering, or parallel-scan query shapes
+- index-specific metric streams beyond the current summary-oriented query telemetry

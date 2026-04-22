@@ -2,11 +2,11 @@
 
 ## Purpose
 
-This note describes the implemented Grafana dashboard used for the phase-1 initial public showing.
+This note describes the implemented Grafana dashboard used for the order-tracking demo path.
 
 The checked-in dashboard definition lives at:
 
-- [order-tracking-phase1-dashboard.json](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/grafana/order-tracking-phase1-dashboard.json)
+- [order-tracking-phase2-dashboard.json](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/grafana/order-tracking-phase2-dashboard.json)
 
 ## Primary User
 
@@ -37,8 +37,9 @@ The dashboard tells a simple story:
 
 1. a simulated `order-tracking` service performs `PutItem`, `GetItem`, `UpdateItem`, and `DeleteItem`
 2. the simulator runs many trials of the same scenario
-3. the dashboard shows central tendency and spread of resource usage over time
-4. the dashboard also shows whole-run central-range summary values across the full batch of trials
+3. the dashboard shows central tendency and spread of total consumed capacity over time
+4. the dashboard also calls out selected-GSI consumed read and write capacity
+5. the dashboard shows whole-run central-range summary values across the full batch of trials
 
 ## Data Source
 
@@ -60,7 +61,7 @@ The concrete bridge is:
 
 ## Dashboard Structure
 
-The dashboard has three rows.
+The dashboard has five rows.
 
 ### Row 1: Scenario Summary
 
@@ -96,16 +97,56 @@ Panels:
 - presentation:
   - `mean +/- stddev`
 
-### Row 2: Time-Series Usage
+### Row 2: Consumed Capacity Summary
 
 Purpose:
 
-- show how the table behaves over simulated time
+- show whole-run central ranges for total and selected-GSI read and write capacity
+
+Panels:
+
+1. `Total Read Capacity Units Central Range`
+- type: text panel backed by a hidden query variable
+- source:
+  - `aggregate-summary`
+- presentation:
+  - `mean +/- stddev`
+
+2. `Total Write Capacity Units Central Range`
+- type: text panel backed by a hidden query variable
+- source:
+  - `aggregate-summary`
+- presentation:
+  - `mean +/- stddev`
+
+3. `GSI Read Capacity Units Central Range`
+- type: text panel backed by a hidden query variable
+- source:
+  - `aggregate-summary`
+- filter:
+  - selected `gsiIndexName`
+- presentation:
+  - `mean +/- stddev`
+
+4. `GSI Write Capacity Units Central Range`
+- type: text panel backed by a hidden query variable
+- source:
+  - `aggregate-summary`
+- filter:
+  - selected `gsiIndexName`
+- presentation:
+  - `mean +/- stddev`
+
+### Row 3: Time-Series Usage
+
+Purpose:
+
+- show how total consumed capacity behaves over simulated time
 - make peaks and spread visually obvious
 
 Panels:
 
-1. `Read Capacity Units by Window`
+1. `Total Read Capacity Units by Window`
 - type: time series
 - source:
   - `trial-window-time-series`
@@ -118,7 +159,7 @@ Panels:
   - percentile boundary lines
   - shaded percentile bands
 
-2. `Write Capacity Units by Window`
+2. `Total Write Capacity Units by Window`
 - type: time series
 - source:
   - `trial-window-time-series`
@@ -131,7 +172,33 @@ Panels:
   - percentile boundary lines
   - shaded percentile bands
 
-### Row 3: Storage And Cost Over Time
+### Row 4: Per-GSI Usage
+
+Purpose:
+
+- show the selected GSI's consumed capacity over simulated time without exposing LSI detail
+
+Panels:
+
+1. `GSI Read Capacity Units by Window`
+- type: time series
+- source:
+  - `trial-window-time-series`
+- filter:
+  - selected `gsiIndexName`
+- aggregation:
+  - SQL computes mean, `p5`, `p25`, `p75`, and `p95`
+
+2. `GSI Write Capacity Units by Window`
+- type: time series
+- source:
+  - `trial-window-time-series`
+- filter:
+  - selected `gsiIndexName`
+- aggregation:
+  - SQL computes mean, `p5`, `p25`, `p75`, and `p95`
+
+### Row 5: Storage And Cost Over Time
 
 Purpose:
 
@@ -171,6 +238,7 @@ Current dashboard variables include:
 - `windowSizeSeconds`
 - `scenarioId`
 - `trialCount`
+- `gsiIndexName`
 - `simulationTicks`
 - `readConsistency`
 - `tableName`
@@ -185,4 +253,9 @@ Current supported window sizes:
 - the dashboard defaults to the simulation epoch time range, not a live wall-clock range
 - raw per-tick records remain staged for debugging and future use
 - windowed records drive the main presentation panels
+- visible reporting preserves:
+  - overall read and write capacity
+  - per-GSI read and write capacity
+  - overall-only storage and cost
+- LSI activity remains internal and contributes only to the overall totals
 - per-window usage views are reporting artifacts, not authoritative billed price outputs

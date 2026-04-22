@@ -23,7 +23,7 @@ class OrderTrackingSingleTrialRunnerSpec extends AnyWordSpec with should.Matcher
   "OrderTrackingSingleTrialRunner" should {
     "return a non-empty result with the required time-series and summary metrics" in {
       val runner = OrderTrackingSingleTrialRunner()
-      val config = OrderTrackingScenarioConfig.phase1Default.copy(
+      val config = OrderTrackingScenarioConfig.phase2Default.copy(
         simulationTicks = 6L,
         trialCount = 2,
         parallelism = 2
@@ -44,25 +44,35 @@ class OrderTrackingSingleTrialRunnerSpec extends AnyWordSpec with should.Matcher
       result.timeSeries should not be empty
       result.summary should not be empty
 
-      result.timeSeries.map(_.metric).toSet shouldBe Set(
+      val timeSeriesMetrics = result.timeSeries.map(_.metric).toSet
+      timeSeriesMetrics should contain allOf (
         DemoMetric.ReadCapacityUnits,
         DemoMetric.WriteCapacityUnits,
         DemoMetric.StorageBytes,
         DemoMetric.CumulativeEstimatedCost
       )
+      config.globalSecondaryIndexNames.foreach { indexName =>
+        timeSeriesMetrics should contain(DemoMetric.GsiReadCapacityUnits(indexName))
+        timeSeriesMetrics should contain(DemoMetric.GsiWriteCapacityUnits(indexName))
+      }
 
-      result.summary.map(_.metric).toSet shouldBe Set(
+      val summaryMetrics = result.summary.map(_.metric).toSet
+      summaryMetrics should contain allOf (
         DemoMetric.TotalReadCapacityUnits,
         DemoMetric.TotalWriteCapacityUnits,
         DemoMetric.TotalStorageByteTicks,
         DemoMetric.FinalStorageBytes,
         DemoMetric.TotalEstimatedCost
       )
+      config.globalSecondaryIndexNames.foreach { indexName =>
+        summaryMetrics should contain(DemoMetric.TotalGsiReadCapacityUnits(indexName))
+        summaryMetrics should contain(DemoMetric.TotalGsiWriteCapacityUnits(indexName))
+      }
     }
 
     "produce summary totals that are consistent with the per-tick series" in {
       val runner = OrderTrackingSingleTrialRunner()
-      val config = OrderTrackingScenarioConfig.phase1Default.copy(
+      val config = OrderTrackingScenarioConfig.phase2Default.copy(
         simulationTicks = 5L
       )
 
@@ -103,11 +113,25 @@ class OrderTrackingSingleTrialRunnerSpec extends AnyWordSpec with should.Matcher
       summaryMap(DemoMetric.TotalWriteCapacityUnits) shouldBe writeSeriesTotal
       summaryMap(DemoMetric.FinalStorageBytes) shouldBe lastStorage
       summaryMap(DemoMetric.TotalEstimatedCost) shouldBe lastCumulativeCost
+
+      config.globalSecondaryIndexNames.foreach { indexName =>
+        val gsiReadSeriesTotal =
+          result.timeSeries.collect {
+            case point if point.metric == DemoMetric.GsiReadCapacityUnits(indexName) => point.value
+          }.sum
+        val gsiWriteSeriesTotal =
+          result.timeSeries.collect {
+            case point if point.metric == DemoMetric.GsiWriteCapacityUnits(indexName) => point.value
+          }.sum
+
+        summaryMap(DemoMetric.TotalGsiReadCapacityUnits(indexName)) shouldBe gsiReadSeriesTotal
+        summaryMap(DemoMetric.TotalGsiWriteCapacityUnits(indexName)) shouldBe gsiWriteSeriesTotal
+      }
     }
 
     "be deterministic for the same config and seed" in {
       val runner = OrderTrackingSingleTrialRunner()
-      val config = OrderTrackingScenarioConfig.phase1Default.copy(
+      val config = OrderTrackingScenarioConfig.phase2Default.copy(
         simulationTicks = 8L
       )
       val run = TrialRunConfig(

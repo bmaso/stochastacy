@@ -2,31 +2,72 @@ package stochastacy.examples.ordertracking
 
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
-import stochastacy.demo.{DemoExportBundle, DemoJsonlExporter, DemoReportBuilder, FutureMultiTrialExecutor, TrialExecutionConfig}
+import org.json4s.*
+import org.json4s.jackson.JsonMethods.parse
+import stochastacy.demo.{DemoExportBundle, DemoExportRecord, DemoJsonlExporter, DemoReportBuilder, FutureMultiTrialExecutor, TrialExecutionConfig}
 
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
+import java.sql.{Connection, DriverManager}
 import java.time.format.DateTimeFormatter
 import java.time.{ZoneOffset, ZonedDateTime}
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.io.Source
 import scala.util.{Failure, Success, Try}
 
-final case class OrderTrackingPhase1DemoOptions(
+final case class OrderTrackingPhase2DemoOptions(
                                                  outputPath: Option[Path],
                                                  trialCount: Int,
                                                  parallelism: Int,
                                                  simulationTicks: Long
                                                )
 
-object OrderTrackingPhase1BridgeCli:
+final case class BatchMetadata(
+                                batchId: String,
+                                scenarioId: String,
+                                trialCount: Int,
+                                parallelism: Int,
+                                simulationTicks: Long,
+                                baseSeed: Long,
+                                readConsistency: String,
+                                tableName: String,
+                                sourceJsonlPath: Option[String]
+                              )
+
+sealed trait OrderTrackingBridgeCommand
+
+object OrderTrackingBridgeCommand:
+  final case class Generate(
+                             batchId: String,
+                             outputPath: Path,
+                             trialCount: Int,
+                             parallelism: Int,
+                             simulationTicks: Long
+                           ) extends OrderTrackingBridgeCommand
+
+  final case class Stage(
+                          inputPath: Path,
+                          metadata: BatchMetadata,
+                          dbUrl: String,
+                          dbUser: String,
+                          dbPassword: String
+                        ) extends OrderTrackingBridgeCommand
+
+  final case class View(
+                         grafanaBaseUrl: String,
+                         batchId: String,
+                         scenarioId: String
+                       ) extends OrderTrackingBridgeCommand
+
+object OrderTrackingPhase2BridgeCli:
   private val GenerateUsage =
-    "usage: OrderTrackingPhase1Bridge generate --output <path> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>]"
+    "usage: OrderTrackingPhase2Bridge generate --output <path> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>]"
   private val StageUsage =
-    "usage: OrderTrackingPhase1Bridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--scenario-id <id>] [--read-consistency <value>] [--table-name <name>]"
+    "usage: OrderTrackingPhase2Bridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--scenario-id <id>] [--read-consistency <value>] [--table-name <name>]"
   private val ViewUsage =
-    "usage: OrderTrackingPhase1Bridge view --batch-id <id> [--scenario-id <id>] [--grafana-base-url <url>]"
+    "usage: OrderTrackingPhase2Bridge view --batch-id <id> [--scenario-id <id>] [--grafana-base-url <url>]"
   private val TopLevelUsage =
     s"""usage:
        |  $GenerateUsage
@@ -48,7 +89,7 @@ object OrderTrackingPhase1BridgeCli:
                              args: List[String],
                              now: ZonedDateTime
                            ): Either[String, OrderTrackingBridgeCommand.Generate] =
-    val defaults = OrderTrackingScenarioConfig.phase1Default
+    val defaults = OrderTrackingScenarioConfig.phase2Default
 
     def loop(
               remaining: List[String],
@@ -114,7 +155,7 @@ object OrderTrackingPhase1BridgeCli:
   private def parseStage(
                           args: List[String]
                         ): Either[String, OrderTrackingBridgeCommand.Stage] =
-    val defaults = OrderTrackingScenarioConfig.phase1Default
+    val defaults = OrderTrackingScenarioConfig.phase2Default
 
     def loop(
               remaining: List[String],
@@ -150,7 +191,7 @@ object OrderTrackingPhase1BridgeCli:
                 trialCount = tc,
                 parallelism = p,
                 simulationTicks = ticks,
-                baseSeed = OrderTrackingPhase1DemoRunner.Phase1BaseSeed,
+                baseSeed = OrderTrackingPhase2DemoRunner.Phase2BaseSeed,
                 readConsistency = readConsistency.getOrElse(defaults.readConsistency.toString),
                 tableName = tableName.getOrElse(defaults.tableName),
                 sourceJsonlPath = Some(path.toString)
@@ -224,7 +265,7 @@ object OrderTrackingPhase1BridgeCli:
   private def parseView(
                          args: List[String]
                        ): Either[String, OrderTrackingBridgeCommand.View] =
-    val defaults = OrderTrackingScenarioConfig.phase1Default
+    val defaults = OrderTrackingScenarioConfig.phase2Default
 
     def loop(
               remaining: List[String],
@@ -279,15 +320,15 @@ object OrderTrackingPhase1BridgeCli:
 
   private def defaultBatchId(now: ZonedDateTime): String =
     val formatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
-    s"order-tracking-phase1-${now.format(formatter)}"
+    s"order-tracking-phase2-${now.format(formatter)}"
 
-object OrderTrackingPhase1DemoRunner:
-  val Phase1BaseSeed: Long = 20260418L
+object OrderTrackingPhase2DemoRunner:
+  val Phase2BaseSeed: Long = 20260418L
 
   def run(
-           options: OrderTrackingPhase1DemoOptions
+           options: OrderTrackingPhase2DemoOptions
          )(using ActorSystem, Materializer, ExecutionContext): Future[DemoExportBundle] =
-    val scenarioConfig = OrderTrackingScenarioConfig.phase1Default.copy(
+    val scenarioConfig = OrderTrackingScenarioConfig.phase2Default.copy(
       trialCount = options.trialCount,
       parallelism = options.parallelism,
       simulationTicks = options.simulationTicks
@@ -302,13 +343,13 @@ object OrderTrackingPhase1DemoRunner:
         exec = TrialExecutionConfig(
           trialCount = options.trialCount,
           parallelism = options.parallelism,
-          baseSeed = Phase1BaseSeed
+          baseSeed = Phase2BaseSeed
         )
       )
       .map(DemoReportBuilder.build)
 
   def emit(
-            options: OrderTrackingPhase1DemoOptions,
+            options: OrderTrackingPhase2DemoOptions,
             bundle: DemoExportBundle
           ): String =
     val rendered = DemoJsonlExporter.render(bundle.records)
@@ -321,9 +362,142 @@ object OrderTrackingPhase1DemoRunner:
       case None =>
         rendered
 
-object OrderTrackingPhase1GrafanaView:
-  private val DashboardUid = "ips-phase1-order-tracking"
-  private val DashboardSlug = "ips-phase-1-order-tracking-dynamodb-simulation"
+final case class StagedDemoRecord(
+                                   recordType: String,
+                                   scenarioId: String,
+                                   trialId: Option[Int],
+                                   tick: Option[Long],
+                                   windowSizeSeconds: Option[Int],
+                                   windowStartTick: Option[Long],
+                                   metric: String,
+                                   statistic: Option[String],
+                                   value: BigDecimal
+                                 )
+
+object OrderTrackingPostgresBridge:
+  private given Formats = DefaultFormats
+
+  def stage(
+             inputPath: Path,
+             metadata: BatchMetadata,
+             dbUrl: String,
+             dbUser: String,
+             dbPassword: String
+           ): Int =
+    val records = parseJsonl(Files.readString(inputPath), expectedScenarioId = metadata.scenarioId)
+    require(records.nonEmpty, "JSONL input must not be empty")
+
+    val connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword)
+    try
+      connection.setAutoCommit(false)
+      insertBatch(connection, metadata)
+      insertRecords(connection, metadata.batchId, records)
+      connection.commit()
+      records.size
+    catch
+      case t: Throwable =>
+        Try(connection.rollback())
+        throw t
+    finally
+      connection.close()
+
+  def parseJsonl(
+                  jsonl: String,
+                  expectedScenarioId: String
+                ): Vector[StagedDemoRecord] =
+    val lines = jsonl.linesIterator.map(_.trim).filter(_.nonEmpty).toVector
+    require(lines.nonEmpty, "JSONL input must not be empty")
+
+    val records = lines.map(parseRecord)
+    require(
+      records.forall(_.scenarioId == expectedScenarioId),
+      s"JSONL records must all have scenarioId = $expectedScenarioId"
+    )
+    records
+
+  def loadSchema(connection: Connection): Unit =
+    val schemaSql =
+      Source.fromResource("stochastacy/examples/ordertracking/postgres/001-schema.sql").mkString
+    schemaSql
+      .split(";")
+      .map(_.trim)
+      .filter(_.nonEmpty)
+      .foreach { statement =>
+        val stmt = connection.createStatement()
+        try stmt.execute(statement)
+        finally stmt.close()
+      }
+
+  private def parseRecord(line: String): StagedDemoRecord =
+    val json = parse(line)
+    val recordType = (json \ "recordType").extract[String]
+    val scenarioId = (json \ "scenarioId").extract[String]
+    val metric = (json \ "metric").extract[String]
+    val value = (json \ "value").extract[BigDecimal]
+
+    StagedDemoRecord(
+      recordType = recordType,
+      scenarioId = scenarioId,
+      trialId = (json \ "trialId").extractOpt[Int],
+      tick = (json \ "tick").extractOpt[Long],
+      windowSizeSeconds = (json \ "windowSizeSeconds").extractOpt[Int],
+      windowStartTick = (json \ "windowStartTick").extractOpt[Long],
+      metric = metric,
+      statistic = (json \ "statistic").extractOpt[String],
+      value = value
+    )
+
+  private def insertBatch(connection: Connection, metadata: BatchMetadata): Unit =
+    val sql =
+      """insert into stochastacy_demo.demo_batches
+        |(batch_id, scenario_id, trial_count, parallelism, simulation_ticks, base_seed, read_consistency, table_name, source_jsonl_path)
+        |values (?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+    val stmt = connection.prepareStatement(sql)
+    try
+      stmt.setString(1, metadata.batchId)
+      stmt.setString(2, metadata.scenarioId)
+      stmt.setInt(3, metadata.trialCount)
+      stmt.setInt(4, metadata.parallelism)
+      stmt.setLong(5, metadata.simulationTicks)
+      stmt.setLong(6, metadata.baseSeed)
+      stmt.setString(7, metadata.readConsistency)
+      stmt.setString(8, metadata.tableName)
+      stmt.setString(9, metadata.sourceJsonlPath.orNull)
+      stmt.executeUpdate()
+    finally
+      stmt.close()
+
+  private def insertRecords(
+                             connection: Connection,
+                             batchId: String,
+                             records: Vector[StagedDemoRecord]
+                           ): Unit =
+    val sql =
+      """insert into stochastacy_demo.demo_records
+        |(batch_id, record_type, scenario_id, trial_id, tick, window_size_seconds, window_start_tick, metric, statistic, "value")
+        |values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+    val stmt = connection.prepareStatement(sql)
+    try
+      records.foreach { record =>
+        stmt.setString(1, batchId)
+        stmt.setString(2, record.recordType)
+        stmt.setString(3, record.scenarioId)
+        stmt.setObject(4, record.trialId.map(Int.box).orNull)
+        stmt.setObject(5, record.tick.map(Long.box).orNull)
+        stmt.setObject(6, record.windowSizeSeconds.map(Int.box).orNull)
+        stmt.setObject(7, record.windowStartTick.map(Long.box).orNull)
+        stmt.setString(8, record.metric)
+        stmt.setString(9, record.statistic.orNull)
+        stmt.setBigDecimal(10, record.value.bigDecimal)
+        stmt.addBatch()
+      }
+      stmt.executeBatch()
+    finally
+      stmt.close()
+
+object OrderTrackingGrafanaView:
+  private val DashboardUid = "ips-phase2-order-tracking"
+  private val DashboardSlug = "ips-phase-2-order-tracking-dynamodb-simulation"
 
   def url(grafanaBaseUrl: String, batchId: String, scenarioId: String): String =
     val base = grafanaBaseUrl.stripSuffix("/")
@@ -332,8 +506,8 @@ object OrderTrackingPhase1GrafanaView:
   private def encode(value: String): String =
     URLEncoder.encode(value, StandardCharsets.UTF_8)
 
-@main def OrderTrackingPhase1Bridge(args: String*): Unit =
-  OrderTrackingPhase1BridgeCli.parseArgs(args) match
+@main def OrderTrackingPhase2Bridge(args: String*): Unit =
+  OrderTrackingPhase2BridgeCli.parseArgs(args) match
     case Left(error) =>
       System.err.println(error)
       sys.exit(1)
@@ -341,23 +515,32 @@ object OrderTrackingPhase1GrafanaView:
     case Right(command) =>
       command match
         case generate: OrderTrackingBridgeCommand.Generate =>
-          given ActorSystem = ActorSystem("OrderTrackingPhase1BridgeGenerate")
+          given ActorSystem = ActorSystem("OrderTrackingPhase2BridgeGenerate")
           given Materializer = Materializer.matFromSystem
           given ExecutionContext = summon[ActorSystem].dispatcher
 
           val outcome =
             try
-              val options = OrderTrackingPhase1DemoOptions(
-                outputPath = Some(generate.outputPath),
-                trialCount = generate.trialCount,
-                parallelism = generate.parallelism,
-                simulationTicks = generate.simulationTicks
-              )
               val bundle = Await.result(
-                OrderTrackingPhase1DemoRunner.run(options),
+                OrderTrackingPhase2DemoRunner.run(
+                  OrderTrackingPhase2DemoOptions(
+                    outputPath = Some(generate.outputPath),
+                    trialCount = generate.trialCount,
+                    parallelism = generate.parallelism,
+                    simulationTicks = generate.simulationTicks
+                  )
+                ),
                 10.minutes
               )
-              OrderTrackingPhase1DemoRunner.emit(options, bundle)
+              OrderTrackingPhase2DemoRunner.emit(
+                OrderTrackingPhase2DemoOptions(
+                  outputPath = Some(generate.outputPath),
+                  trialCount = generate.trialCount,
+                  parallelism = generate.parallelism,
+                  simulationTicks = generate.simulationTicks
+                ),
+                bundle
+              )
               println(s"generated batch ${generate.batchId} to ${generate.outputPath}")
               Success(())
             catch
@@ -387,7 +570,7 @@ object OrderTrackingPhase1GrafanaView:
 
         case view: OrderTrackingBridgeCommand.View =>
           println(
-            OrderTrackingPhase1GrafanaView.url(
+            OrderTrackingGrafanaView.url(
               grafanaBaseUrl = view.grafanaBaseUrl,
               batchId = view.batchId,
               scenarioId = view.scenarioId

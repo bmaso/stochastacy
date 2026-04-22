@@ -1,18 +1,17 @@
-# IPS Phase 1 Hand-Off
+# IPS Hand-Off
 
-Last updated: 2026-04-19
+Last updated: 2026-04-21
 
 ## Current Position
 
-`ips/phase1` is now centered on a table-only DynamoDB simulator and a runnable demo workflow for the initial public showing.
+The project currently centers on a DynamoDB simulator that supports:
 
-Implemented slices:
-
-- `TableStage4` support for `GetItem`
-- `TableStage4` support for `PutItem`
-- `TableStage4` support for `UpdateItem`
-- `TableStage4` support for `DeleteItem`
-- mutable stochastic-summary table state
+- base-table `GetItem`, `PutItem`, `UpdateItem`, and `DeleteItem`
+- base-table and index-targeted `Query`
+- base-table and index-targeted `Scan`
+- a public `DynamoDbTable` table-and-indexes component
+- internal GSI and LSI execution units
+- internal index-state ownership and write propagation
 - raw DynamoDB consumption events
 - additive usage aggregation
 - time-based storage usage aggregation from timed event streams
@@ -20,28 +19,32 @@ Implemented slices:
 - Monte Carlo multi-trial execution
 - raw per-tick JSONL export
 - derived `60s` and `300s` windowed JSONL export
-- Postgres staging bridge
-- provisioned Grafana dashboard
+- Postgres staging for demo records
+- a provisioned Grafana dashboard
+- overall demo reporting plus per-GSI consumed read/write reporting
 
-Phase-1 scope decision:
-
-- indexes are not part of phase 1
-- `Query`, `Scan`, and PartiQL queries are deferred to phase 2
-- global secondary indexes and local secondary indexes are deferred to phase 2
+The current runnable demo surface is the order-tracking phase-2 demo.
 
 ## Architectural Direction
 
 The implemented design direction is:
 
-- `TableStage4` emits responses, raw consumption events, and metric events
+- `TableStage4` remains the storage-facing execution core
+- `DynamoDbTable` is the public table-and-indexes graph component
+- GSIs and LSIs are represented as internal execution units, not separately wired public graph components
 - additive request-priced usage is folded into `DynamoDbUsageTotals`
 - duration-based storage usage is derived from timed consumption streams into `DynamoDbTimeBasedUsageTotals`
 - pricing is computed downstream from those two usage layers
 - demo reporting preserves raw per-tick records and derives windowed records downstream
+- visible demo output preserves:
+  - overall read and write capacity
+  - per-GSI read and write capacity
+  - overall-only storage and total cost
 - Grafana reads staged Postgres-backed records rather than reading raw files directly
 
 ## Key Code Locations
 
+- [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala)
 - [TableStage4.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage4.scala)
 - [state.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/state.scala)
 - [UseCaseSampler.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/UseCaseSampler.scala)
@@ -50,11 +53,13 @@ The implemented design direction is:
 - [DynamoDbUsageTotals.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/usage/DynamoDbUsageTotals.scala)
 - [DynamoDbTimeBasedUsageTotals.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/usage/DynamoDbTimeBasedUsageTotals.scala)
 - [DynamoDbPricing.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/pricing/DynamoDbPricing.scala)
+- [model.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/demo/model.scala)
 - [rollup.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/demo/rollup.scala)
 - [report.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/demo/report.scala)
-- [OrderTrackingPhase1Demo.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/main/scala/stochastacy/examples/ordertracking/OrderTrackingPhase1Demo.scala)
+- [OrderTrackingSingleTrialRunner.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/main/scala/stochastacy/examples/ordertracking/OrderTrackingSingleTrialRunner.scala)
+- [OrderTrackingPhase2Demo.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/main/scala/stochastacy/examples/ordertracking/OrderTrackingPhase2Demo.scala)
 - [001-schema.sql](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/postgres/init/001-schema.sql)
-- [order-tracking-phase1-dashboard.json](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/grafana/order-tracking-phase1-dashboard.json)
+- [order-tracking-phase2-dashboard.json](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/grafana/order-tracking-phase2-dashboard.json)
 
 ## Key Proof Tests
 
@@ -62,10 +67,11 @@ The implemented design direction is:
 - [TableStage4PutItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4PutItemSpec.scala)
 - [TableStage4UpdateItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4UpdateItemSpec.scala)
 - [TableStage4DeleteItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4DeleteItemSpec.scala)
-- [TableStage4UsageAggregationIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/usage/TableStage4UsageAggregationIntegrationSpec.scala)
-- [TableStage4TimeBasedUsageIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/usage/TableStage4TimeBasedUsageIntegrationSpec.scala)
+- [TableStage4QuerySpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4QuerySpec.scala)
+- [TableStage4ScanSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4ScanSpec.scala)
+- [DynamoDbTableComponentSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableComponentSpec.scala)
 - [TableStage4PricingIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/pricing/TableStage4PricingIntegrationSpec.scala)
-- [OrderTrackingPhase1DemoRunnerSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPhase1DemoRunnerSpec.scala)
+- [OrderTrackingPhase2DemoRunnerSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPhase2DemoRunnerSpec.scala)
 - [OrderTrackingPostgresBridgeSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPostgresBridgeSpec.scala)
 
 ## Current Operator Workflow
@@ -73,20 +79,20 @@ The implemented design direction is:
 The current demo workflow is:
 
 1. `docker compose up -d`
-2. `generate` a batch to JSONL
+2. `generate` a batch to JSONL through `OrderTrackingPhase2Bridge`
 3. `stage` that batch into Postgres
 4. `view` the provisioned Grafana dashboard
-5. select a staged `batch_id` and a `Window Size` of `60` or `300`
+5. select a staged `batch_id`, a `Window Size` of `60` or `300`, and a `GSI Index Name` when inspecting per-GSI panels
 
 ## Recommended Next Work
 
-Phase 1 is now effectively complete. Remaining work is documentation and operator polish only.
+The main remaining work is:
 
-For phase 2:
+1. phase-2 demo finalization and polish on top of the current indexed-table demo path
+2. any remaining documentation cleanup needed to reflect the now-canonical phase-2 demo surface
+3. the narrow PartiQL parser/classification stub if that phase-2 item is still desired
 
-1. add index architecture and table-plus-index composition
-2. add `Query`, `Scan`, and PartiQL query support
-3. add GSI and LSI modeling
+Treat [ips-phase2.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/roadmaps/ips-phase2.md) as the canonical planning anchor for ongoing simulator work.
 
 ## Notes For A Fresh Session
 
@@ -94,4 +100,5 @@ For phase 2:
 - countable usage is priced from totals, while storage-like duration pricing is derived from timed streams
 - raw per-tick records remain the source of truth, while windowed records are derived for reporting and dashboard use
 - per-window values are reporting artifacts, not authoritative billed prices
-- if the next session starts by discussing indexes, use the phase-2 roadmap as the planning anchor
+- visible per-GSI reporting is for read/write capacity only; storage and cost remain overall-only in the demo
+- if the next session starts with planning work, use the current handoff plus the phase-2 roadmap together rather than relying on older phase-specific demo notes

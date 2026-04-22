@@ -2,7 +2,7 @@ package stochastacy.examples.ordertracking
 
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
-import org.json4s.*
+import org.json4s._
 import org.json4s.jackson.JsonMethods.parse
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
@@ -12,9 +12,9 @@ import java.nio.file.Files
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext}
 
-class OrderTrackingPhase1DemoRunnerSpec extends AnyWordSpec with should.Matchers with BeforeAndAfterAll:
+class OrderTrackingPhase2DemoRunnerSpec extends AnyWordSpec with should.Matchers with BeforeAndAfterAll:
 
-  given ActorSystem = ActorSystem("order-tracking-phase1-demo-runner-test")
+  given ActorSystem = ActorSystem("order-tracking-phase2-demo-runner-test")
   given Materializer = Materializer.matFromSystem
   given ExecutionContext = summon[ActorSystem].dispatcher
   given Formats = DefaultFormats
@@ -23,9 +23,9 @@ class OrderTrackingPhase1DemoRunnerSpec extends AnyWordSpec with should.Matchers
     Await.result(summon[ActorSystem].terminate(), 10.seconds)
     super.afterAll()
 
-  "OrderTrackingPhase1DemoRunner" should {
+  "OrderTrackingPhase2DemoRunner" should {
     "produce non-empty JSONL output in stdout mode" in {
-      val options = OrderTrackingPhase1DemoOptions(
+      val options = OrderTrackingPhase2DemoOptions(
         outputPath = None,
         trialCount = 2,
         parallelism = 2,
@@ -33,10 +33,10 @@ class OrderTrackingPhase1DemoRunnerSpec extends AnyWordSpec with should.Matchers
       )
 
       val bundle = Await.result(
-        OrderTrackingPhase1DemoRunner.run(options),
+        OrderTrackingPhase2DemoRunner.run(options),
         20.seconds
       )
-      val rendered = OrderTrackingPhase1DemoRunner.emit(options, bundle)
+      val rendered = OrderTrackingPhase2DemoRunner.emit(options, bundle)
 
       rendered should not be empty
       val recordTypes =
@@ -55,8 +55,8 @@ class OrderTrackingPhase1DemoRunnerSpec extends AnyWordSpec with should.Matchers
     }
 
     "write JSONL to a file when an output path is provided" in {
-      val tempFile = Files.createTempFile("order-tracking-demo-phase1-", ".jsonl")
-      val options = OrderTrackingPhase1DemoOptions(
+      val tempFile = Files.createTempFile("order-tracking-demo-", ".jsonl")
+      val options = OrderTrackingPhase2DemoOptions(
         outputPath = Some(tempFile),
         trialCount = 2,
         parallelism = 1,
@@ -64,10 +64,10 @@ class OrderTrackingPhase1DemoRunnerSpec extends AnyWordSpec with should.Matchers
       )
 
       val bundle = Await.result(
-        OrderTrackingPhase1DemoRunner.run(options),
+        OrderTrackingPhase2DemoRunner.run(options),
         20.seconds
       )
-      val message = OrderTrackingPhase1DemoRunner.emit(options, bundle)
+      val message = OrderTrackingPhase2DemoRunner.emit(options, bundle)
       val written = Files.readString(tempFile)
 
       message should include("wrote")
@@ -75,28 +75,28 @@ class OrderTrackingPhase1DemoRunnerSpec extends AnyWordSpec with should.Matchers
     }
 
     "remain deterministic for the same fixed inputs" in {
-      val options = OrderTrackingPhase1DemoOptions(
+      val options = OrderTrackingPhase2DemoOptions(
         outputPath = None,
         trialCount = 2,
         parallelism = 2,
         simulationTicks = 6L
       )
 
-      val first = Await.result(OrderTrackingPhase1DemoRunner.run(options), 20.seconds)
-      val second = Await.result(OrderTrackingPhase1DemoRunner.run(options), 20.seconds)
+      val first = Await.result(OrderTrackingPhase2DemoRunner.run(options), 20.seconds)
+      val second = Await.result(OrderTrackingPhase2DemoRunner.run(options), 20.seconds)
 
       first shouldBe second
     }
 
     "produce a Grafana view URL containing the dashboard uid and variables" in {
-      val url = OrderTrackingPhase1GrafanaView.url(
+      val url = OrderTrackingGrafanaView.url(
         grafanaBaseUrl = "http://localhost:3000",
         batchId = "batch-1",
-        scenarioId = "order-tracking-phase1"
+        scenarioId = "order-tracking-phase2"
       )
 
-      url should include("/d/ips-phase1-order-tracking/")
+      url should include("/d/ips-phase2-order-tracking/")
       url should include("var-batch_id=batch-1")
-      url should include("var-scenarioId=order-tracking-phase1")
+      url should include("var-scenarioId=order-tracking-phase2")
     }
   }

@@ -67,3 +67,21 @@ object Stage4MetricTotals:
 
       case Stage4MetricEvent.TableBytesChanged(_, _, delta) =>
         acc.copy(tableBytesDelta = acc.tableBytesDelta + delta)
+
+      case _: Stage4MetricEvent.QueryObserved =>
+        acc
+
+      case _: Stage4MetricEvent.QueryEvaluated =>
+        acc
+
+      case _: Stage4MetricEvent.QueryReturned =>
+        acc
+
+      case _: Stage4MetricEvent.ScanObserved =>
+        acc
+
+      case _: Stage4MetricEvent.ScanEvaluated =>
+        acc
+
+      case _: Stage4MetricEvent.ScanReturned =>
+        acc
