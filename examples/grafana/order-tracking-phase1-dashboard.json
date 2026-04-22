@@ -37,9 +37,9 @@
     },
     {
       "datasource": null,
-      "description": "High-level demo description plus current batch context.",
+      "description": "Context panel driven by dashboard variables sourced from Postgres.",
       "gridPos": {
-        "h": 8,
+        "h": 6,
         "w": 8,
         "x": 0,
         "y": 1
@@ -51,19 +51,19 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "# Order Tracking Phase 2 Demo\n\nThis dashboard shows a DynamoDB table simulation with repeated trial runs and indexed-table reporting.\n\nRequest model: on each simulated tick, the demo draws a random number of requests for each request type around its configured average rate.\n\nMean expected requests per second: 8.05\n\nPricing configuration: pay-per-request style pricing with per-read-unit and per-write-unit request charges, plus storage priced at `$0.25 / GiB-month`.\n\n- Batch ID: `${batch_id}`\n- Scenario ID: `${scenarioId}`\n- Trial Count: `${trialCount}`\n- Simulation Ticks: `${simulationTicks}`\n- Window Size (seconds): `${windowSizeSeconds}`\n- Read Consistency: `${readConsistency}`\n- Table Name: `${tableName}`",
+        "content": "## Order Tracking Phase 1\n\n- Batch ID: `${batch_id}`\n- Scenario ID: `${scenarioId}`\n- Trial Count: `${trialCount}`\n- Simulation Ticks: `${simulationTicks}`\n- Window Size (seconds): `${windowSizeSeconds}`\n- Read Consistency: `${readConsistency}`\n- Table Name: `${tableName}`",
         "mode": "markdown"
       },
       "pluginVersion": "10.4.2",
       "targets": [],
-      "title": "Demo Overview",
+      "title": "Scenario",
       "type": "text"
     },
     {
       "datasource": null,
       "description": "Displays the mean total estimated cost across trials, plus and minus one standard deviation. This shows the central spread of simulated outcomes for the batch.",
       "gridPos": {
-        "h": 8,
+        "h": 6,
         "w": 8,
         "x": 8,
         "y": 1
@@ -87,7 +87,7 @@
       "datasource": null,
       "description": "Displays the mean final storage bytes across trials, plus and minus one standard deviation. This shows the central spread of simulated outcomes for the batch.",
       "gridPos": {
-        "h": 8,
+        "h": 6,
         "w": 8,
         "x": 16,
         "y": 1
@@ -113,7 +113,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 7
       },
       "id": 7,
       "panels": [],
@@ -125,7 +125,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "trial_window_time_series percentiles for total ReadCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
+      "description": "trial_window_time_series percentiles for ReadCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -361,7 +361,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 10
+        "y": 8
       },
       "id": 8,
       "options": {
@@ -390,7 +390,7 @@
           "refId": "A"
         }
       ],
-      "title": "Total Read Capacity Units by Window",
+      "title": "Read Capacity Units by Window",
       "type": "timeseries"
     },
     {
@@ -398,7 +398,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "trial_window_time_series percentiles for total WriteCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
+      "description": "trial_window_time_series percentiles for WriteCapacityUnits with mean, p5/p25/p75/p95, and shaded percentile bands",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -634,7 +634,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 18
+        "y": 16
       },
       "id": 10,
       "options": {
@@ -663,7 +663,7 @@
           "refId": "A"
         }
       ],
-      "title": "Total Write Capacity Units by Window",
+      "title": "Write Capacity Units by Window",
       "type": "timeseries"
     },
     {
@@ -672,566 +672,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
-      },
-      "id": 16,
-      "panels": [],
-      "title": "Per-GSI Usage",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "stochastacy-postgres"
-      },
-      "description": "trial_window_time_series percentiles for the selected GSI read-capacity metric with mean, p5/p25/p75/p95, and shaded percentile bands",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 0,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "mappings": [],
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Mean"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#FFFFFF",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 3
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P95"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P5"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P75"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P25"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Band P95-P75"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#2E2E2E",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 0
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 55
-              },
-              {
-                "id": "custom.fillBelowTo",
-                "value": "P75"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": true,
-                  "tooltip": true,
-                  "viz": false
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Band P75-P25"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#4A4A4A",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 0
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 55
-              },
-              {
-                "id": "custom.fillBelowTo",
-                "value": "P25"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": true,
-                  "tooltip": true,
-                  "viz": false
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Band P25-P5"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#2E2E2E",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 0
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 55
-              },
-              {
-                "id": "custom.fillBelowTo",
-                "value": "P5"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": true,
-                  "tooltip": true,
-                  "viz": false
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 27
-      },
-      "id": 17,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "10.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "stochastacy-postgres"
-          },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "with percentiles as (\n  select\n    window_start_tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.25) within group (order by \"value\") as p25,\n    percentile_cont(0.75) within group (order by \"value\") as p75,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_window_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = concat('GSI:', '${gsiIndexName}', ':ReadCapacityUnits')\n    and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  group by window_start_tick\n)\nselect\n  to_timestamp(window_start_tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p75 as \"P75\",\n  p25 as \"P25\",\n  p5 as \"P5\",\n  p95 as \"Band P95-P75\",\n  p75 as \"Band P75-P25\",\n  p25 as \"Band P25-P5\"\nfrom percentiles\norder by window_start_tick;",
-          "refId": "A"
-        }
-      ],
-      "title": "GSI Read Capacity Units by Window",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "postgres",
-        "uid": "stochastacy-postgres"
-      },
-      "description": "trial_window_time_series percentiles for the selected GSI write-capacity metric with mean, p5/p25/p75/p95, and shaded percentile bands",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 0,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "mappings": [],
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Mean"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#FFFFFF",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 3
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P95"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P5"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P75"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P25"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Band P95-P75"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#2E2E2E",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 0
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 55
-              },
-              {
-                "id": "custom.fillBelowTo",
-                "value": "P75"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": true,
-                  "tooltip": true,
-                  "viz": false
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Band P75-P25"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#4A4A4A",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 0
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 55
-              },
-              {
-                "id": "custom.fillBelowTo",
-                "value": "P25"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": true,
-                  "tooltip": true,
-                  "viz": false
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Band P25-P5"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#2E2E2E",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 0
-              },
-              {
-                "id": "custom.fillOpacity",
-                "value": 55
-              },
-              {
-                "id": "custom.fillBelowTo",
-                "value": "P5"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": true,
-                  "tooltip": true,
-                  "viz": false
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 27
-      },
-      "id": 18,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "10.4.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "postgres",
-            "uid": "stochastacy-postgres"
-          },
-          "editorMode": "code",
-          "format": "time_series",
-          "rawQuery": true,
-          "rawSql": "with percentiles as (\n  select\n    window_start_tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.25) within group (order by \"value\") as p25,\n    percentile_cont(0.75) within group (order by \"value\") as p75,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_window_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = concat('GSI:', '${gsiIndexName}', ':WriteCapacityUnits')\n    and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  group by window_start_tick\n)\nselect\n  to_timestamp(window_start_tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p75 as \"P75\",\n  p25 as \"P25\",\n  p5 as \"P5\",\n  p95 as \"Band P95-P75\",\n  p75 as \"Band P75-P25\",\n  p25 as \"Band P25-P5\"\nfrom percentiles\norder by window_start_tick;",
-          "refId": "A"
-        }
-      ],
-      "title": "GSI Write Capacity Units by Window",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 35
+        "y": 24
       },
       "id": 12,
       "panels": [],
@@ -1356,7 +797,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 25
       },
       "id": 13,
       "options": {
@@ -1506,7 +947,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 33
       },
       "id": 15,
       "options": {
@@ -1601,8 +1042,8 @@
       {
         "current": {
           "selected": false,
-          "text": "order-tracking-phase2",
-          "value": "order-tracking-phase2"
+          "text": "order-tracking-phase1",
+          "value": "order-tracking-phase1"
         },
         "datasource": {
           "type": "postgres",
@@ -1640,30 +1081,6 @@
         "name": "trialCount",
         "options": [],
         "query": "select trial_count::text __text, trial_count::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": true,
-        "sort": 0,
-        "type": "query"
-      },
-      {
-        "current": {
-          "selected": false,
-          "text": "",
-          "value": ""
-        },
-        "datasource": {
-          "type": "postgres",
-          "uid": "stochastacy-postgres"
-        },
-        "definition": "with gsi_metrics as ( select distinct split_part(metric, ':', 2) as index_name from stochastacy_demo.demo_records where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and (metric like 'GSI:%:ReadCapacityUnits' or metric like 'GSI:%:WriteCapacityUnits') ) select index_name __text, index_name __value from gsi_metrics order by index_name",
-        "hide": 0,
-        "includeAll": false,
-        "label": "GSI Index Name",
-        "multi": false,
-        "name": "gsiIndexName",
-        "options": [],
-        "query": "with gsi_metrics as ( select distinct split_part(metric, ':', 2) as index_name from stochastacy_demo.demo_records where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and (metric like 'GSI:%:ReadCapacityUnits' or metric like 'GSI:%:WriteCapacityUnits') ) select index_name __text, index_name __value from gsi_metrics order by index_name",
         "refresh": 1,
         "regex": "",
         "skipUrlSync": true,
@@ -1794,12 +1211,12 @@
   },
   "time": {
     "from": "1970-01-01T00:00:00Z",
-    "to": "1970-01-01T00:15:00Z"
+    "to": "1970-01-01T01:00:00Z"
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "IPS Phase 2 - Order Tracking DynamoDB Simulation",
-  "uid": "ips-phase2-order-tracking",
+  "title": "IPS Phase 1 - Order Tracking DynamoDB Simulation",
+  "uid": "ips-phase1-order-tracking",
   "version": 2,
   "weekStart": ""
 }

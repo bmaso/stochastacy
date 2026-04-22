@@ -26,13 +26,14 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/order-tracking-phase1-dashboard.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/order-tracking-phase2-dashboard.json
     ports:
       - "3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./examples/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./examples/grafana/order-tracking-phase1-dashboard.json:/var/lib/grafana/dashboards/order-tracking-phase1-dashboard.json:ro
+      - ./examples/grafana/order-tracking-phase2-dashboard.json:/var/lib/grafana/dashboards/order-tracking-phase2-dashboard.json:ro
 
 volumes:
   postgres_data:

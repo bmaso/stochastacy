@@ -58,6 +58,33 @@ final case class OrderTrackingScenarioConfig(
     value >= 0.0 && value <= 1.0
 
 object OrderTrackingScenarioConfig:
+  val phase1Default: OrderTrackingScenarioConfig =
+    OrderTrackingScenarioConfig(
+      scenarioId = "order-tracking-phase1",
+      simulationTicks = 30L,
+      trialCount = 100,
+      parallelism = 4,
+      initialItemCount = 10L,
+      initialAverageItemBytes = 768L,
+      createRatePerTick = 0.8,
+      fetchRatePerTick = 2.5,
+      updateRatePerTick = 1.2,
+      deleteRatePerTick = 0.4,
+      getHitProbability = 0.85,
+      updateExistingProbability = 0.9,
+      deleteExistingProbability = 0.75,
+      newOrderMeanBytes = 896L,
+      updatedOrderMeanBytes = 1024L,
+      tableQueryRatePerTick = 0.0,
+      tableScanRatePerTick = 0.0,
+      gsiQueryRatePerTick = 0.0,
+      gsiScanRatePerTick = 0.0,
+      readConsistency = ReadConsistency.StronglyConsistent,
+      tableName = "orders",
+      globalSecondaryIndexNames = Vector.empty,
+      localSecondaryIndexNames = Vector.empty
+    )
+
   val phase2Default: OrderTrackingScenarioConfig =
     OrderTrackingScenarioConfig(
       scenarioId = "order-tracking-phase2",
