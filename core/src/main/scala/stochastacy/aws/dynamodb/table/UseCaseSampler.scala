@@ -10,8 +10,8 @@ import stochastacy.aws.dynamodb.{DeleteItemRequest, GetItemRequest, PutItemReque
  * "update" requests to the table.
  */
 trait UseCaseSampler[T <: TableState]:
-  /** @returns a sample representing a `GetItem` hit, or `None` for a miss. */
-  def getItem(request: GetItemRequest, s: T): Option[GetItemSample] =
+  /** @returns a sample representing a `GetItem` hit or miss. */
+  def getItem(request: GetItemRequest, s: T): GetItemSample =
     throw new UnsupportedOperationException(s"GetItem is not supported for use-case '${request.usecase}'")
 
   def query(request: QueryRequest, s: T): QuerySample =

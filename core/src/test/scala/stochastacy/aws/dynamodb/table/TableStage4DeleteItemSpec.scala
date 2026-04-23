@@ -159,13 +159,11 @@ class TableStage4DeleteItemSpec extends AnyWordSpec with should.Matchers:
     buf.result()
 
   private object StatefulTableBehavior extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): Option[GetItemSample] =
-      state.averageItemBytes.map(FixedGetItemSample.apply)
+    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+      GetItemSample(itemBytes = state.averageItemBytes)
 
     override def deleteItem(request: DeleteItemRequest, state: TableState): DeleteItemSample =
       FixedDeleteItemSample(deletedItemBytes = state.averageItemBytes)
-
-  private case class FixedGetItemSample(override val getItemBytes: Long) extends GetItemSample
 
   private case class FixedDeleteItemSample(
                                             override val deletedItemBytes: Option[Long]

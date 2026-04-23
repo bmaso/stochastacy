@@ -189,8 +189,6 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
 
     buf.result()
 
-  private case class FixedGetItemSample(override val getItemBytes: Long) extends GetItemSample
-
   private case class FixedHitGetItemBehavior(bytes: Long) extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): Option[GetItemSample] =
-      Some(FixedGetItemSample(bytes))
+    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+      GetItemSample(itemBytes = Some(bytes))

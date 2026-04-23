@@ -1,10 +1,9 @@
 package stochastacy.aws.dynamodb.table
 
 import stochastacy.aws.dynamodb.DynamoDbReadTarget
-import stochastacy.aws.MetricEvent
 import stochastacy.sim.SimTime
 
-sealed trait Stage4MetricEvent extends MetricEvent
+sealed trait Stage4MetricEvent extends TableMetricEvent
 
 object Stage4MetricEvent:
 

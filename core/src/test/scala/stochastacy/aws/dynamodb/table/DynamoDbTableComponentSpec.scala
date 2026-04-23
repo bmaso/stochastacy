@@ -8,10 +8,13 @@ import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
 
+import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, Future}
 
 class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
+
+  import LogicalPartitionAccess.*
 
   given ActorSystem = ActorSystem("dynamodb-table-component-test")
   given Materializer = Materializer.matFromSystem
@@ -513,6 +516,241 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       metrics.collect { case tick: TimedControlEvent.Tick => tick.eventTime } shouldBe Vector(SimTime.of(1L), SimTime.of(2L))
       metrics.last shouldBe TimedControlEvent.EndOfTime
     }
+
+    "throttle base-table reads when they exceed the configured on-demand read hard check" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 8192L),
+          useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(1))
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")), config)
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
+      )
+      resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
+      metrics.collect { case _: Stage4MetricEvent => 1 } shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+        DynamoDbTarget.Table("orders")
+      )
+    }
+
+    "throttle GSI reads against GSI max throughput and charge LSI reads against the base table" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 10L, totalItemBytes = 10000L),
+          useCaseBehaviors = Map(
+            "query-usecase" -> FixedQueryBehavior(),
+            "scan-usecase" -> FixedScanBehavior
+          ),
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = FixedTableState(4L, 4096L))
+          ),
+          localSecondaryIndexes = Vector(
+            DynamoDbTable.LocalSecondaryIndexDefinition("created-at-index", stateModel = FixedTableState(5L, 5120L))
+          ),
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            tableMaxReadRequestUnitsPerSecond = Some(BigDecimal("0.5")),
+            globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal("0.25"))
+          )
+        )
+
+      val gsiResponses =
+        Await.result(
+          runComponent(
+            Source.single(
+              QueryRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "query-usecase",
+                target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+              )
+            ),
+            config
+          )._1,
+          3.seconds
+        )
+
+      val (lsiResponseFuture, _, lsiMetricFuture) =
+        runComponent(
+          Source.single(
+            ScanRequest(
+              eventTime = SimTime.of(1L),
+              usecase = "scan-usecase",
+              target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+              readConsistency = ReadConsistency.EventuallyConsistent
+            )
+          ),
+          config
+        )
+
+      val lsiResponses = Await.result(lsiResponseFuture, 3.seconds)
+      val lsiMetrics = Await.result(lsiMetricFuture, 3.seconds)
+
+      gsiResponses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
+        DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
+      )
+      lsiResponses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
+      )
+      lsiMetrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+        DynamoDbTarget.Table("orders")
+      )
+    }
+
+    "sample admitted requests once and carry that sampled outcome through storage execution" in {
+      val invocationCount = AtomicInteger(0)
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map(
+            "put-sampled-once" -> SamplingPutBehavior(invocationCount)
+          ),
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal("1.5"))
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(
+          Source.single(PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-sampled-once", itemBytes = 1024L)),
+          config
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      invocationCount.get() shouldBe 1
+      responses.collect { case response: PutItemResponse => response.storedItemBytes } shouldBe Vector(1024L)
+      resources.collect { case evt: DynamoDbConsumptionEvent.WriteCapacityConsumed => evt.units } shouldBe Vector(BigDecimal(1))
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.throughputDemand } shouldBe Vector(BigDecimal(1))
+      metrics.collect { case Stage4MetricEvent.TableBytesChanged(_, _, delta) => delta } shouldBe Vector(1024L)
+    }
+
+    "merge throttled stage-1 responses with admitted stage-4 responses in one public stream" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map(
+            "get-hit" -> FixedHitGetItemBehavior(8192L),
+            "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L, previousItemBytes = None)
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(1)),
+            tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(1))
+          )
+        )
+
+      val requests = Source(
+        Vector[TimedElement[DynamoDBRequest]](
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit"),
+          PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)
+        )
+      )
+
+      val (responseFuture, resourceFuture, metricsFuture) = runComponent(requests, config)
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case _: ThrottledResponse => 1 } shouldBe Vector(1)
+      responses.collect { case response: PutItemResponse => response.storedItemBytes } shouldBe Vector(1024L)
+      resources.collect { case evt: DynamoDbConsumptionEvent.WriteCapacityConsumed => evt.units } shouldBe Vector(BigDecimal(1))
+      metrics.collect { case _: Stage1MetricEvent.RequestThrottled => 1 } shouldBe Vector(1)
+      metrics.collect { case _: Stage1MetricEvent.RequestAdmitted => 1 } shouldBe Vector(1)
+      metrics.collect { case _: Stage4MetricEvent.PutItemObserved => 1 } shouldBe Vector(1)
+    }
+
+    "throttle a base-table read for a hot partition without emitting storage-side outputs" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 8192L),
+          useCaseBehaviors = Map(
+            "get-hot" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey("hot-key"))
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          hotPartitionModel = Some(
+            DynamoDbTable.HotPartitionModel(
+              tablePartitionCount = 4,
+              tablePerPartitionMaxReadRequestUnitsPerSecond = Some(BigDecimal(1))
+            )
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hot")), config)
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
+      )
+      resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
+      metrics.collect { case _: Stage4MetricEvent => 1 } shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.partitionDemandById.values.sum } shouldBe Vector(BigDecimal(2))
+    }
+
+    "apply configured GSI partition topology and limits to GSI reads" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 10L, totalItemBytes = 10000L),
+          useCaseBehaviors = Map(
+            "query-usecase" -> FixedQueryBehavior(8192L, SingleLogicalPartitionKey("hot-gsi"))
+          ),
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = FixedTableState(4L, 4096L))
+          ),
+          hotPartitionModel = Some(
+            DynamoDbTable.HotPartitionModel(
+              tablePartitionCount = 8,
+              globalSecondaryIndexPartitionCounts = Map("status-index" -> 2),
+              globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal("0.5"))
+            )
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(
+          Source.single(
+            QueryRequest(
+              eventTime = SimTime.of(1L),
+              usecase = "query-usecase",
+              target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+            )
+          ),
+          config
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
+        DynamoDbThrottleReason.GlobalSecondaryIndexReadHotPartitionThroughputExceeded
+      )
+      resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.totalPartitionCount } shouldBe Vector(2)
+    }
   }
 
   private def indexedConfig(): DynamoDbTable.Config =
@@ -534,7 +772,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       tableName = "orders",
       stateModel = FixedTableState(itemCount = 10L, totalItemBytes = 10000L),
       useCaseBehaviors = Map(
-        "query-usecase" -> FixedQueryBehavior,
+        "query-usecase" -> FixedQueryBehavior(),
         "scan-usecase" -> FixedScanBehavior
       ),
       readConsistency = ReadConsistency.StronglyConsistent,
@@ -574,53 +812,64 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       }
     ).run()
 
-  private case class FixedGetItemSample(override val getItemBytes: Long) extends GetItemSample
-
   private case class FixedPutItemSample(
                                          override val writtenItemBytes: Long,
-                                         override val previousItemBytes: Option[Long]
+                                         override val previousItemBytes: Option[Long],
+                                         override val logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-put")
                                        ) extends PutItemSample
 
   private case class FixedUpdateItemSample(
                                             override val writtenItemBytes: Long,
-                                            override val previousItemBytes: Option[Long]
+                                            override val previousItemBytes: Option[Long],
+                                            override val logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-update")
                                           ) extends UpdateItemSample
 
   private case class FixedDeleteItemSample(
-                                            override val deletedItemBytes: Option[Long]
+                                            override val deletedItemBytes: Option[Long],
+                                            override val logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-delete")
                                           ) extends DeleteItemSample
 
-  private case class FixedHitGetItemBehavior(bytes: Long) extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): Option[GetItemSample] =
-      Some(FixedGetItemSample(bytes))
+  private case class FixedHitGetItemBehavior(
+                                              bytes: Long,
+                                              logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-get")
+                                            ) extends UseCaseSampler[TableState]:
+    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+      GetItemSample(itemBytes = Some(bytes), logicalPartitionAccess = logicalPartitionAccess)
 
   private case class FixedPutItemBehavior(
                                            writtenItemBytes: Long,
-                                           previousItemBytes: Option[Long]
+                                           previousItemBytes: Option[Long],
+                                           logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-put")
                                          ) extends UseCaseSampler[TableState]:
     override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
-      FixedPutItemSample(writtenItemBytes, previousItemBytes)
+      FixedPutItemSample(writtenItemBytes, previousItemBytes, logicalPartitionAccess)
 
   private case class FixedUpdateItemBehavior(
                                               writtenItemBytes: Long,
-                                              previousItemBytes: Option[Long]
+                                              previousItemBytes: Option[Long],
+                                              logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-update")
                                             ) extends UseCaseSampler[TableState]:
     override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
-      FixedUpdateItemSample(writtenItemBytes, previousItemBytes)
+      FixedUpdateItemSample(writtenItemBytes, previousItemBytes, logicalPartitionAccess)
 
   private case class FixedDeleteItemBehavior(
-                                              deletedItemBytes: Option[Long]
+                                              deletedItemBytes: Option[Long],
+                                              logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-delete")
                                             ) extends UseCaseSampler[TableState]:
     override def deleteItem(request: DeleteItemRequest, state: TableState): DeleteItemSample =
-      FixedDeleteItemSample(deletedItemBytes)
+      FixedDeleteItemSample(deletedItemBytes, logicalPartitionAccess)
 
-  private object FixedQueryBehavior extends UseCaseSampler[TableState]:
+  private case class FixedQueryBehavior(
+                                         evaluatedBytes: Long = 4096L,
+                                         logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-query")
+                                       ) extends UseCaseSampler[TableState]:
     override def query(request: QueryRequest, state: TableState): QuerySample =
       QuerySample(
         evaluatedItemCount = 8L,
-        evaluatedBytes = 4096L,
+        evaluatedBytes = evaluatedBytes,
         returnedItemCount = 2L,
-        returnedBytes = 1024L
+        returnedBytes = 1024L,
+        logicalPartitionAccess = logicalPartitionAccess
       )
 
   private object FixedScanBehavior extends UseCaseSampler[TableState]:
@@ -631,3 +880,10 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         returnedItemCount = 3L,
         returnedBytes = 1536L
       )
+
+  private case class SamplingPutBehavior(invocations: AtomicInteger) extends UseCaseSampler[TableState]:
+    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+      val invocation = invocations.incrementAndGet()
+      invocation match
+        case 1 => FixedPutItemSample(writtenItemBytes = 1024L, previousItemBytes = None)
+        case _ => FixedPutItemSample(writtenItemBytes = 2048L, previousItemBytes = None)

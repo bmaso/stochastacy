@@ -325,7 +325,8 @@ final class OrderTrackingSingleTrialRunner(
             )
           )
 
-    timedConsumption.foldLeft(State()) {
+    finalizeBucket(
+      timedConsumption.foldLeft(State()) {
       case (state, tick: TimedControlEvent.Tick) =>
         finalizeBucket(state).copy(activeBucket = Some(Bucket(tick = tick.eventTime.ticks)))
 
@@ -368,7 +369,8 @@ final class OrderTrackingSingleTrialRunner(
 
       case (state, _) =>
         state
-    }.points
+    }
+    ).points
 
   private def priceTotal(
                           readUnits: BigDecimal,
@@ -386,10 +388,13 @@ final class OrderTrackingSingleTrialRunner(
                                                   rng: UniformRandomProvider
                                                 ) extends UseCaseSampler[TableState]:
 
-    override def getItem(request: GetItemRequest, state: TableState): Option[GetItemSample] =
-      if state.itemCount <= 0L || rng.nextDouble() > config.getHitProbability then None
-      else
-        Some(FixedGetItemSample(sampleBytes(state.averageItemBytes.getOrElse(config.initialAverageItemBytes), rng)))
+    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+      GetItemSample(
+        itemBytes =
+          if state.itemCount <= 0L || rng.nextDouble() > config.getHitProbability then None
+          else Some(sampleBytes(state.averageItemBytes.getOrElse(config.initialAverageItemBytes), rng)),
+        logicalPartitionAccess = LogicalPartitionAccess.SingleLogicalPartitionKey(nextLogicalPartitionKey("get"))
+      )
 
     override def query(request: QueryRequest, state: TableState): QuerySample =
       sampleReadShape(request.target, state) { (evaluatedItemCount, evaluatedBytes, returnedItemCount, returnedBytes) =>
@@ -397,7 +402,8 @@ final class OrderTrackingSingleTrialRunner(
           evaluatedItemCount = evaluatedItemCount,
           evaluatedBytes = evaluatedBytes,
           returnedItemCount = returnedItemCount,
-          returnedBytes = returnedBytes
+          returnedBytes = returnedBytes,
+          logicalPartitionAccess = sampleQueryAccess()
         )
       }
 
@@ -407,14 +413,16 @@ final class OrderTrackingSingleTrialRunner(
           evaluatedItemCount = evaluatedItemCount,
           evaluatedBytes = evaluatedBytes,
           returnedItemCount = returnedItemCount,
-          returnedBytes = returnedBytes
+          returnedBytes = returnedBytes,
+          logicalPartitionAccess = LogicalPartitionAccess.AllPartitions
         )
       }
 
     override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
       FixedPutItemSample(
         writtenItemBytes = request.itemBytes,
-        previousItemBytes = None
+        previousItemBytes = None,
+        logicalPartitionAccess = LogicalPartitionAccess.SingleLogicalPartitionKey(nextLogicalPartitionKey("put"))
       )
 
     override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
@@ -424,7 +432,8 @@ final class OrderTrackingSingleTrialRunner(
 
       FixedUpdateItemSample(
         writtenItemBytes = request.itemBytes,
-        previousItemBytes = previousItemBytes
+        previousItemBytes = previousItemBytes,
+        logicalPartitionAccess = LogicalPartitionAccess.SingleLogicalPartitionKey(nextLogicalPartitionKey("update"))
       )
 
     override def deleteItem(request: DeleteItemRequest, state: TableState): DeleteItemSample =
@@ -432,7 +441,10 @@ final class OrderTrackingSingleTrialRunner(
         if state.itemCount > 0L && rng.nextDouble() <= config.deleteExistingProbability then state.averageItemBytes
         else None
 
-      FixedDeleteItemSample(deletedItemBytes)
+      FixedDeleteItemSample(
+        deletedItemBytes = deletedItemBytes,
+        logicalPartitionAccess = LogicalPartitionAccess.SingleLogicalPartitionKey(nextLogicalPartitionKey("delete"))
+      )
 
     private def sampleReadShape[A](
                                     target: DynamoDbReadTarget,
@@ -477,20 +489,38 @@ final class OrderTrackingSingleTrialRunner(
       if maxItems <= 1L then 1L
       else 1L + rng.nextLong(maxItems)
 
+    private def nextLogicalPartitionKey(prefix: String): String =
+      s"$prefix-${rng.nextLong(16L)}"
+
+    private def sampleQueryAccess(): LogicalPartitionAccess =
+      if rng.nextDouble() < 0.8 then
+        LogicalPartitionAccess.SingleLogicalPartitionKey(nextLogicalPartitionKey("query"))
+      else
+        LogicalPartitionAccess.MultipleLogicalPartitionKeys(
+          Vector(
+            nextLogicalPartitionKey("query-a"),
+            nextLogicalPartitionKey("query-b")
+          )
+        )
+
   private final case class FixedGetItemSample(
-                                               override val getItemBytes: Long
-                                             ) extends GetItemSample
+                                               itemBytes: Option[Long],
+                                               logicalPartitionAccess: LogicalPartitionAccess
+                                             )
 
   private final case class FixedPutItemSample(
                                                override val writtenItemBytes: Long,
-                                               override val previousItemBytes: Option[Long]
+                                               override val previousItemBytes: Option[Long],
+                                               override val logicalPartitionAccess: LogicalPartitionAccess
                                              ) extends PutItemSample
 
   private final case class FixedUpdateItemSample(
                                                   override val writtenItemBytes: Long,
-                                                  override val previousItemBytes: Option[Long]
+                                                  override val previousItemBytes: Option[Long],
+                                                  override val logicalPartitionAccess: LogicalPartitionAccess
                                                 ) extends UpdateItemSample
 
   private final case class FixedDeleteItemSample(
-                                                  override val deletedItemBytes: Option[Long]
+                                                  override val deletedItemBytes: Option[Long],
+                                                  override val logicalPartitionAccess: LogicalPartitionAccess
                                                 ) extends DeleteItemSample

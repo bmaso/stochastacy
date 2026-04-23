@@ -119,16 +119,14 @@ class TableStage4UsageAggregationIntegrationSpec extends AnyWordSpec with should
     buf.result()
 
   private object StatefulTableBehavior extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): Option[GetItemSample] =
-      state.averageItemBytes.map(FixedGetItemSample.apply)
+    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+      GetItemSample(itemBytes = state.averageItemBytes)
 
     override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
       FixedPutItemSample(
         writtenItemBytes = request.itemBytes,
         previousItemBytes = state.averageItemBytes
       )
-
-  private case class FixedGetItemSample(override val getItemBytes: Long) extends GetItemSample
 
   private case class FixedPutItemSample(
                                          override val writtenItemBytes: Long,

@@ -2,7 +2,8 @@ package stochastacy.aws.dynamodb
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.table.ReadConsistency
+import stochastacy.aws.dynamodb.table.{DynamoDbTarget, LogicalPartitionAccess, ReadConsistency, ResolvedPartitionFootprint, Stage1MetricEvent, Stage4MetricEvent, TableMetricEvent}
+import scala.collection.immutable.SortedMap
 import stochastacy.sim.SimTime
 
 class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
@@ -71,11 +72,20 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
         usecase = "partiql-response-usecase",
         queryText = "select * from orders"
       )
+      val throttledResponse = ThrottledResponse(
+        eventTime = SimTime.of(8L),
+        usecase = "throttled-usecase",
+        operation = DynamoDbOperationKind.Query,
+        target = stochastacy.aws.dynamodb.table.DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
+        dimension = DynamoDbThroughputDimension.Read,
+        reason = DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
+      )
 
       partiqlRequest shouldBe a[DynamoDBRequest]
       queryResponse shouldBe a[DynamoDBResponse]
       scanResponse shouldBe a[DynamoDBResponse]
       partiqlResponse shouldBe a[DynamoDBResponse]
+      throttledResponse shouldBe a[DynamoDBResponse]
 
       partiqlRequest.queryText shouldBe "select * from orders"
       queryResponse.readConsistency shouldBe ReadConsistency.EventuallyConsistent
@@ -89,5 +99,34 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
       scanResponse.returnedItemCount shouldBe 3L
       scanResponse.returnedBytes shouldBe 3072L
       partiqlResponse.queryText shouldBe "select * from orders"
+      throttledResponse.operation shouldBe DynamoDbOperationKind.Query
+      throttledResponse.dimension shouldBe DynamoDbThroughputDimension.Read
+      throttledResponse.reason shouldBe DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
+    }
+
+    "expose a unified table metric surface spanning stage-1 and stage-4 events" in {
+      val admittedMetric: TableMetricEvent =
+        Stage1MetricEvent.RequestAdmitted(
+          eventTime = SimTime.of(9L),
+          usecase = "get-hit",
+          operation = DynamoDbOperationKind.GetItem,
+          target = DynamoDbTarget.Table("orders"),
+          dimension = DynamoDbThroughputDimension.Read,
+          throughputDemand = BigDecimal(1),
+          resolvedPartitionFootprint = ResolvedPartitionFootprint(
+            totalPartitionCount = 1,
+            partitionDemandById = SortedMap(0 -> BigDecimal(1))
+          )
+        )
+      val observedMetric: TableMetricEvent =
+        Stage4MetricEvent.GetItemObserved(
+          eventTime = SimTime.of(10L),
+          usecase = "get-hit"
+        )
+
+      admittedMetric shouldBe a[TableMetricEvent]
+      observedMetric shouldBe a[TableMetricEvent]
+      admittedMetric shouldBe a[Stage1MetricEvent.RequestAdmitted]
+      observedMetric shouldBe a[Stage4MetricEvent.GetItemObserved]
     }
   }

@@ -8,7 +8,7 @@
 
 `TableStage4` is a Pekko graph component with:
 
-- 1 input stream: timed `DynamoDBRequest` elements
+- 1 primary input stream: timed admitted-request elements produced upstream after sampling and admission
 - 3 output streams:
   - timed `DynamoDBResponse` elements
   - timed `ResourceConsumptionEvent` elements
@@ -18,19 +18,19 @@ All streams use the simulator's timed-event protocol.
 
 ## Placement In The Full Table Component
 
-In a future composed DynamoDB `Table` graph:
+In the composed DynamoDB `Table` graph:
 
-- upstream stages decide whether the request reaches the data plane
-- `TableStage4` decides what storage-level effect the admitted request has
+- `TableStage1` samples incoming requests, applies on-demand hard checks, and either throttles or admits them
+- `TableStage4` decides what storage-level effect an already admitted request has
 - downstream consumers aggregate responses, costs, and metrics across the whole simulation
 
-If an upstream stage throttles or rejects a request, that response should usually be produced before `TableStage4`, and the request should not be forwarded into `TableStage4`.
+If an upstream stage throttles or rejects a request, that response should be produced before `TableStage4`, and the request should not be forwarded into `TableStage4`.
 
 ## Responsibility Boundary
 
 `TableStage4` is responsible for:
 
-- evaluating request behavior against the current table state
+- consuming the sampled operation outcome supplied by upstream admission stages
 - mutating table state for write-like operations
 - generating the logical response for admitted requests
 - emitting storage/resource facts caused by the operation
@@ -55,7 +55,7 @@ In particular:
 - request events are logically ordered
 - all request events in a given window belong to the currently active logical time
 
-`TableStage4` may rely on upstream stages to provide a valid timed stream.
+`TableStage4` may rely on upstream stages to provide a valid timed stream and an already-memorialized sampled outcome for each admitted request.
 
 ## Output Guarantees
 
@@ -69,19 +69,25 @@ Control timing events must be propagated so each output remains a valid timed ev
 
 ## Request Handling Model
 
-Each supported operation kind is interpreted through a use-case-specific sampler or behavior definition. That behavior may depend on current `TableState`.
+Each supported operation kind is interpreted through a use-case-specific sampler or behavior definition at table ingress.
 
-For each request, `TableStage4` performs these conceptual steps:
+For each admitted request, `TableStage4` performs these conceptual steps:
 
 1. Read the current logical table state.
-2. Resolve the request's use-case behavior.
-3. Sample or compute the operation outcome.
+2. Read the already-sampled operation outcome carried with the admitted request.
 4. Apply any state mutation implied by the outcome.
 5. Emit the response event.
 6. Emit resource-consumption events.
 7. Emit metric events.
 
-These steps are logically atomic with respect to a single input request.
+These steps are logically atomic with respect to a single admitted input request.
+
+The important phase-3 rule is:
+
+- the sampler is consulted when a request first enters the table graph
+- the sampled demand and sampled outcome are memorialized
+- `TableStage4` does not independently resample admitted requests
+- any resolved partition footprint used for admission also travels with the admitted request envelope
 
 ## State Model
 
@@ -155,6 +161,9 @@ The resource-consumption output is the accounting-facing stream. It should event
 
 Current implementation notes:
 
+- `TableStage4` has a primary admitted-request execution path used by `DynamoDbTable`
+- a raw-request adapter path remains available for direct storage-level tests
+- `TableStage4` currently carries the resolved partition footprint forward unchanged but does not yet act on it directly
 - `GetItem` emits read-capacity and byte-read facts
 - `PutItem` and `UpdateItem` emit write-capacity, bytes-written, and storage-delta facts
 - `DeleteItem` emits write-capacity, bytes-deleted, and storage-delta facts

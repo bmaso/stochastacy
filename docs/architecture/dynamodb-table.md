@@ -6,7 +6,7 @@ A future complete DynamoDB `Table` component should be a composed Pekko graph bu
 
 `TableStage4` is the storage-facing core of that future `Table` simulator. It represents the part of the table that actually touches simulated storage: the place where item existence, item size, table byte totals, and direct read/write physical effects are determined.
 
-Phase-2 step 2 now introduces `DynamoDbTable` as the first public **table-and-indexes mono-component** rather than exposing a set of separately wired public index components.
+Phase-2 step 2 introduced `DynamoDbTable` as the first public **table-and-indexes mono-component** rather than exposing a set of separately wired public index components.
 
 That means:
 
@@ -57,16 +57,40 @@ In step 5:
   - read consumption is derived from evaluated bytes
 - GSI scans are eventually-consistent only; base-table and LSI scans may be eventual or strong
 
+In phase-3 slice 1:
+
+- `TableStage1` now exists as the first real admission stage inside `DynamoDbTable`
+- the sampler is consulted when a request first enters the internal table graph
+- sampled throughput demand and sampled operation outcomes are memorialized in an internal admitted-request envelope
+- `TableStage1` applies immediate on-demand hard checks for:
+  - base-table read throughput
+  - base-table write throughput
+  - GSI read throughput
+- LSI reads share the base-table read checks in this slice
+- `TableStage4` now executes admitted sampled requests without independently resampling them
+- throttled requests emit an immediate `ThrottledResponse` and stage-1 telemetry, but no consumption events
+
+In phase-3 slice 2:
+
+- hot partitions are now modeled with a fixed partition topology for the duration of a simulation run
+- the sampler returns logical partition access rather than concrete partition ids
+- `TableStage1` resolves that logical access into concrete partition footprints at admission time
+- per-partition hot-partition limits now sit alongside the slice-1 whole-resource hard checks
+- `Query` may now be modeled as single-partition or multi-partition access
+- `Scan` is modeled as all-partitions access
+- LSI reads share the base table partition topology and hot-partition enforcement
+- dynamic partition splitting and repartitioning remain deferred
+
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
 ## Layering
 
-In the full `Table` component, requests would ideally flow through several conceptual layers before reaching `TableStage4`:
+In the full `Table` component, requests now flow through several conceptual layers before reaching `TableStage4`:
 
-1. Request admission and shaping
-2. Provisioned-capacity and throttling logic
-3. Burst and adaptive-capacity behavior
-4. Data-plane storage execution in the table-and-indexes storage layer
+1. Request admission and shaping in `TableStage1`
+2. Fixed-topology hot-partition resolution and enforcement
+3. Future burst and adaptive-capacity behavior
+4. Data-plane storage execution in `TableStage4`
 
 That storage layer should itself be internally composed of:
 
@@ -76,13 +100,13 @@ That storage layer should itself be internally composed of:
 - internal write-propagation logic from the base table into indexes
 - merged response, consumption, and telemetry outputs
 
-Earlier layers can model whether a request is delayed, throttled, rejected, or otherwise transformed before it reaches storage. `TableStage4` sits below those concerns. By the time a request arrives here, the simulator should treat it as an operation that has already been admitted to the table's physical data plane.
+Earlier layers can model whether a request is delayed, throttled, rejected, or otherwise transformed before it reaches storage. `TableStage4` sits below those concerns. By the time an admitted sampled request arrives here, the simulator should treat it as an operation that has already been admitted to the table's physical data plane.
 
 ## Why TableStage4 Exists
 
-This separation is useful because it lets the future `Table` component be composed from simpler Pekko graphs with clear boundaries. `TableStage4` can stay focused on storage semantics and physical effects, while outer stages stay focused on scheduling, admission, and capacity policy.
+This separation is useful because it lets the `Table` component be composed from simpler Pekko graphs with clear boundaries. `TableStage1` can stay focused on sampling, admission, and hard checks, while `TableStage4` stays focused on storage semantics and physical effects.
 
-That makes `TableStage4` the authoritative source of truth for the question: "what would the table itself do with this request if it were allowed to execute?"
+That makes `TableStage4` the authoritative source of truth for the question: "what would the table itself do with this already admitted request?"
 
 Phase 2 should preserve that idea while broadening the internal storage model. The base table and its indexes should still be treated as parts of one larger DynamoDB table resource, not as independent public resources that the caller assembles manually.
 
@@ -97,11 +121,25 @@ Phase 2 should preserve that idea while broadening the internal storage model. T
 
 It is not responsible for account-wide limits, retries, or upstream admission decisions.
 
+`TableStage1` is responsible for:
+
+- resolving the effective admission target
+- invoking the sampler at table ingress
+- memorializing sampled throughput demand and sampled outcomes
+- applying immediate slice-1 on-demand hard checks
+- resolving logical partition access into concrete partition footprints
+- applying slice-2 per-partition hot-partition checks
+- producing early throttled responses and stage-1 metrics when a request is rejected
+
 ## Composition Goal
 
 A complete future `Table` component can therefore be viewed as:
 
 `incoming table request -> admission/capacity stages -> composed table-and-indexes storage graph -> response/consumption/telemetry outputs`
+
+The current concrete shape is now closer to:
+
+`incoming table request -> validation/dispatch -> TableStage1 admit-or-throttle -> TableStage4 storage execution -> merged response/consumption/telemetry outputs`
 
 The composed storage graph should be public as one table resource, but internally structured from smaller execution units.
 

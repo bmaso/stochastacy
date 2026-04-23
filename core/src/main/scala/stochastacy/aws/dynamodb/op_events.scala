@@ -11,6 +11,43 @@ object DynamoDbReadTarget:
   final case class GlobalSecondaryIndex(tableName: String, indexName: String) extends DynamoDbReadTarget
   final case class LocalSecondaryIndex(tableName: String, indexName: String) extends DynamoDbReadTarget
 
+sealed trait DynamoDbOperationKind
+
+object DynamoDbOperationKind:
+  case object GetItem extends DynamoDbOperationKind
+  case object PutItem extends DynamoDbOperationKind
+  case object UpdateItem extends DynamoDbOperationKind
+  case object DeleteItem extends DynamoDbOperationKind
+  case object Query extends DynamoDbOperationKind
+  case object Scan extends DynamoDbOperationKind
+  case object PartiQLQuery extends DynamoDbOperationKind
+
+  def fromRequest(request: DynamoDBRequest): DynamoDbOperationKind =
+    request match
+      case _: GetItemRequest => GetItem
+      case _: PutItemRequest => PutItem
+      case _: UpdateItemRequest => UpdateItem
+      case _: DeleteItemRequest => DeleteItem
+      case _: QueryRequest => Query
+      case _: ScanRequest => Scan
+      case _: PartiQLQueryRequest => PartiQLQuery
+
+sealed trait DynamoDbThroughputDimension
+
+object DynamoDbThroughputDimension:
+  case object Read extends DynamoDbThroughputDimension
+  case object Write extends DynamoDbThroughputDimension
+
+sealed trait DynamoDbThrottleReason
+
+object DynamoDbThrottleReason:
+  case object TableReadMaxOnDemandThroughputExceeded extends DynamoDbThrottleReason
+  case object TableWriteMaxOnDemandThroughputExceeded extends DynamoDbThrottleReason
+  case object GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded extends DynamoDbThrottleReason
+  case object TableReadHotPartitionThroughputExceeded extends DynamoDbThrottleReason
+  case object TableWriteHotPartitionThroughputExceeded extends DynamoDbThrottleReason
+  case object GlobalSecondaryIndexReadHotPartitionThroughputExceeded extends DynamoDbThrottleReason
+
 sealed trait DynamoDBRequest extends AWSServiceRequestEvent
 sealed trait DynamoDBResponse extends AWSServiceResponseEvent
 
@@ -114,3 +151,12 @@ case class PartiQLQueryResponse(
                                  override val usecase: Any,
                                  queryText: String
                                ) extends DynamoDBResponse
+
+case class ThrottledResponse(
+                              override val eventTime: SimTime,
+                              override val usecase: Any,
+                              operation: DynamoDbOperationKind,
+                              target: stochastacy.aws.dynamodb.table.DynamoDbTarget,
+                              dimension: DynamoDbThroughputDimension,
+                              reason: DynamoDbThrottleReason
+                            ) extends DynamoDBResponse

@@ -7,13 +7,16 @@ import stochastacy.sim.SimTime
 
 class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
 
+  import LogicalPartitionAccess.*
+
   "QuerySample" should {
     "accept valid evaluated and returned summary values" in {
       val sample = QuerySample(
         evaluatedItemCount = 10L,
         evaluatedBytes = 4096L,
         returnedItemCount = 3L,
-        returnedBytes = 1024L
+        returnedBytes = 1024L,
+        logicalPartitionAccess = MultipleLogicalPartitionKeys(Vector("k1", "k2"))
       )
 
       sample.evaluatedItemCount shouldBe 10L
@@ -28,7 +31,8 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
           evaluatedItemCount = 1L,
           evaluatedBytes = 100L,
           returnedItemCount = 2L,
-          returnedBytes = 50L
+          returnedBytes = 50L,
+          logicalPartitionAccess = SingleLogicalPartitionKey("k1")
         )
       }
       itemCountError.getMessage should include("returnedItemCount")
@@ -38,10 +42,25 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
           evaluatedItemCount = 2L,
           evaluatedBytes = 100L,
           returnedItemCount = 1L,
-          returnedBytes = 200L
+          returnedBytes = 200L,
+          logicalPartitionAccess = SingleLogicalPartitionKey("k1")
         )
       }
       returnedBytesError.getMessage should include("returnedBytes")
+    }
+
+    "reject all-partitions logical access" in {
+      val error = the[IllegalArgumentException] thrownBy {
+        QuerySample(
+          evaluatedItemCount = 1L,
+          evaluatedBytes = 100L,
+          returnedItemCount = 1L,
+          returnedBytes = 100L,
+          logicalPartitionAccess = AllPartitions
+        )
+      }
+
+      error.getMessage should include("QuerySample requires")
     }
   }
 
@@ -51,7 +70,8 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
         evaluatedItemCount = 12L,
         evaluatedBytes = 12288L,
         returnedItemCount = 4L,
-        returnedBytes = 2048L
+        returnedBytes = 2048L,
+        logicalPartitionAccess = AllPartitions
       )
 
       sample.evaluatedItemCount shouldBe 12L
@@ -66,7 +86,8 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
           evaluatedItemCount = 1L,
           evaluatedBytes = 100L,
           returnedItemCount = 2L,
-          returnedBytes = 50L
+          returnedBytes = 50L,
+          logicalPartitionAccess = AllPartitions
         )
       }
       itemCountError.getMessage should include("returnedItemCount")
@@ -76,10 +97,25 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
           evaluatedItemCount = 2L,
           evaluatedBytes = 100L,
           returnedItemCount = 1L,
-          returnedBytes = 200L
+          returnedBytes = 200L,
+          logicalPartitionAccess = AllPartitions
         )
       }
       returnedBytesError.getMessage should include("returnedBytes")
+    }
+
+    "reject single-partition logical access" in {
+      val error = the[IllegalArgumentException] thrownBy {
+        ScanSample(
+          evaluatedItemCount = 1L,
+          evaluatedBytes = 100L,
+          returnedItemCount = 1L,
+          returnedBytes = 100L,
+          logicalPartitionAccess = SingleLogicalPartitionKey("k1")
+        )
+      }
+
+      error.getMessage should include("ScanSample requires")
     }
   }
 

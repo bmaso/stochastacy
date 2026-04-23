@@ -8,7 +8,42 @@ import stochastacy.sim.*
 
 object DynamoDbTable:
 
-  private val BytesPerWriteCapacityUnitChunk = 1024L
+  final case class OnDemandMaxThroughput(
+                                          tableMaxReadRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                          tableMaxWriteRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                          globalSecondaryIndexMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
+                                        ):
+    require(tableMaxReadRequestUnitsPerSecond.forall(_ > 0), "tableMaxReadRequestUnitsPerSecond must be positive when defined")
+    require(tableMaxWriteRequestUnitsPerSecond.forall(_ > 0), "tableMaxWriteRequestUnitsPerSecond must be positive when defined")
+    require(
+      globalSecondaryIndexMaxReadRequestUnitsPerSecond.values.forall(_ > 0),
+      "globalSecondaryIndexMaxReadRequestUnitsPerSecond values must be positive"
+    )
+
+  final case class HotPartitionModel(
+                                      tablePartitionCount: Int,
+                                      tablePerPartitionMaxReadRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                      tablePerPartitionMaxWriteRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                      globalSecondaryIndexPartitionCounts: Map[String, Int] = Map.empty,
+                                      globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
+                                    ):
+    require(tablePartitionCount > 0, s"tablePartitionCount must be positive, got $tablePartitionCount")
+    require(
+      tablePerPartitionMaxReadRequestUnitsPerSecond.forall(_ > 0),
+      "tablePerPartitionMaxReadRequestUnitsPerSecond must be positive when defined"
+    )
+    require(
+      tablePerPartitionMaxWriteRequestUnitsPerSecond.forall(_ > 0),
+      "tablePerPartitionMaxWriteRequestUnitsPerSecond must be positive when defined"
+    )
+    require(
+      globalSecondaryIndexPartitionCounts.values.forall(_ > 0),
+      "globalSecondaryIndexPartitionCounts values must be positive"
+    )
+    require(
+      globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.values.forall(_ > 0),
+      "globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond values must be positive"
+    )
 
   final case class GlobalSecondaryIndexDefinition(
                                                    indexName: String,
@@ -26,7 +61,9 @@ object DynamoDbTable:
                            useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
                            readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent,
                            globalSecondaryIndexes: Vector[GlobalSecondaryIndexDefinition] = Vector.empty,
-                           localSecondaryIndexes: Vector[LocalSecondaryIndexDefinition] = Vector.empty
+                           localSecondaryIndexes: Vector[LocalSecondaryIndexDefinition] = Vector.empty,
+                           onDemandMaxThroughput: OnDemandMaxThroughput = OnDemandMaxThroughput(),
+                           hotPartitionModel: Option[HotPartitionModel] = None
                          ):
     Config.validate(this)
 
@@ -44,6 +81,26 @@ object DynamoDbTable:
       require(
         duplicateNames.isEmpty,
         s"Duplicate index names configured for table '${config.tableName}': ${duplicateNames.mkString(", ")}"
+      )
+
+      val unknownGlobalSecondaryIndexNames =
+        config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.keySet --
+          config.globalSecondaryIndexes.map(_.indexName).toSet
+
+      require(
+        unknownGlobalSecondaryIndexNames.isEmpty,
+        s"On-demand max-throughput config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNames.toVector.sorted.mkString(", ")}"
+      )
+
+      val unknownGlobalSecondaryIndexNamesForHotPartitions =
+        config.hotPartitionModel.toVector.flatMap { model =>
+          (model.globalSecondaryIndexPartitionCounts.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
+            (model.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
+        }.distinct.sorted
+
+      require(
+        unknownGlobalSecondaryIndexNamesForHotPartitions.isEmpty,
+        s"Hot-partition config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNamesForHotPartitions.mkString(", ")}"
       )
 
   private enum RouteBranch:
@@ -68,136 +125,6 @@ object DynamoDbTable:
                                           stateModel: TableState,
                                           target: DynamoDbTarget.LocalSecondaryIndex
                                         ) extends InternalIndexRuntime
-
-  private object UnsupportedIndexStage:
-    def componentOf(
-                     queryUnsupportedMessage: String,
-                     scanUnsupportedMessage: String,
-                     unexpectedRequestDescription: String
-                   ): Graph[
-      FanOutShape3[
-        TimedElement[DynamoDBRequest],
-        TimedElement[DynamoDBResponse],
-        TimedElement[DynamoDbConsumptionEvent],
-        TimedElement[Stage4MetricEvent]
-      ],
-      NotUsed
-    ] =
-      GraphDSL.create() { implicit b =>
-        import GraphDSL.Implicits.*
-
-        val requestFlow = b.add(
-          Flow[TimedElement[DynamoDBRequest]]
-            .map[TimedElement[DynamoDBRequest]] {
-              case q: QueryRequest => q
-              case s: ScanRequest => s
-              case t: TimedControlEvent => t
-              case other: DynamoDBRequest =>
-                throw new IllegalArgumentException(
-                  s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
-                )
-            }
-        )
-
-        val broadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](3))
-
-        val responseFlow = b.add(
-          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDBResponse]] {
-            case t: TimedControlEvent => t
-            case _: QueryRequest => throw new UnsupportedOperationException(queryUnsupportedMessage)
-            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
-            case other: DynamoDBRequest =>
-              throw new IllegalArgumentException(
-                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
-              )
-          }
-        )
-
-        val consumptionFlow = b.add(
-          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDbConsumptionEvent]] {
-            case t: TimedControlEvent => t
-            case _: QueryRequest => throw new UnsupportedOperationException(queryUnsupportedMessage)
-            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
-            case other: DynamoDBRequest =>
-              throw new IllegalArgumentException(
-                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
-              )
-          }
-        )
-
-        val metricFlow = b.add(
-          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[Stage4MetricEvent]] {
-            case t: TimedControlEvent => t
-            case _: QueryRequest => throw new UnsupportedOperationException(queryUnsupportedMessage)
-            case _: ScanRequest => throw new UnsupportedOperationException(scanUnsupportedMessage)
-            case other: DynamoDBRequest =>
-              throw new IllegalArgumentException(
-                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
-              )
-          }
-        )
-
-        requestFlow.out ~> broadcast.in
-        broadcast.out(0) ~> responseFlow
-        broadcast.out(1) ~> consumptionFlow
-        broadcast.out(2) ~> metricFlow
-
-        new FanOutShape3(
-          requestFlow.in,
-          responseFlow.out,
-          consumptionFlow.out,
-          metricFlow.out
-        )
-      }
-
-  private object QueryAndScanEnabledIndexStage:
-    def componentOf(
-                     stateModel: TableState,
-                     useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
-                     dataPlaneTarget: DynamoDbTarget,
-                     unexpectedRequestDescription: String
-                   ): Graph[
-      FanOutShape3[
-        TimedElement[DynamoDBRequest],
-        TimedElement[DynamoDBResponse],
-        TimedElement[DynamoDbConsumptionEvent],
-        TimedElement[Stage4MetricEvent]
-      ],
-      NotUsed
-    ] =
-      GraphDSL.create() { implicit b =>
-        import GraphDSL.Implicits.*
-
-        val requestFlow = b.add(
-          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDBRequest]] {
-            case q: QueryRequest => q
-            case s: ScanRequest => s
-            case t: TimedControlEvent => t
-            case other: DynamoDBRequest =>
-              throw new IllegalArgumentException(
-                s"Unexpected request kind '${other.getClass.getSimpleName}' reached $unexpectedRequestDescription"
-              )
-          }
-        )
-
-        val dataPlaneStage = b.add(
-          TableStage4.componentOf(
-            stateModel = stateModel,
-            useCaseBehaviors = useCaseBehaviors,
-            tableTarget = dataPlaneTarget,
-            readConsistency = ReadConsistency.EventuallyConsistent
-          )
-        )
-
-        requestFlow.out ~> dataPlaneStage.in
-
-        new FanOutShape3(
-          requestFlow.in,
-          dataPlaneStage.out0,
-          dataPlaneStage.out1,
-          dataPlaneStage.out2
-        )
-      }
 
   private def routeFor(config: Config, request: DynamoDBRequest): RouteBranch =
     request match
@@ -272,12 +199,6 @@ object DynamoDbTable:
         s"Read target table '$targetTableName' does not match configured table '${config.tableName}'"
       )
 
-  private def writeCapacityUnitsFor(itemBytes: Long): BigDecimal =
-    val chunkCount =
-      if itemBytes > 0 then ((itemBytes - 1L) / BytesPerWriteCapacityUnitChunk) + 1L
-      else 1L
-    BigDecimal(chunkCount)
-
   private def indexRuntimesFor(config: Config): Vector[InternalIndexRuntime] =
     val globalSecondaryIndexes =
       config.globalSecondaryIndexes.map { definition =>
@@ -299,21 +220,96 @@ object DynamoDbTable:
 
     globalSecondaryIndexes ++ localSecondaryIndexes
 
+  private def branchGraph(
+                           stateModel: TableState,
+                           useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
+                           executionTarget: DynamoDbTarget,
+                           admissionTarget: DynamoDbTarget,
+                           readConsistency: ReadConsistency,
+                           maxReadRequestUnitsPerSecond: Option[BigDecimal],
+                           maxWriteRequestUnitsPerSecond: Option[BigDecimal],
+                           partitionCount: Int,
+                           maxReadRequestUnitsPerSecondPerPartition: Option[BigDecimal],
+                           maxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal]
+                         ): Graph[
+    FanOutShape3[
+      TimedElement[DynamoDBRequest],
+      TimedElement[DynamoDBResponse],
+      TimedElement[DynamoDbConsumptionEvent],
+      TimedElement[TableMetricEvent]
+    ],
+    NotUsed
+  ] =
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val stage1 = b.add(
+        TableStage1.componentOf(
+          TableStage1.Config(
+            executionTarget = executionTarget,
+            admissionTarget = admissionTarget,
+            useCaseBehaviors = useCaseBehaviors,
+            stateModel = stateModel,
+            readConsistency = readConsistency,
+            maxReadRequestUnitsPerSecond = maxReadRequestUnitsPerSecond,
+            maxWriteRequestUnitsPerSecond = maxWriteRequestUnitsPerSecond,
+            partitionCount = partitionCount,
+            maxReadRequestUnitsPerSecondPerPartition = maxReadRequestUnitsPerSecondPerPartition,
+            maxWriteRequestUnitsPerSecondPerPartition = maxWriteRequestUnitsPerSecondPerPartition
+          )
+        )
+      )
+      val stage4 = b.add(TableStage4.componentOfAdmitted(stateModel))
+      val throttledResponseFilter = b.add(
+        Flow[TimedElement[DynamoDBResponse]].collect[TimedElement[DynamoDBResponse]] {
+          case response: DynamoDBResponse => response
+        }
+      )
+      val stage1MetricFilter = b.add(
+        Flow[TimedElement[Stage1MetricEvent]].collect[TimedElement[TableMetricEvent]] {
+          case metric: Stage1MetricEvent => metric
+        }
+      )
+      val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+      val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](2))
+
+      stage1.out0 ~> stage4.in
+      stage1.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
+      stage4.out0 ~> responseMerge.in(1)
+      stage1.out2 ~> stage1MetricFilter ~> metricMerge.in(0)
+      stage4.out2 ~> metricMerge.in(1)
+
+      new FanOutShape3(
+        stage1.in,
+        responseMerge.out,
+        stage4.out1,
+        metricMerge.out
+      )
+    }
+
   def componentOf(config: Config): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
       TimedElement[DynamoDBResponse],
       TimedElement[DynamoDbConsumptionEvent],
-      TimedElement[Stage4MetricEvent]
+      TimedElement[TableMetricEvent]
     ],
     NotUsed
   ] =
     val baseTableGraph =
-      TableStage4.componentOf(
+      branchGraph(
         stateModel = config.stateModel,
         useCaseBehaviors = config.useCaseBehaviors,
-        tableTarget = DynamoDbTarget.Table(config.tableName),
-        readConsistency = config.readConsistency
+        executionTarget = DynamoDbTarget.Table(config.tableName),
+        admissionTarget = DynamoDbTarget.Table(config.tableName),
+        readConsistency = config.readConsistency,
+        maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
+        maxWriteRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond,
+        partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
+        maxReadRequestUnitsPerSecondPerPartition =
+          config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
+        maxWriteRequestUnitsPerSecondPerPartition =
+          config.hotPartitionModel.flatMap(_.tablePerPartitionMaxWriteRequestUnitsPerSecond)
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -342,7 +338,7 @@ object DynamoDbTable:
 
         val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](branchCount))
         val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](branchCount + 1))
-        val metricMerge = b.add(Merge[TimedElement[Stage4MetricEvent]](branchCount))
+        val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](branchCount))
 
         val baseRequestFilter = b.add(
           Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
@@ -369,7 +365,7 @@ object DynamoDbTable:
                     eventTime = response.eventTime,
                     usecase = response.usecase,
                     target = indexRuntime.target,
-                    units = writeCapacityUnitsFor(response.storedItemBytes)
+                    units = TableThroughputMath.writeCapacityUnitsFor(response.storedItemBytes)
                   ),
                   DynamoDbConsumptionEvent.StorageBytesWritten(
                     eventTime = response.eventTime,
@@ -398,7 +394,7 @@ object DynamoDbTable:
                     eventTime = response.eventTime,
                     usecase = response.usecase,
                     target = indexRuntime.target,
-                    units = writeCapacityUnitsFor(response.storedItemBytes)
+                    units = TableThroughputMath.writeCapacityUnitsFor(response.storedItemBytes)
                   ),
                   DynamoDbConsumptionEvent.StorageBytesWritten(
                     eventTime = response.eventTime,
@@ -434,7 +430,7 @@ object DynamoDbTable:
                     eventTime = response.eventTime,
                     usecase = response.usecase,
                     target = indexRuntime.target,
-                    units = writeCapacityUnitsFor(response.deletedItemBytes.getOrElse(0L))
+                    units = TableThroughputMath.writeCapacityUnitsFor(response.deletedItemBytes.getOrElse(0L))
                   )
                 ) ++ deletedEvents ++ List(
                   DynamoDbConsumptionEvent.StorageBytesDelta(
@@ -477,12 +473,22 @@ object DynamoDbTable:
           )
 
           val queryAndScanEnabledStage = b.add(
-            QueryAndScanEnabledIndexStage.componentOf(
+            branchGraph(
               stateModel = indexRuntime.stateModel,
               useCaseBehaviors = config.useCaseBehaviors,
-              dataPlaneTarget = indexRuntime.target,
-              unexpectedRequestDescription =
-                s"global secondary index '${indexDefinition.indexName}' data-plane stage",
+              executionTarget = indexRuntime.target,
+              admissionTarget = indexRuntime.target,
+              readConsistency = ReadConsistency.EventuallyConsistent,
+              maxReadRequestUnitsPerSecond =
+                config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName),
+              maxWriteRequestUnitsPerSecond = None,
+              partitionCount =
+                config.hotPartitionModel.flatMap(_.globalSecondaryIndexPartitionCounts.get(indexDefinition.indexName))
+                  .orElse(config.hotPartitionModel.map(_.tablePartitionCount))
+                  .getOrElse(1),
+              maxReadRequestUnitsPerSecondPerPartition =
+                config.hotPartitionModel.flatMap(_.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)),
+              maxWriteRequestUnitsPerSecondPerPartition = None
             )
           )
 
@@ -510,12 +516,18 @@ object DynamoDbTable:
           )
 
           val queryAndScanEnabledStage = b.add(
-            QueryAndScanEnabledIndexStage.componentOf(
+            branchGraph(
               stateModel = indexRuntime.stateModel,
               useCaseBehaviors = config.useCaseBehaviors,
-              dataPlaneTarget = indexRuntime.target,
-              unexpectedRequestDescription =
-                s"local secondary index '${indexDefinition.indexName}' data-plane stage",
+              executionTarget = indexRuntime.target,
+              admissionTarget = DynamoDbTarget.Table(config.tableName),
+              readConsistency = ReadConsistency.EventuallyConsistent,
+              maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
+              maxWriteRequestUnitsPerSecond = None,
+              partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
+              maxReadRequestUnitsPerSecondPerPartition =
+                config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
+              maxWriteRequestUnitsPerSecondPerPartition = None
             )
           )
 
