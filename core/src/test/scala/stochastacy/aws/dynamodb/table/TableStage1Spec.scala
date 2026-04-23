@@ -385,6 +385,161 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
         DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
       )
     }
+
+    "burst-admit a request that exceeds steady-state read throughput and report burst usage" in {
+      val (admittedFuture, responseFuture, metricFuture) =
+        runStage(
+          Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
+            stateModel = FixedTableState(1L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            maxReadRequestUnitsPerSecond = Some(BigDecimal(1)),
+            burstRetentionWindowSeconds = Some(300),
+            initialReadBurstRequestUnits = Some(BigDecimal(2))
+          )
+        )
+
+      val admitted = Await.result(admittedFuture, 3.seconds)
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      admitted.collect { case _: AdmittedGetItemSample => 1 } shouldBe Vector(1)
+      responses shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.BurstBacked
+      )
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
+        BigDecimal(1)
+      )
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstRemainingRequestUnits } shouldBe Vector(
+        BigDecimal(1)
+      )
+    }
+
+    "throttle when the relevant burst reservoir is insufficient" in {
+      val (_, responseFuture, metricFuture) =
+        runStage(
+          Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
+            stateModel = FixedTableState(1L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            maxReadRequestUnitsPerSecond = Some(BigDecimal(1)),
+            burstRetentionWindowSeconds = Some(300),
+            initialReadBurstRequestUnits = Some(BigDecimal("0.5"))
+          )
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
+      )
+      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.burstAvailableRequestUnits } shouldBe Vector(
+        BigDecimal("0.5")
+      )
+    }
+
+    "burst-admit a hot partition request and preserve the hot-partition throttle reason when burst is insufficient" in {
+      val rescuedMetrics =
+        Await.result(
+          runStage(
+            Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "burst-hot")),
+            TableStage1.Config(
+              executionTarget = DynamoDbTarget.Table("orders"),
+              admissionTarget = DynamoDbTarget.Table("orders"),
+              useCaseBehaviors = Map(
+                "burst-hot" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey("hot"))
+              ),
+              stateModel = FixedTableState(1L, 8192L),
+              readConsistency = ReadConsistency.StronglyConsistent,
+              maxReadRequestUnitsPerSecond = Some(BigDecimal(10)),
+              partitionCount = 4,
+              maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+              burstRetentionWindowSeconds = Some(300),
+              initialReadBurstRequestUnits = Some(BigDecimal(2))
+            )
+          )._3,
+          3.seconds
+        )
+
+      val throttledResponses =
+        Await.result(
+          runStage(
+            Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "throttle-hot")),
+            TableStage1.Config(
+              executionTarget = DynamoDbTarget.Table("orders"),
+              admissionTarget = DynamoDbTarget.Table("orders"),
+              useCaseBehaviors = Map(
+                "throttle-hot" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey("hot"))
+              ),
+              stateModel = FixedTableState(1L, 8192L),
+              readConsistency = ReadConsistency.StronglyConsistent,
+              maxReadRequestUnitsPerSecond = Some(BigDecimal(10)),
+              partitionCount = 4,
+              maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+              burstRetentionWindowSeconds = Some(300),
+              initialReadBurstRequestUnits = Some(BigDecimal("0.5"))
+            )
+          )._2,
+          3.seconds
+        )
+
+      rescuedMetrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.BurstBacked
+      )
+      throttledResponses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
+      )
+    }
+
+    "replenish burst from unused steady-state capacity on later ticks" in {
+      val requests = Source(
+        Vector[TimedElement[DynamoDBRequest]](
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "small-read"),
+          GetItemRequest(eventTime = SimTime.of(2L), usecase = "large-read")
+        )
+      )
+
+      val (admittedFuture, responseFuture, metricFuture) =
+        runStage(
+          requests,
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map(
+              "small-read" -> FixedHitGetItemBehavior(4096L),
+              "large-read" -> FixedHitGetItemBehavior(12288L)
+            ),
+            stateModel = FixedTableState(1L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            maxReadRequestUnitsPerSecond = Some(BigDecimal(2)),
+            burstRetentionWindowSeconds = Some(300),
+            initialReadBurstRequestUnits = Some(BigDecimal(0))
+          )
+        )
+
+      val admitted = Await.result(admittedFuture, 3.seconds)
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      admitted.collect { case _: AdmittedGetItemSample => 1 } shouldBe Vector(1, 1)
+      responses shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.Normal,
+        Stage1AdmissionMode.BurstBacked
+      )
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
+        BigDecimal(0),
+        BigDecimal(1)
+      )
+    }
   }
 
   private def runStage(

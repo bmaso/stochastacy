@@ -36,13 +36,19 @@ Add adaptive-capacity behavior for uneven traffic patterns.
 
 This slice should refine the hot-partition model by allowing DynamoDB-like relief for imbalanced access when appropriate.
 
-### 5. GSI Back-Pressure
+### 5. Dynamic Partition Topology
+
+Allow table and index partition topology to change over simulated time.
+
+This slice should introduce time-varying partition counts and topology changes so admission and partition-resolution logic can use the topology that exists at the current simulated time.
+
+### 6. GSI Back-Pressure
 
 Model the case where base-table writes are throttled because a GSI cannot absorb index-update demand quickly enough.
 
 This slice should make the dependency between table writes and internal GSI update capacity explicit.
 
-### 6. Projection-Aware Index Reads
+### 7. Projection-Aware Index Reads
 
 Refine `Query` and `Scan` so GSI and LSI reads depend on projection shape.
 
@@ -51,19 +57,19 @@ This slice should capture the difference between:
 - GSI reads that cannot fetch non-projected attributes from the base table
 - LSI reads that may require additional fetches from the base table
 
-### 7. More Precise Index Maintenance And Billing Effects
+### 8. More Precise Index Maintenance And Billing Effects
 
 Refine write-side table and index maintenance so index creation, replacement, deletion, storage growth, and on-demand billing effects are more realistic.
 
 This slice should improve the fidelity of write amplification and index-related billing outcomes.
 
-### 8. LSI Item-Collection Constraints
+### 9. LSI Item-Collection Constraints
 
 Add support for the LSI-specific table behaviors that arise from item-collection limits.
 
 This slice should extend the realism of the single-Region table model without yet moving into cross-Region replication.
 
-### 9. Global Tables And Cross-Region Replication
+### 10. Global Tables And Cross-Region Replication
 
 Add global tables and multi-Region replication behavior.
 
@@ -84,4 +90,4 @@ That means the following remain secondary or deferred until the on-demand-mode t
 
 Recommended starting point:
 
-- `slice 1: on-demand throttling foundation`
+- `slice 4: adaptive capacity`

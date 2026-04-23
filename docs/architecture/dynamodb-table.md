@@ -81,6 +81,21 @@ In phase-3 slice 2:
 - LSI reads share the base table partition topology and hot-partition enforcement
 - dynamic partition splitting and repartitioning remain deferred
 
+In phase-3 slice 3:
+
+- `TableStage1` now models burst-backed admission using stored unused steady-state throughput
+- burst is tracked separately for:
+  - table reads
+  - table writes
+  - each GSI's reads
+- LSI reads use the table-read burst path
+- burst may rescue both whole-resource and hot-partition failures
+- stage-1 telemetry now distinguishes:
+  - normal admission
+  - burst-backed admission
+  - throttling with currently available burst headroom
+- warm throughput remains deferred
+
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
 ## Layering
@@ -89,7 +104,7 @@ In the full `Table` component, requests now flow through several conceptual laye
 
 1. Request admission and shaping in `TableStage1`
 2. Fixed-topology hot-partition resolution and enforcement
-3. Future burst and adaptive-capacity behavior
+3. Burst-backed admission using retained unused throughput
 4. Data-plane storage execution in `TableStage4`
 
 That storage layer should itself be internally composed of:
@@ -129,6 +144,7 @@ It is not responsible for account-wide limits, retries, or upstream admission de
 - applying immediate slice-1 on-demand hard checks
 - resolving logical partition access into concrete partition footprints
 - applying slice-2 per-partition hot-partition checks
+- applying slice-3 burst-backed admission when steady-state checks would otherwise fail
 - producing early throttled responses and stage-1 metrics when a request is rejected
 
 ## Composition Goal

@@ -609,6 +609,86 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
     }
 
+    "burst-admit base-table reads through the composed table path" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 8192L),
+          useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(1))
+          ),
+          burstCapacityModel = Some(
+            DynamoDbTable.BurstCapacityModel(
+              initialTableReadBurstRequestUnits = Some(BigDecimal(2))
+            )
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")), config)
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case response: GetItemResponse => response.itemFound } shouldBe Vector(true)
+      resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.units } shouldBe Vector(BigDecimal(2))
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.BurstBacked
+      )
+      metrics.collect { case Stage4MetricEvent.GetItemObserved(_, _) => 1 } shouldBe Vector(1)
+    }
+
+    "use the selected GSI burst reservoir for GSI read admission" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 10L, totalItemBytes = 10000L),
+          useCaseBehaviors = Map(
+            "query-usecase" -> FixedQueryBehavior(8192L)
+          ),
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = FixedTableState(4L, 4096L))
+          ),
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal("0.5"))
+          ),
+          burstCapacityModel = Some(
+            DynamoDbTable.BurstCapacityModel(
+              initialGlobalSecondaryIndexReadBurstRequestUnits = Map("status-index" -> BigDecimal("0.5"))
+            )
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(
+          Source.single(
+            QueryRequest(
+              eventTime = SimTime.of(1L),
+              usecase = "query-usecase",
+              target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+            )
+          ),
+          config
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case response: QueryResponse => response.target } shouldBe Vector(
+        DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+      )
+      resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.target -> evt.units } shouldBe Vector(
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> BigDecimal(1)
+      )
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
+        BigDecimal("0.5")
+      )
+    }
+
     "sample admitted requests once and carry that sampled outcome through storage execution" in {
       val invocationCount = AtomicInteger(0)
       val config =

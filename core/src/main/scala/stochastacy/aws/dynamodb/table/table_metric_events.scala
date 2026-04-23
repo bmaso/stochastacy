@@ -8,6 +8,10 @@ trait TableMetricEvent extends MetricEvent
 
 sealed trait Stage1MetricEvent extends TableMetricEvent
 
+enum Stage1AdmissionMode:
+  case Normal
+  case BurstBacked
+
 object Stage1MetricEvent:
 
   final case class RequestAdmitted(
@@ -17,6 +21,9 @@ object Stage1MetricEvent:
                                     target: DynamoDbTarget,
                                     dimension: DynamoDbThroughputDimension,
                                     throughputDemand: BigDecimal,
+                                    admissionMode: Stage1AdmissionMode,
+                                    burstConsumedRequestUnits: BigDecimal,
+                                    burstRemainingRequestUnits: BigDecimal,
                                     resolvedPartitionFootprint: ResolvedPartitionFootprint
                                   ) extends Stage1MetricEvent
 
@@ -28,5 +35,6 @@ object Stage1MetricEvent:
                                      dimension: DynamoDbThroughputDimension,
                                      throughputDemand: BigDecimal,
                                      reason: DynamoDbThrottleReason,
+                                     burstAvailableRequestUnits: BigDecimal,
                                      resolvedPartitionFootprint: ResolvedPartitionFootprint
                                    ) extends Stage1MetricEvent

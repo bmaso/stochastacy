@@ -45,6 +45,27 @@ object DynamoDbTable:
       "globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond values must be positive"
     )
 
+  final case class BurstCapacityModel(
+                                       enabled: Boolean = true,
+                                       retentionWindowSeconds: Int = 300,
+                                       initialTableReadBurstRequestUnits: Option[BigDecimal] = None,
+                                       initialTableWriteBurstRequestUnits: Option[BigDecimal] = None,
+                                       initialGlobalSecondaryIndexReadBurstRequestUnits: Map[String, BigDecimal] = Map.empty
+                                     ):
+    require(retentionWindowSeconds > 0, s"retentionWindowSeconds must be positive, got $retentionWindowSeconds")
+    require(
+      initialTableReadBurstRequestUnits.forall(_ >= 0),
+      "initialTableReadBurstRequestUnits must be non-negative when defined"
+    )
+    require(
+      initialTableWriteBurstRequestUnits.forall(_ >= 0),
+      "initialTableWriteBurstRequestUnits must be non-negative when defined"
+    )
+    require(
+      initialGlobalSecondaryIndexReadBurstRequestUnits.values.forall(_ >= 0),
+      "initialGlobalSecondaryIndexReadBurstRequestUnits values must be non-negative"
+    )
+
   final case class GlobalSecondaryIndexDefinition(
                                                    indexName: String,
                                                    stateModel: TableState = SummaryTableState(0L, 0L)
@@ -63,7 +84,8 @@ object DynamoDbTable:
                            globalSecondaryIndexes: Vector[GlobalSecondaryIndexDefinition] = Vector.empty,
                            localSecondaryIndexes: Vector[LocalSecondaryIndexDefinition] = Vector.empty,
                            onDemandMaxThroughput: OnDemandMaxThroughput = OnDemandMaxThroughput(),
-                           hotPartitionModel: Option[HotPartitionModel] = None
+                           hotPartitionModel: Option[HotPartitionModel] = None,
+                           burstCapacityModel: Option[BurstCapacityModel] = None
                          ):
     Config.validate(this)
 
@@ -102,6 +124,42 @@ object DynamoDbTable:
         unknownGlobalSecondaryIndexNamesForHotPartitions.isEmpty,
         s"Hot-partition config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNamesForHotPartitions.mkString(", ")}"
       )
+
+      val unknownGlobalSecondaryIndexNamesForBurst =
+        config.burstCapacityModel.toVector
+          .flatMap(_.initialGlobalSecondaryIndexReadBurstRequestUnits.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
+          .distinct
+          .sorted
+
+      require(
+        unknownGlobalSecondaryIndexNamesForBurst.isEmpty,
+        s"Burst-capacity config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNamesForBurst.mkString(", ")}"
+      )
+
+      config.burstCapacityModel.foreach { burst =>
+        if burst.initialTableReadBurstRequestUnits.isDefined then
+          require(
+            config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond.isDefined,
+            s"Burst-capacity config for table '${config.tableName}' defines initialTableReadBurstRequestUnits without tableMaxReadRequestUnitsPerSecond"
+          )
+
+        if burst.initialTableWriteBurstRequestUnits.isDefined then
+          require(
+            config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond.isDefined,
+            s"Burst-capacity config for table '${config.tableName}' defines initialTableWriteBurstRequestUnits without tableMaxWriteRequestUnitsPerSecond"
+          )
+
+        val missingThroughputForInitialGsiBurst =
+          burst.initialGlobalSecondaryIndexReadBurstRequestUnits.keySet
+            .filterNot(config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.contains)
+            .toVector
+            .sorted
+
+        require(
+          missingThroughputForInitialGsiBurst.isEmpty,
+          s"Burst-capacity config for table '${config.tableName}' defines initial GSI burst for indexes without GSI max throughput: ${missingThroughputForInitialGsiBurst.mkString(", ")}"
+        )
+      }
 
   private enum RouteBranch:
     case BaseTable
@@ -230,7 +288,10 @@ object DynamoDbTable:
                            maxWriteRequestUnitsPerSecond: Option[BigDecimal],
                            partitionCount: Int,
                            maxReadRequestUnitsPerSecondPerPartition: Option[BigDecimal],
-                           maxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal]
+                           maxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal],
+                           burstRetentionWindowSeconds: Option[Int],
+                           initialReadBurstRequestUnits: Option[BigDecimal],
+                           initialWriteBurstRequestUnits: Option[BigDecimal]
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -255,7 +316,10 @@ object DynamoDbTable:
             maxWriteRequestUnitsPerSecond = maxWriteRequestUnitsPerSecond,
             partitionCount = partitionCount,
             maxReadRequestUnitsPerSecondPerPartition = maxReadRequestUnitsPerSecondPerPartition,
-            maxWriteRequestUnitsPerSecondPerPartition = maxWriteRequestUnitsPerSecondPerPartition
+            maxWriteRequestUnitsPerSecondPerPartition = maxWriteRequestUnitsPerSecondPerPartition,
+            burstRetentionWindowSeconds = burstRetentionWindowSeconds,
+            initialReadBurstRequestUnits = initialReadBurstRequestUnits,
+            initialWriteBurstRequestUnits = initialWriteBurstRequestUnits
           )
         )
       )
@@ -309,7 +373,10 @@ object DynamoDbTable:
         maxReadRequestUnitsPerSecondPerPartition =
           config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
         maxWriteRequestUnitsPerSecondPerPartition =
-          config.hotPartitionModel.flatMap(_.tablePerPartitionMaxWriteRequestUnitsPerSecond)
+          config.hotPartitionModel.flatMap(_.tablePerPartitionMaxWriteRequestUnitsPerSecond),
+        burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+        initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
+        initialWriteBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableWriteBurstRequestUnits)
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -488,7 +555,11 @@ object DynamoDbTable:
                   .getOrElse(1),
               maxReadRequestUnitsPerSecondPerPartition =
                 config.hotPartitionModel.flatMap(_.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)),
-              maxWriteRequestUnitsPerSecondPerPartition = None
+              maxWriteRequestUnitsPerSecondPerPartition = None,
+              burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+              initialReadBurstRequestUnits =
+                config.burstCapacityModel.flatMap(_.initialGlobalSecondaryIndexReadBurstRequestUnits.get(indexDefinition.indexName)),
+              initialWriteBurstRequestUnits = None
             )
           )
 
@@ -527,7 +598,10 @@ object DynamoDbTable:
               partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
               maxReadRequestUnitsPerSecondPerPartition =
                 config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
-              maxWriteRequestUnitsPerSecondPerPartition = None
+              maxWriteRequestUnitsPerSecondPerPartition = None,
+              burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+              initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
+              initialWriteBurstRequestUnits = None
             )
           )
 

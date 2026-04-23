@@ -2,7 +2,7 @@ package stochastacy.aws.dynamodb
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.table.{DynamoDbTarget, LogicalPartitionAccess, ReadConsistency, ResolvedPartitionFootprint, Stage1MetricEvent, Stage4MetricEvent, TableMetricEvent}
+import stochastacy.aws.dynamodb.table.{DynamoDbTarget, LogicalPartitionAccess, ReadConsistency, ResolvedPartitionFootprint, Stage1AdmissionMode, Stage1MetricEvent, Stage4MetricEvent, TableMetricEvent}
 import scala.collection.immutable.SortedMap
 import stochastacy.sim.SimTime
 
@@ -113,6 +113,9 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
           target = DynamoDbTarget.Table("orders"),
           dimension = DynamoDbThroughputDimension.Read,
           throughputDemand = BigDecimal(1),
+          admissionMode = Stage1AdmissionMode.Normal,
+          burstConsumedRequestUnits = BigDecimal(0),
+          burstRemainingRequestUnits = BigDecimal(300),
           resolvedPartitionFootprint = ResolvedPartitionFootprint(
             totalPartitionCount = 1,
             partitionDemandById = SortedMap(0 -> BigDecimal(1))

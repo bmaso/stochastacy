@@ -186,4 +186,70 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
       error.getMessage should include("Hot-partition config references unknown global secondary indexes")
       error.getMessage should include("missing-index")
     }
+
+    "accept optional burst-capacity config for the table and configured GSIs" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map.empty,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index")
+          ),
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(100)),
+            tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(200)),
+            globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal(25))
+          ),
+          burstCapacityModel = Some(
+            DynamoDbTable.BurstCapacityModel(
+              retentionWindowSeconds = 300,
+              initialTableReadBurstRequestUnits = Some(BigDecimal(50)),
+              initialTableWriteBurstRequestUnits = Some(BigDecimal(75)),
+              initialGlobalSecondaryIndexReadBurstRequestUnits = Map("status-index" -> BigDecimal(10))
+            )
+          )
+        )
+
+      config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits) shouldBe Some(BigDecimal(50))
+      config.burstCapacityModel.flatMap(_.initialTableWriteBurstRequestUnits) shouldBe Some(BigDecimal(75))
+      config.burstCapacityModel.map(_.initialGlobalSecondaryIndexReadBurstRequestUnits) shouldBe Some(
+        Map("status-index" -> BigDecimal(10))
+      )
+    }
+
+    "reject burst-capacity config for unknown global secondary indexes or missing steady-state throughput" in {
+      val unknownIndexError =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+            useCaseBehaviors = Map.empty,
+            burstCapacityModel = Some(
+              DynamoDbTable.BurstCapacityModel(
+                initialGlobalSecondaryIndexReadBurstRequestUnits = Map("missing-index" -> BigDecimal(10))
+              )
+            )
+          )
+        }
+
+      unknownIndexError.getMessage should include("Burst-capacity config references unknown global secondary indexes")
+      unknownIndexError.getMessage should include("missing-index")
+
+      val missingThroughputError =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+            useCaseBehaviors = Map.empty,
+            burstCapacityModel = Some(
+              DynamoDbTable.BurstCapacityModel(
+                initialTableReadBurstRequestUnits = Some(BigDecimal(10))
+              )
+            )
+          )
+        }
+
+      missingThroughputError.getMessage should include("initialTableReadBurstRequestUnits without tableMaxReadRequestUnitsPerSecond")
+    }
   }
