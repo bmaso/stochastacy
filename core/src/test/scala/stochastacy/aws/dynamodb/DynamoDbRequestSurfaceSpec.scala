@@ -14,7 +14,8 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
         eventTime = SimTime.of(1L),
         usecase = "query-usecase",
         target = DynamoDbReadTarget.Table("orders"),
-        readConsistency = ReadConsistency.StronglyConsistent
+        readConsistency = ReadConsistency.StronglyConsistent,
+        requestedReadShape = RequestedReadShape.RequestedAttributeBytes(256L)
       )
       val scanRequest = ScanRequest(
         eventTime = SimTime.of(2L),
@@ -35,10 +36,13 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
 
       queryRequest.target shouldBe DynamoDbReadTarget.Table("orders")
       queryRequest.readConsistency shouldBe ReadConsistency.StronglyConsistent
+      queryRequest.requestedReadShape shouldBe RequestedReadShape.RequestedAttributeBytes(256L)
       scanRequest.target shouldBe DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
       scanRequest.readConsistency shouldBe ReadConsistency.EventuallyConsistent
+      scanRequest.requestedReadShape shouldBe RequestedReadShape.AllProjectedOrFullItem
       lsiRequest.target shouldBe DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index")
       lsiRequest.readConsistency shouldBe ReadConsistency.StronglyConsistent
+      lsiRequest.requestedReadShape shouldBe RequestedReadShape.AllProjectedOrFullItem
     }
 
     "treat PartiQL query requests and new phase-2 responses as part of the public DynamoDB surface" in {

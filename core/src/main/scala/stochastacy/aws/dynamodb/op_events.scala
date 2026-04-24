@@ -53,6 +53,14 @@ object DynamoDbThrottleReason:
 sealed trait DynamoDBRequest extends AWSServiceRequestEvent
 sealed trait DynamoDBResponse extends AWSServiceResponseEvent
 
+sealed trait RequestedReadShape
+
+object RequestedReadShape:
+  case object AllProjectedOrFullItem extends RequestedReadShape
+  final case class RequestedAttributeBytes(bytes: Long) extends RequestedReadShape:
+    require(bytes > 0L, s"RequestedAttributeBytes.bytes must be positive, got $bytes")
+  case object ProjectedOnly extends RequestedReadShape
+
 case class GetItemRequest(override val eventTime: SimTime, override val usecase: Any)
     extends DynamoDBRequest
 
@@ -77,14 +85,16 @@ case class QueryRequest(
                          override val eventTime: SimTime,
                          override val usecase: Any,
                          target: DynamoDbReadTarget,
-                         readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
+                         readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent,
+                         requestedReadShape: RequestedReadShape = RequestedReadShape.AllProjectedOrFullItem
                        ) extends DynamoDBRequest
 
 case class ScanRequest(
                         override val eventTime: SimTime,
                         override val usecase: Any,
                         target: DynamoDbReadTarget,
-                        readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
+                        readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent,
+                        requestedReadShape: RequestedReadShape = RequestedReadShape.AllProjectedOrFullItem
                       ) extends DynamoDBRequest
 
 case class PartiQLQueryRequest(

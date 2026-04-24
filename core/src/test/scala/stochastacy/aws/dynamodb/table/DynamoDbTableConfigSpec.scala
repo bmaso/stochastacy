@@ -53,9 +53,35 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
       tableOnly.localSecondaryIndexes shouldBe empty
       withGlobalSecondaryIndex.globalSecondaryIndexes.map(_.indexName) shouldBe Vector("status-index")
       withGlobalSecondaryIndex.globalSecondaryIndexes.head.stateModel shouldBe explicitIndexState
+      withGlobalSecondaryIndex.globalSecondaryIndexes.head.projection shouldBe DynamoDbTable.IndexProjection.All
       withLocalSecondaryIndex.localSecondaryIndexes.map(_.indexName) shouldBe Vector("created-at-index")
+      withLocalSecondaryIndex.localSecondaryIndexes.head.projection shouldBe DynamoDbTable.IndexProjection.All
       withBoth.globalSecondaryIndexes.map(_.indexName) shouldBe Vector("status-index")
       withBoth.localSecondaryIndexes.map(_.indexName) shouldBe Vector("created-at-index")
+    }
+
+    "accept projection metadata on configured GSIs and LSIs" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map.empty,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition(
+              "status-index",
+              projection = DynamoDbTable.IndexProjection.KeysOnly
+            )
+          ),
+          localSecondaryIndexes = Vector(
+            DynamoDbTable.LocalSecondaryIndexDefinition(
+              "created-at-index",
+              projection = DynamoDbTable.IndexProjection.Include(256L)
+            )
+          )
+        )
+
+      config.globalSecondaryIndexes.head.projection shouldBe DynamoDbTable.IndexProjection.KeysOnly
+      config.localSecondaryIndexes.head.projection shouldBe DynamoDbTable.IndexProjection.Include(256L)
     }
 
     "default index definitions to empty summary state when no explicit state model is provided" in {

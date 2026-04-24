@@ -9,6 +9,11 @@ import stochastacy.sim.ticks
 
 object TableStage1:
 
+  final case class IndexMaintenanceTargetConfig(
+                                                 target: DynamoDbTarget,
+                                                 projection: DynamoDbTable.IndexProjection
+                                               )
+
   final case class GsiWriteScopeConfig(
                                         target: DynamoDbTarget.GlobalSecondaryIndex,
                                         stateModel: TableState,
@@ -93,6 +98,7 @@ object TableStage1:
                            initialReadBurstRequestUnits: Option[BigDecimal] = None,
                            initialWriteBurstRequestUnits: Option[BigDecimal] = None,
                            dynamicPartitionTopologyConfig: Option[DynamicPartitionTopologyConfig] = None,
+                           indexMaintenanceTargets: Vector[IndexMaintenanceTargetConfig] = Vector.empty,
                            gsiWriteScopes: Vector[GsiWriteScopeConfig] = Vector.empty
                          ):
     require(maxReadRequestUnitsPerSecond.forall(_ > 0), "maxReadRequestUnitsPerSecond must be positive when defined")
@@ -158,6 +164,10 @@ object TableStage1:
     require(
       gsiWriteScopes.map(_.target.indexName).distinct.size == gsiWriteScopes.size,
       "gsiWriteScopes must not contain duplicate index targets"
+    )
+    require(
+      indexMaintenanceTargets.map(_.target).distinct.size == indexMaintenanceTargets.size,
+      "indexMaintenanceTargets must not contain duplicate targets"
     )
 
   private final case class BurstReservoir(
@@ -333,7 +343,8 @@ object TableStage1:
                             burstConsumedRequestUnits: BigDecimal,
                             burstRemainingRequestUnits: BigDecimal,
                             topologyPartitionCount: Int,
-                            resolvedPartitionFootprint: ResolvedPartitionFootprint
+                            resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                            indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
                           ): Stage1MetricEvent.RequestAdmitted =
       Stage1MetricEvent.RequestAdmitted(
         eventTime = request.eventTime,
@@ -348,7 +359,8 @@ object TableStage1:
         burstConsumedRequestUnits = burstConsumedRequestUnits,
         burstRemainingRequestUnits = burstRemainingRequestUnits,
         topologyPartitionCount = topologyPartitionCount,
-        resolvedPartitionFootprint = resolvedPartitionFootprint
+        resolvedPartitionFootprint = resolvedPartitionFootprint,
+        indexMaintenanceSummary = indexMaintenanceSummary
       )
 
     def metricForThrottle(
@@ -360,7 +372,8 @@ object TableStage1:
                            adaptiveAvailableRequestUnits: BigDecimal,
                            burstAvailableRequestUnits: BigDecimal,
                            topologyPartitionCount: Int,
-                           resolvedPartitionFootprint: ResolvedPartitionFootprint
+                           resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                           indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
                          ): Stage1MetricEvent.RequestThrottled =
       Stage1MetricEvent.RequestThrottled(
         eventTime = request.eventTime,
@@ -373,7 +386,8 @@ object TableStage1:
         adaptiveAvailableRequestUnits = adaptiveAvailableRequestUnits,
         burstAvailableRequestUnits = burstAvailableRequestUnits,
         topologyPartitionCount = topologyPartitionCount,
-        resolvedPartitionFootprint = resolvedPartitionFootprint
+        resolvedPartitionFootprint = resolvedPartitionFootprint,
+        indexMaintenanceSummary = indexMaintenanceSummary
       )
 
     def topologyMetricFor(
@@ -403,7 +417,8 @@ object TableStage1:
                    adaptiveAvailableRequestUnits: BigDecimal,
                    burstAvailableRequestUnits: BigDecimal,
                    topologyPartitionCount: Int,
-                   resolvedPartitionFootprint: ResolvedPartitionFootprint
+                   resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                   indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
                  ): Throttled =
       Throttled(
         request = request,
@@ -424,7 +439,8 @@ object TableStage1:
           adaptiveAvailableRequestUnits,
           burstAvailableRequestUnits,
           topologyPartitionCount,
-          resolvedPartitionFootprint
+          resolvedPartitionFootprint,
+          indexMaintenanceSummary
         )
       )
 
@@ -722,43 +738,51 @@ object TableStage1:
         case Some(threshold) if observedPeakByPartition >= threshold => previousCount + 1
         case _ => 0
 
-    def deriveGsiWritePropagationPlan(
-                                       request: DynamoDBRequest,
-                                       logicalPartitionAccess: LogicalPartitionAccess,
-                                       writtenItemBytes: Option[Long],
-                                       previousItemBytes: Option[Long],
-                                       deletedItemBytes: Option[Long],
-                                       topologySnapshotsByIndex: Map[String, PartitionTopologySnapshot]
-                                     ): Vector[GsiWritePropagation] =
-      config.gsiWriteScopes.map { scope =>
-        val throughputDemand =
-          (writtenItemBytes, deletedItemBytes) match
-            case (Some(bytes), _) => TableThroughputMath.writeCapacityUnitsFor(bytes)
-            case (None, Some(bytes)) => TableThroughputMath.writeCapacityUnitsFor(bytes)
-            case _ => BigDecimal(0)
-
-        val resolvedPartitionFootprint =
-          PartitionAccessResolver.resolve(
-            access = logicalPartitionAccess,
-            throughputDemand = throughputDemand,
-            topology = topologySnapshotsByIndex.getOrElse(
-              scope.target.indexName,
-              PartitionTopologySnapshot(
-                partitionCount = scope.dynamicPartitionTopologyConfig.map(_.initialPartitionCount).getOrElse(config.partitionCount),
-                version = 0L,
-                effectiveFromTick = 0L
-              )
+    def deriveIndexMaintenancePlan(
+                                    logicalPartitionAccess: LogicalPartitionAccess,
+                                    newBaseItemBytes: Option[Long],
+                                    previousBaseItemBytes: Option[Long],
+                                    baseTopologySnapshot: PartitionTopologySnapshot,
+                                    topologySnapshotsByIndex: Map[String, PartitionTopologySnapshot]
+                                  ): Vector[IndexMaintenancePlan] =
+      val maintenanceTargets =
+        if config.indexMaintenanceTargets.nonEmpty then config.indexMaintenanceTargets
+        else
+          config.gsiWriteScopes.map { scope =>
+            IndexMaintenanceTargetConfig(
+              target = scope.target,
+              projection = DynamoDbTable.IndexProjection.All
             )
-          )
+          }
 
-        GsiWritePropagation(
-          indexTarget = scope.target,
-          throughputDemand = throughputDemand,
+      maintenanceTargets.map { targetConfig =>
+        val topologySnapshot =
+          targetConfig.target match
+            case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
+              topologySnapshotsByIndex.getOrElse(
+                indexName,
+                PartitionTopologySnapshot(
+                  partitionCount =
+                    config.gsiWriteScopes
+                      .find(_.target.indexName == indexName)
+                      .flatMap(_.dynamicPartitionTopologyConfig.map(_.initialPartitionCount))
+                      .getOrElse(config.partitionCount),
+                  version = 0L,
+                  effectiveFromTick = 0L
+                )
+              )
+            case _: DynamoDbTarget.LocalSecondaryIndex =>
+              baseTopologySnapshot
+            case _: DynamoDbTarget.Table =>
+              baseTopologySnapshot
+
+        IndexMaintenanceMath.derivePlan(
+          target = targetConfig.target,
+          projection = targetConfig.projection,
           logicalPartitionAccess = logicalPartitionAccess,
-          resolvedPartitionFootprint = resolvedPartitionFootprint,
-          writtenItemBytes = writtenItemBytes,
-          previousItemBytes = previousItemBytes,
-          deletedItemBytes = deletedItemBytes
+          newBaseItemBytes = newBaseItemBytes,
+          previousBaseItemBytes = previousBaseItemBytes,
+          topology = topologySnapshot
         )
       }
 
@@ -956,15 +980,15 @@ object TableStage1:
           val sample = samplerFor(r).putItem(r, config.stateModel)
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.writtenItemBytes)
           val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          val propagationPlan =
-            deriveGsiWritePropagationPlan(
-              request = r,
+          val indexMaintenancePlan =
+            deriveIndexMaintenancePlan(
               logicalPartitionAccess = sample.logicalPartitionAccess,
-              writtenItemBytes = Some(sample.writtenItemBytes),
-              previousItemBytes = sample.previousItemBytes,
-              deletedItemBytes = None,
+              newBaseItemBytes = Some(sample.writtenItemBytes),
+              previousBaseItemBytes = sample.previousItemBytes,
+              baseTopologySnapshot = topologySnapshot,
               topologySnapshotsByIndex = gsiTopologySnapshots
             )
+          val indexMaintenanceSummary = indexMaintenancePlan.map(_.summary)
           val baseEvaluation =
             evaluateWriteScope(
               target = config.admissionTarget,
@@ -977,12 +1001,20 @@ object TableStage1:
               adaptiveMaxWriteRequestUnitsPerSecondPerPartition = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
             )
           val gsiEvaluations =
-            config.gsiWriteScopes.zip(propagationPlan).map { case (scope, propagation) =>
+            config.gsiWriteScopes.map { scope =>
+              val maintenancePlan =
+                indexMaintenancePlan.collectFirst {
+                  case plan: IndexMaintenancePlan
+                      if plan.target == scope.target =>
+                    plan
+                }.getOrElse(
+                  throw new IllegalStateException(s"Missing index maintenance plan for GSI '${scope.target.indexName}'")
+                )
               scope.target.indexName ->
                 evaluateWriteScope(
                   target = scope.target,
-                  throughputDemand = propagation.throughputDemand,
-                  resolvedPartitionFootprint = propagation.resolvedPartitionFootprint,
+                  throughputDemand = maintenancePlan.throughputDemand,
+                  resolvedPartitionFootprint = maintenancePlan.resolvedPartitionFootprint,
                   usageState = gsiUsageStates.getOrElse(scope.target.indexName, PerTickUsageState()),
                   burstState = gsiBurstStates.getOrElse(
                     scope.target.indexName,
@@ -1015,7 +1047,8 @@ object TableStage1:
                 adaptiveAvailableRequestUnits = failure.adaptiveAvailableRequestUnits,
                 burstAvailableRequestUnits = failure.burstAvailable,
                 topologyPartitionCount = failure.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = failure.resolvedPartitionFootprint
+                resolvedPartitionFootprint = failure.resolvedPartitionFootprint,
+                indexMaintenanceSummary = indexMaintenanceSummary
               )
             case None if baseEvaluation.blockingReason.nonEmpty =>
               throttled(
@@ -1027,7 +1060,8 @@ object TableStage1:
                 adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
                 burstAvailableRequestUnits = baseEvaluation.burstAvailable,
                 topologyPartitionCount = baseEvaluation.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint
+                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint,
+                indexMaintenanceSummary = indexMaintenanceSummary
               )
             case None =>
               Admitted(
@@ -1040,7 +1074,7 @@ object TableStage1:
                     sample = sample,
                     throughputDemand = demand,
                     resolvedPartitionFootprint = resolvedPartitionFootprint,
-                    gsiWritePropagationPlan = propagationPlan
+                    indexMaintenancePlan = indexMaintenancePlan
                   ),
                 metric = metricForAdmission(
                   request = r,
@@ -1053,7 +1087,8 @@ object TableStage1:
                   burstConsumedRequestUnits = baseEvaluation.requiredBurst,
                   burstRemainingRequestUnits = (baseEvaluation.burstAvailable - baseEvaluation.requiredBurst).max(BigDecimal(0)),
                   topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-                  resolvedPartitionFootprint = resolvedPartitionFootprint
+                  resolvedPartitionFootprint = resolvedPartitionFootprint,
+                  indexMaintenanceSummary = indexMaintenanceSummary
                 ),
                 gsiWriteAdmissions =
                   config.gsiWriteScopes.map { scope =>
@@ -1071,15 +1106,15 @@ object TableStage1:
           val sample = samplerFor(r).updateItem(r, config.stateModel)
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.writtenItemBytes)
           val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          val propagationPlan =
-            deriveGsiWritePropagationPlan(
-              request = r,
+          val indexMaintenancePlan =
+            deriveIndexMaintenancePlan(
               logicalPartitionAccess = sample.logicalPartitionAccess,
-              writtenItemBytes = Some(sample.writtenItemBytes),
-              previousItemBytes = sample.previousItemBytes,
-              deletedItemBytes = None,
+              newBaseItemBytes = Some(sample.writtenItemBytes),
+              previousBaseItemBytes = sample.previousItemBytes,
+              baseTopologySnapshot = topologySnapshot,
               topologySnapshotsByIndex = gsiTopologySnapshots
             )
+          val indexMaintenanceSummary = indexMaintenancePlan.map(_.summary)
           val baseEvaluation =
             evaluateWriteScope(
               target = config.admissionTarget,
@@ -1092,12 +1127,18 @@ object TableStage1:
               adaptiveMaxWriteRequestUnitsPerSecondPerPartition = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
             )
           val gsiEvaluations =
-            config.gsiWriteScopes.zip(propagationPlan).map { case (scope, propagation) =>
+            config.gsiWriteScopes.map { scope =>
+              val maintenancePlan =
+                indexMaintenancePlan.collectFirst {
+                  case plan: IndexMaintenancePlan if plan.target == scope.target => plan
+                }.getOrElse(
+                  throw new IllegalStateException(s"Missing index maintenance plan for GSI '${scope.target.indexName}'")
+                )
               scope.target.indexName ->
                 evaluateWriteScope(
                   target = scope.target,
-                  throughputDemand = propagation.throughputDemand,
-                  resolvedPartitionFootprint = propagation.resolvedPartitionFootprint,
+                  throughputDemand = maintenancePlan.throughputDemand,
+                  resolvedPartitionFootprint = maintenancePlan.resolvedPartitionFootprint,
                   usageState = gsiUsageStates.getOrElse(scope.target.indexName, PerTickUsageState()),
                   burstState = gsiBurstStates.getOrElse(
                     scope.target.indexName,
@@ -1130,7 +1171,8 @@ object TableStage1:
                 adaptiveAvailableRequestUnits = failure.adaptiveAvailableRequestUnits,
                 burstAvailableRequestUnits = failure.burstAvailable,
                 topologyPartitionCount = failure.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = failure.resolvedPartitionFootprint
+                resolvedPartitionFootprint = failure.resolvedPartitionFootprint,
+                indexMaintenanceSummary = indexMaintenanceSummary
               )
             case None if baseEvaluation.blockingReason.nonEmpty =>
               throttled(
@@ -1142,7 +1184,8 @@ object TableStage1:
                 adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
                 burstAvailableRequestUnits = baseEvaluation.burstAvailable,
                 topologyPartitionCount = baseEvaluation.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint
+                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint,
+                indexMaintenanceSummary = indexMaintenanceSummary
               )
             case None =>
               Admitted(
@@ -1155,7 +1198,7 @@ object TableStage1:
                     sample = sample,
                     throughputDemand = demand,
                     resolvedPartitionFootprint = resolvedPartitionFootprint,
-                    gsiWritePropagationPlan = propagationPlan
+                    indexMaintenancePlan = indexMaintenancePlan
                   ),
                 metric = metricForAdmission(
                   request = r,
@@ -1168,7 +1211,8 @@ object TableStage1:
                   burstConsumedRequestUnits = baseEvaluation.requiredBurst,
                   burstRemainingRequestUnits = (baseEvaluation.burstAvailable - baseEvaluation.requiredBurst).max(BigDecimal(0)),
                   topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-                  resolvedPartitionFootprint = resolvedPartitionFootprint
+                  resolvedPartitionFootprint = resolvedPartitionFootprint,
+                  indexMaintenanceSummary = indexMaintenanceSummary
                 ),
                 gsiWriteAdmissions =
                   config.gsiWriteScopes.map { scope =>
@@ -1186,15 +1230,15 @@ object TableStage1:
           val sample = samplerFor(r).deleteItem(r, config.stateModel)
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.deletedItemBytes.getOrElse(0L))
           val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          val propagationPlan =
-            deriveGsiWritePropagationPlan(
-              request = r,
+          val indexMaintenancePlan =
+            deriveIndexMaintenancePlan(
               logicalPartitionAccess = sample.logicalPartitionAccess,
-              writtenItemBytes = None,
-              previousItemBytes = None,
-              deletedItemBytes = sample.deletedItemBytes,
+              newBaseItemBytes = None,
+              previousBaseItemBytes = sample.deletedItemBytes,
+              baseTopologySnapshot = topologySnapshot,
               topologySnapshotsByIndex = gsiTopologySnapshots
             )
+          val indexMaintenanceSummary = indexMaintenancePlan.map(_.summary)
           val baseEvaluation =
             evaluateWriteScope(
               target = config.admissionTarget,
@@ -1207,12 +1251,18 @@ object TableStage1:
               adaptiveMaxWriteRequestUnitsPerSecondPerPartition = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
             )
           val gsiEvaluations =
-            config.gsiWriteScopes.zip(propagationPlan).map { case (scope, propagation) =>
+            config.gsiWriteScopes.map { scope =>
+              val maintenancePlan =
+                indexMaintenancePlan.collectFirst {
+                  case plan: IndexMaintenancePlan if plan.target == scope.target => plan
+                }.getOrElse(
+                  throw new IllegalStateException(s"Missing index maintenance plan for GSI '${scope.target.indexName}'")
+                )
               scope.target.indexName ->
                 evaluateWriteScope(
                   target = scope.target,
-                  throughputDemand = propagation.throughputDemand,
-                  resolvedPartitionFootprint = propagation.resolvedPartitionFootprint,
+                  throughputDemand = maintenancePlan.throughputDemand,
+                  resolvedPartitionFootprint = maintenancePlan.resolvedPartitionFootprint,
                   usageState = gsiUsageStates.getOrElse(scope.target.indexName, PerTickUsageState()),
                   burstState = gsiBurstStates.getOrElse(
                     scope.target.indexName,
@@ -1245,7 +1295,8 @@ object TableStage1:
                 adaptiveAvailableRequestUnits = failure.adaptiveAvailableRequestUnits,
                 burstAvailableRequestUnits = failure.burstAvailable,
                 topologyPartitionCount = failure.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = failure.resolvedPartitionFootprint
+                resolvedPartitionFootprint = failure.resolvedPartitionFootprint,
+                indexMaintenanceSummary = indexMaintenanceSummary
               )
             case None if baseEvaluation.blockingReason.nonEmpty =>
               throttled(
@@ -1257,7 +1308,8 @@ object TableStage1:
                 adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
                 burstAvailableRequestUnits = baseEvaluation.burstAvailable,
                 topologyPartitionCount = baseEvaluation.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint
+                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint,
+                indexMaintenanceSummary = indexMaintenanceSummary
               )
             case None =>
               Admitted(
@@ -1270,7 +1322,7 @@ object TableStage1:
                     sample = sample,
                     throughputDemand = demand,
                     resolvedPartitionFootprint = resolvedPartitionFootprint,
-                    gsiWritePropagationPlan = propagationPlan
+                    indexMaintenancePlan = indexMaintenancePlan
                   ),
                 metric = metricForAdmission(
                   request = r,
@@ -1283,7 +1335,8 @@ object TableStage1:
                   burstConsumedRequestUnits = baseEvaluation.requiredBurst,
                   burstRemainingRequestUnits = (baseEvaluation.burstAvailable - baseEvaluation.requiredBurst).max(BigDecimal(0)),
                   topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-                  resolvedPartitionFootprint = resolvedPartitionFootprint
+                  resolvedPartitionFootprint = resolvedPartitionFootprint,
+                  indexMaintenanceSummary = indexMaintenanceSummary
                 ),
                 gsiWriteAdmissions =
                   config.gsiWriteScopes.map { scope =>

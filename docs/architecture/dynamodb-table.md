@@ -129,7 +129,7 @@ In phase-3 slice 6:
 
 - base-table writes now depend on internal GSI write admission before they are allowed into the data plane
 - `TableStage1` derives internal GSI write propagation effects at table ingress for admitted base-table writes
-- the same memorialized GSI write plan is carried with admitted write requests for downstream propagation
+- the same memorialized write-side index plan is now carried with admitted write requests for downstream propagation
 - a base-table write may now throttle because a specific GSI cannot absorb the induced internal write pressure
 - GSI write back-pressure uses the same simulator machinery already built for other scopes:
   - whole-resource on-demand checks
@@ -138,6 +138,33 @@ In phase-3 slice 6:
   - burst capacity
   - dynamic partition topology
 - LSI write back-pressure remains deferred
+
+In phase-3 slice 7:
+
+- `Query` and `Scan` against GSIs and LSIs are now projection-aware
+- index definitions now carry projection metadata:
+  - `All`
+  - `KeysOnly`
+  - `Include(projectedNonKeyBytesPerItem)`
+- `QueryRequest` and `ScanRequest` now carry a lightweight requested-read shape
+- samplers now return projection-aware read summaries for query and scan outcomes
+- `TableStage4` now enforces the DynamoDB difference between GSI and LSI reads:
+  - GSI reads remain index-only and are limited to projected bytes when non-projected attributes would have been needed
+  - LSI reads may emit additional base-table read work when non-projected attributes are fetched
+- write-side projection-sensitive index maintenance remains deferred to the next slice
+
+In phase-3 slice 8:
+
+- the table now derives one memorialized index-maintenance plan for every admitted base-table write
+- that plan is bytes-oriented and projection-aware, and may mark each index as:
+  - `NoOp`
+  - `InsertEntry`
+  - `ReplaceEntry`
+  - `DeleteEntry`
+- only GSI entries from that plan participate in write back-pressure admission
+- both GSI and LSI entries from that plan now drive downstream index mutation, storage deltas, and write-capacity consumption
+- coarse response-driven index propagation has been replaced by plan-driven downstream propagation
+- downstream index maintenance now emits explicit index-entry telemetry for inserted, replaced, deleted, and unchanged entries
 
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
@@ -151,7 +178,9 @@ In the full `Table` component, requests now flow through several conceptual laye
 4. Burst-backed admission using retained unused throughput
 5. Tick-boundary topology evolution
 6. Internal GSI write back-pressure checks for base-table writes
-7. Data-plane storage execution in `TableStage4`
+7. Projection-aware index read execution in `TableStage4`
+8. Precise downstream index maintenance from memorialized write plans
+9. Data-plane storage execution in `TableStage4`
 
 That storage layer should itself be internally composed of:
 
@@ -179,6 +208,7 @@ Phase 2 should preserve that idea while broadening the internal storage model. T
 - producing the synchronous DynamoDB response for an admitted request
 - emitting resource-consumption facts caused by servicing the request
 - emitting telemetry and metric events that summarize what happened
+- enforcing projection-aware GSI-vs-LSI read behavior once a read has reached the data plane
 
 It is not responsible for account-wide limits, retries, or upstream admission decisions.
 

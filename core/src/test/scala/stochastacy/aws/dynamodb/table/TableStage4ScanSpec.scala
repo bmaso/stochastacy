@@ -7,7 +7,7 @@ import org.apache.pekko.stream.testkit.TestSubscriber
 import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.{DynamoDbReadTarget, ScanRequest, ScanResponse}
+import stochastacy.aws.dynamodb.{DynamoDbReadTarget, RequestedReadShape, ScanRequest, ScanResponse}
 import stochastacy.sim.{SimTime, TimedEvent}
 
 class TableStage4ScanSpec extends AnyWordSpec with should.Matchers:
@@ -105,6 +105,104 @@ class TableStage4ScanSpec extends AnyWordSpec with should.Matchers:
       metricEvents.collect { case _: Stage4MetricEvent.ScanReturned => 1 } shouldBe empty
       metricEvents.collect { case evt: Stage4MetricEvent.ScanEvaluated => evt.itemCount } shouldBe Vector(6L)
     }
+
+    "limit a GSI scan to projected bytes without fetching from the base table" in {
+      val (responseProbe, resourceProbe, metricsProbe) =
+        runTable(
+          requestSource = Source.single(
+            ScanRequest(
+              eventTime = SimTime.of(1L),
+              usecase = "gsi-projected-scan",
+              target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index"),
+              requestedReadShape = RequestedReadShape.AllProjectedOrFullItem
+            )
+          ),
+          tableState = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          behaviors = Map("gsi-projected-scan" -> GsiProjectionLimitedBehavior),
+          tableTarget = DynamoDbTarget.Table("orders"),
+          readConsistency = ReadConsistency.EventuallyConsistent,
+          indexProjection = Some(DynamoDbTable.IndexProjection.Include(128L))
+        )
+
+      resourceProbe.request(100)
+      metricsProbe.request(100)
+
+      responseProbe.request(1).expectNext() shouldBe ScanResponse(
+        eventTime = SimTime.of(1L),
+        usecase = "gsi-projected-scan",
+        target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index"),
+        readConsistency = ReadConsistency.EventuallyConsistent,
+        evaluatedItemCount = 6L,
+        evaluatedBytes = 6144L,
+        returnedItemCount = 3L,
+        returnedBytes = 768L
+      )
+      responseProbe.expectComplete()
+
+      val consumptionEvents = drainConsumptionEvents(resourceProbe)
+      consumptionEvents.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => (evt.target, evt.units) } shouldBe
+        Vector(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> BigDecimal(1))
+      consumptionEvents.collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => (evt.target, evt.bytes) } shouldBe
+        Vector(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 6144L)
+
+      val metricEvents = drainMetricEvents(metricsProbe)
+      metricEvents.collect { case evt: Stage4MetricEvent.ScanReturned => evt.bytes } shouldBe Vector(768L)
+      metricEvents.collect { case evt: Stage4MetricEvent.ScanUsedIndexOnly => evt.target } shouldBe
+        Vector(DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index"))
+      metricEvents.collect { case _: Stage4MetricEvent.ScanFetchedFromBaseTable => 1 } shouldBe empty
+    }
+
+    "add base-table fetch consumption for an LSI scan that needs non-projected attributes" in {
+      val (responseProbe, resourceProbe, metricsProbe) =
+        runTable(
+          requestSource = Source.single(
+            ScanRequest(
+              eventTime = SimTime.of(1L),
+              usecase = "lsi-fetch-scan",
+              target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+              readConsistency = ReadConsistency.StronglyConsistent,
+              requestedReadShape = RequestedReadShape.AllProjectedOrFullItem
+            )
+          ),
+          tableState = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          behaviors = Map("lsi-fetch-scan" -> LsiFetchScanBehavior),
+          tableTarget = DynamoDbTarget.Table("orders"),
+          readConsistency = ReadConsistency.EventuallyConsistent,
+          indexProjection = Some(DynamoDbTable.IndexProjection.KeysOnly)
+        )
+
+      resourceProbe.request(100)
+      metricsProbe.request(100)
+
+      responseProbe.request(1).expectNext() shouldBe ScanResponse(
+        eventTime = SimTime.of(1L),
+        usecase = "lsi-fetch-scan",
+        target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+        readConsistency = ReadConsistency.StronglyConsistent,
+        evaluatedItemCount = 8L,
+        evaluatedBytes = 8192L,
+        returnedItemCount = 4L,
+        returnedBytes = 3072L
+      )
+      responseProbe.expectComplete()
+
+      val consumptionEvents = drainConsumptionEvents(resourceProbe)
+      consumptionEvents.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => (evt.target, evt.units) } shouldBe
+        Vector(
+          DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> BigDecimal(2),
+          DynamoDbTarget.Table("orders") -> BigDecimal(1)
+        )
+      consumptionEvents.collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => (evt.target, evt.bytes) } shouldBe
+        Vector(
+          DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 8192L,
+          DynamoDbTarget.Table("orders") -> 2048L
+        )
+
+      val metricEvents = drainMetricEvents(metricsProbe)
+      metricEvents.collect { case evt: Stage4MetricEvent.ScanFetchedFromBaseTable => (evt.itemCount, evt.bytes) } shouldBe
+        Vector(4L -> 2048L)
+      metricEvents.collect { case _: Stage4MetricEvent.ScanUsedIndexOnly => 1 } shouldBe empty
+    }
   }
 
   private def runTable(
@@ -112,7 +210,8 @@ class TableStage4ScanSpec extends AnyWordSpec with should.Matchers:
                         tableState: TableState,
                         behaviors: Map[Any, UseCaseSampler[TableState]],
                         tableTarget: DynamoDbTarget,
-                        readConsistency: ReadConsistency
+                        readConsistency: ReadConsistency,
+                        indexProjection: Option[DynamoDbTable.IndexProjection] = None
                       ) =
     val responseSink = TestSink.probe[TimedEvent]
     val resourceSink = TestSink.probe[TimedEvent]
@@ -123,7 +222,7 @@ class TableStage4ScanSpec extends AnyWordSpec with should.Matchers:
         (respSink, consSink, metrSink) =>
           import GraphDSL.Implicits.*
 
-          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency))
+          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency, indexProjection))
 
           requestSource ~> table.in
           table.out0 ~> respSink
@@ -184,4 +283,30 @@ class TableStage4ScanSpec extends AnyWordSpec with should.Matchers:
         evaluatedBytes = 4096L,
         returnedItemCount = 0L,
         returnedBytes = 0L
+      )
+
+  private object GsiProjectionLimitedBehavior extends UseCaseSampler[TableState]:
+    override def scan(request: ScanRequest, state: TableState): ScanSample =
+      ScanSample(
+        evaluatedItemCount = 6L,
+        evaluatedBytes = 6144L,
+        returnedItemCount = 3L,
+        returnedBytes = 1792L,
+        projectedBytesReturned = 768L,
+        baseTableFetchBytes = 1024L,
+        baseTableFetchItemCount = 3L,
+        projectionSatisfaction = ProjectionSatisfaction.PartiallySatisfiedByIndexWithBaseTableFetch
+      )
+
+  private object LsiFetchScanBehavior extends UseCaseSampler[TableState]:
+    override def scan(request: ScanRequest, state: TableState): ScanSample =
+      ScanSample(
+        evaluatedItemCount = 8L,
+        evaluatedBytes = 8192L,
+        returnedItemCount = 4L,
+        returnedBytes = 3072L,
+        projectedBytesReturned = 1024L,
+        baseTableFetchBytes = 2048L,
+        baseTableFetchItemCount = 4L,
+        projectionSatisfaction = ProjectionSatisfaction.PartiallySatisfiedByIndexWithBaseTableFetch
       )

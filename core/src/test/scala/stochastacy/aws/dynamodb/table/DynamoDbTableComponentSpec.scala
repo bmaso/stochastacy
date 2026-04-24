@@ -145,6 +145,55 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       metrics.collect { case _: Stage4MetricEvent.PutItemObserved => 1 }.size shouldBe 1
     }
 
+    "apply projection-sized downstream index maintenance for inserted entries" in {
+      val statusIndexState = FixedTableState(itemCount = 0L, totalItemBytes = 0L)
+      val createdAtIndexState = FixedTableState(itemCount = 0L, totalItemBytes = 0L)
+
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map("put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L, previousItemBytes = None)),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition(
+              "status-index",
+              stateModel = statusIndexState,
+              projection = DynamoDbTable.IndexProjection.Include(256L)
+            )
+          ),
+          localSecondaryIndexes = Vector(
+            DynamoDbTable.LocalSecondaryIndexDefinition(
+              "created-at-index",
+              stateModel = createdAtIndexState,
+              projection = DynamoDbTable.IndexProjection.KeysOnly
+            )
+          )
+        )
+
+      val (_, resourceFuture, metricsFuture) =
+        runComponent(
+          Source.single(PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)),
+          config
+        )
+
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      statusIndexState.totalItemBytes shouldBe 384L
+      createdAtIndexState.totalItemBytes shouldBe 128L
+
+      resources.collect { case evt: DynamoDbConsumptionEvent.StorageBytesWritten => evt.target -> evt.bytes }.toSet shouldBe Set(
+        DynamoDbTarget.Table("orders") -> 1024L,
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 384L,
+        DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 128L
+      )
+      metrics.collect { case evt: Stage4MetricEvent.IndexEntryInserted => evt.target -> evt.bytes }.toSet shouldBe Set(
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 384L,
+        DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 128L
+      )
+    }
+
     "propagate update and delete write effects into configured index state" in {
       val statusIndexState = FixedTableState(itemCount = 1L, totalItemBytes = 512L)
       val createdAtIndexState = FixedTableState(itemCount = 1L, totalItemBytes = 512L)
@@ -190,6 +239,43 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         DynamoDbTarget.Table("orders") -> 768L,
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 768L,
         DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 768L
+      )
+    }
+
+    "skip downstream index mutation and write consumption for no-op maintenance entries" in {
+      val statusIndexState = FixedTableState(itemCount = 1L, totalItemBytes = 128L)
+
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 512L),
+          useCaseBehaviors = Map(
+            "update-existing" -> FixedUpdateItemBehavior(writtenItemBytes = 2048L, previousItemBytes = Some(1024L))
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition(
+              "status-index",
+              stateModel = statusIndexState,
+              projection = DynamoDbTable.IndexProjection.KeysOnly
+            )
+          )
+        )
+
+      val (_, resourceFuture, metricsFuture) =
+        runComponent(
+          Source.single(UpdateItemRequest(eventTime = SimTime.of(1L), usecase = "update-existing", itemBytes = 2048L)),
+          config
+        )
+
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      statusIndexState.itemCount shouldBe 1L
+      statusIndexState.totalItemBytes shouldBe 128L
+      resources.collect { case evt: DynamoDbConsumptionEvent.WriteCapacityConsumed if evt.target == DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") => evt.units } shouldBe empty
+      metrics.collect { case evt: Stage4MetricEvent.IndexEntryUnchanged => evt.target } shouldBe Vector(
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
       )
     }
 
@@ -307,6 +393,70 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
     }
 
+    "apply projection-aware behavior to GSI and LSI Query requests" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 10L, totalItemBytes = 10000L),
+          useCaseBehaviors = Map(
+            "gsi-projection-query" -> ProjectionLimitedQueryBehavior,
+            "lsi-projection-query" -> ProjectionFetchQueryBehavior
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition(
+              "status-index",
+              stateModel = FixedTableState(4L, 4096L),
+              projection = DynamoDbTable.IndexProjection.Include(256L)
+            )
+          ),
+          localSecondaryIndexes = Vector(
+            DynamoDbTable.LocalSecondaryIndexDefinition(
+              "created-at-index",
+              stateModel = FixedTableState(5L, 5120L),
+              projection = DynamoDbTable.IndexProjection.KeysOnly
+            )
+          )
+        )
+
+      val (gsiResponsesF, gsiResourcesF, gsiMetricsF) =
+        runComponent(
+          Source.single(
+            QueryRequest(
+              eventTime = SimTime.of(1L),
+              usecase = "gsi-projection-query",
+              target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+            )
+          ),
+          config
+        )
+      val (lsiResponsesF, lsiResourcesF, lsiMetricsF) =
+        runComponent(
+          Source.single(
+            QueryRequest(
+              eventTime = SimTime.of(2L),
+              usecase = "lsi-projection-query",
+              target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+              readConsistency = ReadConsistency.StronglyConsistent
+            )
+          ),
+          config
+        )
+
+      Await.result(gsiResponsesF, 3.seconds).collect { case response: QueryResponse => response.returnedBytes } shouldBe Vector(512L)
+      Await.result(gsiResourcesF, 3.seconds).collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.target -> evt.bytes } shouldBe
+        Vector(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 4096L)
+      Await.result(gsiMetricsF, 3.seconds).collect { case _: Stage4MetricEvent.QueryUsedIndexOnly => 1 } shouldBe Vector(1)
+
+      Await.result(lsiResponsesF, 3.seconds).collect { case response: QueryResponse => response.returnedBytes } shouldBe Vector(1536L)
+      Await.result(lsiResourcesF, 3.seconds).collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.target -> evt.bytes } shouldBe
+        Vector(
+          DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 3072L,
+          DynamoDbTarget.Table("orders") -> 1024L
+        )
+      Await.result(lsiMetricsF, 3.seconds).collect { case evt: Stage4MetricEvent.QueryFetchedFromBaseTable => evt.bytes } shouldBe Vector(1024L)
+    }
+
     "reject strongly consistent GSI Query requests" in {
       val config = readCapableIndexedConfig()
 
@@ -407,6 +557,70 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       lsiResponses.collect { case response: ScanResponse => response.target } shouldBe Vector(
         DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index")
       )
+    }
+
+    "apply projection-aware behavior to GSI and LSI Scan requests" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 10L, totalItemBytes = 10000L),
+          useCaseBehaviors = Map(
+            "gsi-projection-scan" -> ProjectionLimitedScanBehavior,
+            "lsi-projection-scan" -> ProjectionFetchScanBehavior
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition(
+              "status-index",
+              stateModel = FixedTableState(4L, 4096L),
+              projection = DynamoDbTable.IndexProjection.Include(128L)
+            )
+          ),
+          localSecondaryIndexes = Vector(
+            DynamoDbTable.LocalSecondaryIndexDefinition(
+              "created-at-index",
+              stateModel = FixedTableState(5L, 5120L),
+              projection = DynamoDbTable.IndexProjection.KeysOnly
+            )
+          )
+        )
+
+      val (gsiResponsesF, gsiResourcesF, gsiMetricsF) =
+        runComponent(
+          Source.single(
+            ScanRequest(
+              eventTime = SimTime.of(1L),
+              usecase = "gsi-projection-scan",
+              target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+            )
+          ),
+          config
+        )
+      val (lsiResponsesF, lsiResourcesF, lsiMetricsF) =
+        runComponent(
+          Source.single(
+            ScanRequest(
+              eventTime = SimTime.of(2L),
+              usecase = "lsi-projection-scan",
+              target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+              readConsistency = ReadConsistency.StronglyConsistent
+            )
+          ),
+          config
+        )
+
+      Await.result(gsiResponsesF, 3.seconds).collect { case response: ScanResponse => response.returnedBytes } shouldBe Vector(768L)
+      Await.result(gsiResourcesF, 3.seconds).collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.target -> evt.bytes } shouldBe
+        Vector(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 6144L)
+      Await.result(gsiMetricsF, 3.seconds).collect { case _: Stage4MetricEvent.ScanUsedIndexOnly => 1 } shouldBe Vector(1)
+
+      Await.result(lsiResponsesF, 3.seconds).collect { case response: ScanResponse => response.returnedBytes } shouldBe Vector(3072L)
+      Await.result(lsiResourcesF, 3.seconds).collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.target -> evt.bytes } shouldBe
+        Vector(
+          DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 8192L,
+          DynamoDbTarget.Table("orders") -> 2048L
+        )
+      Await.result(lsiMetricsF, 3.seconds).collect { case evt: Stage4MetricEvent.ScanFetchedFromBaseTable => evt.bytes } shouldBe Vector(2048L)
     }
 
     "reject strongly consistent GSI Scan requests" in {
@@ -1138,6 +1352,58 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         evaluatedBytes = 8192L,
         returnedItemCount = 3L,
         returnedBytes = 1536L
+      )
+
+  private object ProjectionLimitedQueryBehavior extends UseCaseSampler[TableState]:
+    override def query(request: QueryRequest, state: TableState): QuerySample =
+      QuerySample(
+        evaluatedItemCount = 5L,
+        evaluatedBytes = 4096L,
+        returnedItemCount = 2L,
+        returnedBytes = 1536L,
+        projectedBytesReturned = 512L,
+        baseTableFetchBytes = 1024L,
+        baseTableFetchItemCount = 2L,
+        projectionSatisfaction = ProjectionSatisfaction.PartiallySatisfiedByIndexWithBaseTableFetch
+      )
+
+  private object ProjectionFetchQueryBehavior extends UseCaseSampler[TableState]:
+    override def query(request: QueryRequest, state: TableState): QuerySample =
+      QuerySample(
+        evaluatedItemCount = 3L,
+        evaluatedBytes = 3072L,
+        returnedItemCount = 2L,
+        returnedBytes = 1536L,
+        projectedBytesReturned = 512L,
+        baseTableFetchBytes = 1024L,
+        baseTableFetchItemCount = 2L,
+        projectionSatisfaction = ProjectionSatisfaction.PartiallySatisfiedByIndexWithBaseTableFetch
+      )
+
+  private object ProjectionLimitedScanBehavior extends UseCaseSampler[TableState]:
+    override def scan(request: ScanRequest, state: TableState): ScanSample =
+      ScanSample(
+        evaluatedItemCount = 6L,
+        evaluatedBytes = 6144L,
+        returnedItemCount = 3L,
+        returnedBytes = 1792L,
+        projectedBytesReturned = 768L,
+        baseTableFetchBytes = 1024L,
+        baseTableFetchItemCount = 3L,
+        projectionSatisfaction = ProjectionSatisfaction.PartiallySatisfiedByIndexWithBaseTableFetch
+      )
+
+  private object ProjectionFetchScanBehavior extends UseCaseSampler[TableState]:
+    override def scan(request: ScanRequest, state: TableState): ScanSample =
+      ScanSample(
+        evaluatedItemCount = 8L,
+        evaluatedBytes = 8192L,
+        returnedItemCount = 4L,
+        returnedBytes = 3072L,
+        projectedBytesReturned = 1024L,
+        baseTableFetchBytes = 2048L,
+        baseTableFetchItemCount = 4L,
+        projectionSatisfaction = ProjectionSatisfaction.PartiallySatisfiedByIndexWithBaseTableFetch
       )
 
   private case class SamplingPutBehavior(invocations: AtomicInteger) extends UseCaseSampler[TableState]:

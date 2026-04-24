@@ -45,6 +45,22 @@ object Stage4MetricEvent:
                                   bytes: Long
                                 ) extends Stage4MetricEvent
 
+  /** A Query was satisfied using only index-projected data */
+  final case class QueryUsedIndexOnly(
+                                       eventTime: SimTime,
+                                       usecase: Any,
+                                       target: DynamoDbReadTarget
+                                     ) extends Stage4MetricEvent
+
+  /** A Query fetched additional bytes from the base table after reading the index */
+  final case class QueryFetchedFromBaseTable(
+                                              eventTime: SimTime,
+                                              usecase: Any,
+                                              target: DynamoDbReadTarget,
+                                              itemCount: Long,
+                                              bytes: Long
+                                            ) extends Stage4MetricEvent
+
   /** One Scan request reached the data plane */
   final case class ScanObserved(
                                  eventTime: SimTime,
@@ -69,6 +85,51 @@ object Stage4MetricEvent:
                                  itemCount: Long,
                                  bytes: Long
                                ) extends Stage4MetricEvent
+
+  /** A Scan was satisfied using only index-projected data */
+  final case class ScanUsedIndexOnly(
+                                      eventTime: SimTime,
+                                      usecase: Any,
+                                      target: DynamoDbReadTarget
+                                    ) extends Stage4MetricEvent
+
+  /** A Scan fetched additional bytes from the base table after reading the index */
+  final case class ScanFetchedFromBaseTable(
+                                             eventTime: SimTime,
+                                             usecase: Any,
+                                             target: DynamoDbReadTarget,
+                                             itemCount: Long,
+                                             bytes: Long
+                                           ) extends Stage4MetricEvent
+
+  final case class IndexEntryInserted(
+                                       eventTime: SimTime,
+                                       usecase: Any,
+                                       target: DynamoDbTarget,
+                                       bytes: Long
+                                     ) extends Stage4MetricEvent
+
+  final case class IndexEntryReplaced(
+                                       eventTime: SimTime,
+                                       usecase: Any,
+                                       target: DynamoDbTarget,
+                                       previousBytes: Long,
+                                       newBytes: Long,
+                                       bytesDelta: Long
+                                     ) extends Stage4MetricEvent
+
+  final case class IndexEntryDeleted(
+                                      eventTime: SimTime,
+                                      usecase: Any,
+                                      target: DynamoDbTarget,
+                                      bytes: Long
+                                    ) extends Stage4MetricEvent
+
+  final case class IndexEntryUnchanged(
+                                        eventTime: SimTime,
+                                        usecase: Any,
+                                        target: DynamoDbTarget
+                                      ) extends Stage4MetricEvent
 
   /** One PutItem request reached the data plane */
   final case class PutItemObserved(

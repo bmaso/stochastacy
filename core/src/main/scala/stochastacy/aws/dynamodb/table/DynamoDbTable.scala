@@ -2,11 +2,19 @@ package stochastacy.aws.dynamodb.table
 
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL, Merge}
-import org.apache.pekko.stream.{FanOutShape3, Graph}
+import org.apache.pekko.stream.{FanOutShape2, FanOutShape3, Graph}
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.*
 
 object DynamoDbTable:
+
+  sealed trait IndexProjection
+
+  object IndexProjection:
+    case object All extends IndexProjection
+    case object KeysOnly extends IndexProjection
+    final case class Include(projectedNonKeyBytesPerItem: Long) extends IndexProjection:
+      require(projectedNonKeyBytesPerItem > 0L, s"projectedNonKeyBytesPerItem must be positive, got $projectedNonKeyBytesPerItem")
 
   final case class OnDemandMaxThroughput(
                                           tableMaxReadRequestUnitsPerSecond: Option[BigDecimal] = None,
@@ -175,12 +183,14 @@ object DynamoDbTable:
 
   final case class GlobalSecondaryIndexDefinition(
                                                    indexName: String,
-                                                   stateModel: TableState = SummaryTableState(0L, 0L)
+                                                   stateModel: TableState = SummaryTableState(0L, 0L),
+                                                   projection: IndexProjection = IndexProjection.All
                                                  )
 
   final case class LocalSecondaryIndexDefinition(
                                                   indexName: String,
-                                                  stateModel: TableState = SummaryTableState(0L, 0L)
+                                                  stateModel: TableState = SummaryTableState(0L, 0L),
+                                                  projection: IndexProjection = IndexProjection.All
                                                 )
 
   final case class Config(
@@ -399,8 +409,8 @@ object DynamoDbTable:
       case _: GetItemRequest | _: PutItemRequest | _: UpdateItemRequest | _: DeleteItemRequest | _: PartiQLQueryRequest =>
         RouteBranch.BaseTable
 
-      case QueryRequest(_, _, target, _) => routeForReadTarget(config, target)
-      case ScanRequest(_, _, target, _) => routeForReadTarget(config, target)
+      case QueryRequest(_, _, target, _, _) => routeForReadTarget(config, target)
+      case ScanRequest(_, _, target, _, _) => routeForReadTarget(config, target)
 
   private def validateRequest(config: Config, request: DynamoDBRequest): Unit =
     request match
@@ -530,11 +540,181 @@ object DynamoDbTable:
       )
     }
 
+  private def indexMaintenanceTargetsFor(
+                                          config: Config,
+                                          indexRuntimes: Vector[InternalIndexRuntime]
+                                        ): Vector[TableStage1.IndexMaintenanceTargetConfig] =
+    val globalTargets =
+      config.globalSecondaryIndexes.map { definition =>
+        val indexRuntime = indexRuntimes.collectFirst {
+          case gsi: InternalIndexRuntime.GlobalSecondaryIndex if gsi.indexName == definition.indexName => gsi
+        }.getOrElse(
+          throw new IllegalStateException(s"Missing runtime for global secondary index '${definition.indexName}'")
+        )
+
+        TableStage1.IndexMaintenanceTargetConfig(
+          target = indexRuntime.target,
+          projection = definition.projection
+        )
+      }
+
+    val localTargets =
+      config.localSecondaryIndexes.map { definition =>
+        val indexRuntime = indexRuntimes.collectFirst {
+          case lsi: InternalIndexRuntime.LocalSecondaryIndex if lsi.indexName == definition.indexName => lsi
+        }.getOrElse(
+          throw new IllegalStateException(s"Missing runtime for local secondary index '${definition.indexName}'")
+        )
+
+        TableStage1.IndexMaintenanceTargetConfig(
+          target = indexRuntime.target,
+          projection = definition.projection
+        )
+      }
+
+    globalTargets ++ localTargets
+
+  private def indexMaintenanceGraph(
+                                     indexRuntimes: Vector[InternalIndexRuntime]
+                                   ): Graph[
+    FanOutShape2[
+      TimedElement[AdmittedRequestSample],
+      TimedElement[DynamoDbConsumptionEvent],
+      TimedElement[Stage4MetricEvent]
+    ],
+    NotUsed
+  ] =
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val broadcast = b.add(Broadcast[TimedElement[AdmittedRequestSample]](2))
+
+      val consumptionFlow = b.add(
+        Flow[TimedElement[AdmittedRequestSample]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
+          case t: TimedControlEvent => List(t)
+
+          case writeSample: AdmittedWriteRequestSample =>
+            writeSample.indexMaintenancePlan.flatMap { plan =>
+              val runtime =
+                indexRuntimes.find(_.target == plan.target).getOrElse(
+                  throw new IllegalStateException(s"Missing runtime for index maintenance target '$plan.target'")
+                )
+
+              plan.action match
+                case IndexMaintenanceAction.NoOp =>
+                  Nil
+                case IndexMaintenanceAction.InsertEntry | IndexMaintenanceAction.ReplaceEntry =>
+                  val newBytes = plan.newIndexEntryBytes.getOrElse(0L)
+                  runtime.stateModel.recordSuccessfulWrite(newBytes, plan.previousIndexEntryBytes)
+                  List(
+                    DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                      eventTime = writeSample.eventTime,
+                      usecase = writeSample.usecase,
+                      target = runtime.target,
+                      units = plan.throughputDemand
+                    ),
+                    DynamoDbConsumptionEvent.StorageBytesWritten(
+                      eventTime = writeSample.eventTime,
+                      usecase = writeSample.usecase,
+                      target = runtime.target,
+                      bytes = newBytes
+                    ),
+                    DynamoDbConsumptionEvent.StorageBytesDelta(
+                      eventTime = writeSample.eventTime,
+                      usecase = writeSample.usecase,
+                      target = runtime.target,
+                      bytesDelta = plan.storageBytesDelta
+                    )
+                  )
+                case IndexMaintenanceAction.DeleteEntry =>
+                  val previousBytes = plan.previousIndexEntryBytes.getOrElse(0L)
+                  runtime.stateModel.recordSuccessfulDelete(plan.previousIndexEntryBytes)
+                  List(
+                    DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                      eventTime = writeSample.eventTime,
+                      usecase = writeSample.usecase,
+                      target = runtime.target,
+                      units = plan.throughputDemand
+                    ),
+                    DynamoDbConsumptionEvent.StorageBytesDeleted(
+                      eventTime = writeSample.eventTime,
+                      usecase = writeSample.usecase,
+                      target = runtime.target,
+                      bytes = previousBytes
+                    ),
+                    DynamoDbConsumptionEvent.StorageBytesDelta(
+                      eventTime = writeSample.eventTime,
+                      usecase = writeSample.usecase,
+                      target = runtime.target,
+                      bytesDelta = plan.storageBytesDelta
+                    )
+                  )
+            }
+
+          case _: AdmittedRequestSample =>
+            Nil
+        }
+      )
+
+      val metricFlow = b.add(
+        Flow[TimedElement[AdmittedRequestSample]].mapConcat[TimedElement[Stage4MetricEvent]] {
+          case t: TimedControlEvent => List(t)
+
+          case writeSample: AdmittedWriteRequestSample =>
+            writeSample.indexMaintenancePlan.map { plan =>
+              plan.action match
+                case IndexMaintenanceAction.NoOp =>
+                  Stage4MetricEvent.IndexEntryUnchanged(
+                    eventTime = writeSample.eventTime,
+                    usecase = writeSample.usecase,
+                    target = plan.target
+                  )
+                case IndexMaintenanceAction.InsertEntry =>
+                  Stage4MetricEvent.IndexEntryInserted(
+                    eventTime = writeSample.eventTime,
+                    usecase = writeSample.usecase,
+                    target = plan.target,
+                    bytes = plan.newIndexEntryBytes.getOrElse(0L)
+                  )
+                case IndexMaintenanceAction.ReplaceEntry =>
+                  Stage4MetricEvent.IndexEntryReplaced(
+                    eventTime = writeSample.eventTime,
+                    usecase = writeSample.usecase,
+                    target = plan.target,
+                    previousBytes = plan.previousIndexEntryBytes.getOrElse(0L),
+                    newBytes = plan.newIndexEntryBytes.getOrElse(0L),
+                    bytesDelta = plan.storageBytesDelta
+                  )
+                case IndexMaintenanceAction.DeleteEntry =>
+                  Stage4MetricEvent.IndexEntryDeleted(
+                    eventTime = writeSample.eventTime,
+                    usecase = writeSample.usecase,
+                    target = plan.target,
+                    bytes = plan.previousIndexEntryBytes.getOrElse(0L)
+                  )
+            }
+
+          case _: AdmittedRequestSample =>
+            Nil
+        }
+      )
+
+      broadcast.out(0) ~> consumptionFlow
+      broadcast.out(1) ~> metricFlow
+
+      new FanOutShape2(
+        broadcast.in,
+        consumptionFlow.out,
+        metricFlow.out
+      )
+    }
+
   private def branchGraph(
                            stateModel: TableState,
                            useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
                            executionTarget: DynamoDbTarget,
                            admissionTarget: DynamoDbTarget,
+                           indexProjection: Option[IndexProjection],
                            readConsistency: ReadConsistency,
                            maxReadRequestUnitsPerSecond: Option[BigDecimal],
                            maxWriteRequestUnitsPerSecond: Option[BigDecimal],
@@ -547,6 +727,8 @@ object DynamoDbTable:
                            initialReadBurstRequestUnits: Option[BigDecimal],
                            initialWriteBurstRequestUnits: Option[BigDecimal],
                            dynamicPartitionTopologyConfig: Option[TableStage1.DynamicPartitionTopologyConfig],
+                           indexMaintenanceTargets: Vector[TableStage1.IndexMaintenanceTargetConfig] = Vector.empty,
+                           indexMaintenanceRuntimes: Vector[InternalIndexRuntime] = Vector.empty,
                            gsiWriteScopes: Vector[TableStage1.GsiWriteScopeConfig] = Vector.empty
                          ): Graph[
     FanOutShape3[
@@ -579,11 +761,12 @@ object DynamoDbTable:
             initialReadBurstRequestUnits = initialReadBurstRequestUnits,
             initialWriteBurstRequestUnits = initialWriteBurstRequestUnits,
             dynamicPartitionTopologyConfig = dynamicPartitionTopologyConfig,
+            indexMaintenanceTargets = indexMaintenanceTargets,
             gsiWriteScopes = gsiWriteScopes
           )
         )
       )
-      val stage4 = b.add(TableStage4.componentOfAdmitted(stateModel))
+      val stage4 = b.add(TableStage4.componentOfAdmitted(stateModel, indexProjection = indexProjection))
       val throttledResponseFilter = b.add(
         Flow[TimedElement[DynamoDBResponse]].collect[TimedElement[DynamoDBResponse]] {
           case response: DynamoDBResponse => response
@@ -595,18 +778,28 @@ object DynamoDbTable:
         }
       )
       val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
-      val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](2))
+      val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](if indexMaintenanceRuntimes.nonEmpty then 2 else 1))
+      val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](if indexMaintenanceRuntimes.nonEmpty then 3 else 2))
+      val admittedBroadcast = b.add(Broadcast[TimedElement[AdmittedRequestSample]](if indexMaintenanceRuntimes.nonEmpty then 2 else 1))
 
-      stage1.out0 ~> stage4.in
+      stage1.out0 ~> admittedBroadcast.in
+      admittedBroadcast.out(0) ~> stage4.in
       stage1.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
       stage4.out0 ~> responseMerge.in(1)
+      stage4.out1 ~> consumptionMerge.in(0)
       stage1.out2 ~> stage1MetricFilter ~> metricMerge.in(0)
       stage4.out2 ~> metricMerge.in(1)
+
+      if indexMaintenanceRuntimes.nonEmpty then
+        val maintenanceStage = b.add(indexMaintenanceGraph(indexMaintenanceRuntimes))
+        admittedBroadcast.out(1) ~> maintenanceStage.in
+        maintenanceStage.out0 ~> consumptionMerge.in(1)
+        maintenanceStage.out1 ~> metricMerge.in(2)
 
       new FanOutShape3(
         stage1.in,
         responseMerge.out,
-        stage4.out1,
+        consumptionMerge.out,
         metricMerge.out
       )
     }
@@ -627,6 +820,7 @@ object DynamoDbTable:
         useCaseBehaviors = config.useCaseBehaviors,
         executionTarget = DynamoDbTarget.Table(config.tableName),
         admissionTarget = DynamoDbTarget.Table(config.tableName),
+        indexProjection = None,
         readConsistency = config.readConsistency,
         maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
         maxWriteRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond,
@@ -659,6 +853,8 @@ object DynamoDbTable:
               maxPartitionCount = dynamic.maxTablePartitionCount
             )
           },
+        indexMaintenanceTargets = indexMaintenanceTargetsFor(config, indexRuntimes),
+        indexMaintenanceRuntimes = indexRuntimes,
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes)
       )
 
@@ -686,7 +882,7 @@ object DynamoDbTable:
         val requestBroadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](branchCount))
 
         val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](branchCount))
-        val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](branchCount + 1))
+        val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](branchCount))
         val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](branchCount))
 
         val baseRequestFilter = b.add(
@@ -697,110 +893,9 @@ object DynamoDbTable:
         )
 
         val baseTable = b.add(baseTableGraph)
-        val baseResponseBroadcast = b.add(Broadcast[TimedElement[DynamoDBResponse]](2))
-        val indexPropagationConsumptionFlow = b.add(
-          Flow[TimedElement[DynamoDBResponse]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
-            case _: TimedControlEvent => Nil
-
-            case response: PutItemResponse =>
-              indexRuntimes.flatMap { indexRuntime =>
-                indexRuntime.stateModel.recordSuccessfulPut(
-                  response.storedItemBytes,
-                  response.previousItemBytes
-                )
-
-                List(
-                  DynamoDbConsumptionEvent.WriteCapacityConsumed(
-                    eventTime = response.eventTime,
-                    usecase = response.usecase,
-                    target = indexRuntime.target,
-                    units = TableThroughputMath.writeCapacityUnitsFor(response.storedItemBytes)
-                  ),
-                  DynamoDbConsumptionEvent.StorageBytesWritten(
-                    eventTime = response.eventTime,
-                    usecase = response.usecase,
-                    target = indexRuntime.target,
-                    bytes = response.storedItemBytes
-                  ),
-                  DynamoDbConsumptionEvent.StorageBytesDelta(
-                    eventTime = response.eventTime,
-                    usecase = response.usecase,
-                    target = indexRuntime.target,
-                    bytesDelta = response.storedItemBytes - response.previousItemBytes.getOrElse(0L)
-                  )
-                )
-              }
-
-            case response: UpdateItemResponse =>
-              indexRuntimes.flatMap { indexRuntime =>
-                indexRuntime.stateModel.recordSuccessfulUpdate(
-                  response.storedItemBytes,
-                  response.previousItemBytes
-                )
-
-                List(
-                  DynamoDbConsumptionEvent.WriteCapacityConsumed(
-                    eventTime = response.eventTime,
-                    usecase = response.usecase,
-                    target = indexRuntime.target,
-                    units = TableThroughputMath.writeCapacityUnitsFor(response.storedItemBytes)
-                  ),
-                  DynamoDbConsumptionEvent.StorageBytesWritten(
-                    eventTime = response.eventTime,
-                    usecase = response.usecase,
-                    target = indexRuntime.target,
-                    bytes = response.storedItemBytes
-                  ),
-                  DynamoDbConsumptionEvent.StorageBytesDelta(
-                    eventTime = response.eventTime,
-                    usecase = response.usecase,
-                    target = indexRuntime.target,
-                    bytesDelta = response.storedItemBytes - response.previousItemBytes.getOrElse(0L)
-                  )
-                )
-              }
-
-            case response: DeleteItemResponse =>
-              indexRuntimes.flatMap { indexRuntime =>
-                indexRuntime.stateModel.recordSuccessfulDelete(response.deletedItemBytes)
-
-                val deletedEvents =
-                  response.deletedItemBytes.toList.map { bytes =>
-                    DynamoDbConsumptionEvent.StorageBytesDeleted(
-                      eventTime = response.eventTime,
-                      usecase = response.usecase,
-                      target = indexRuntime.target,
-                      bytes = bytes
-                    )
-                  }
-
-                List(
-                  DynamoDbConsumptionEvent.WriteCapacityConsumed(
-                    eventTime = response.eventTime,
-                    usecase = response.usecase,
-                    target = indexRuntime.target,
-                    units = TableThroughputMath.writeCapacityUnitsFor(response.deletedItemBytes.getOrElse(0L))
-                  )
-                ) ++ deletedEvents ++ List(
-                  DynamoDbConsumptionEvent.StorageBytesDelta(
-                    eventTime = response.eventTime,
-                    usecase = response.usecase,
-                    target = indexRuntime.target,
-                    bytesDelta = -response.deletedItemBytes.getOrElse(0L)
-                  )
-                )
-              }
-
-            case _: DynamoDBResponse =>
-              Nil
-          }
-        )
-
         validationFlow.out ~> requestBroadcast.in
         requestBroadcast.out(0) ~> baseRequestFilter ~> baseTable.in
-        baseTable.out0 ~> baseResponseBroadcast.in
-        baseResponseBroadcast.out(0) ~> responseMerge.in(0)
-        baseResponseBroadcast.out(1) ~> indexPropagationConsumptionFlow ~> consumptionMerge.in(branchCount)
+        baseTable.out0 ~> responseMerge.in(0)
         baseTable.out1 ~> consumptionMerge.in(0)
         baseTable.out2 ~> metricMerge.in(0)
 
@@ -827,6 +922,7 @@ object DynamoDbTable:
               useCaseBehaviors = config.useCaseBehaviors,
               executionTarget = indexRuntime.target,
               admissionTarget = indexRuntime.target,
+              indexProjection = Some(indexDefinition.projection),
               readConsistency = ReadConsistency.EventuallyConsistent,
               maxReadRequestUnitsPerSecond =
                 config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName),
@@ -893,6 +989,7 @@ object DynamoDbTable:
               useCaseBehaviors = config.useCaseBehaviors,
               executionTarget = indexRuntime.target,
               admissionTarget = DynamoDbTarget.Table(config.tableName),
+              indexProjection = Some(indexDefinition.projection),
               readConsistency = ReadConsistency.EventuallyConsistent,
               maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
               maxWriteRequestUnitsPerSecond = None,

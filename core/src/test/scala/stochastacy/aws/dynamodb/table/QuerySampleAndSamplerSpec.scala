@@ -2,7 +2,7 @@ package stochastacy.aws.dynamodb.table
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.{DynamoDbReadTarget, QueryRequest, ScanRequest}
+import stochastacy.aws.dynamodb.{DynamoDbReadTarget, QueryRequest, RequestedReadShape, ScanRequest}
 import stochastacy.sim.SimTime
 
 class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
@@ -23,6 +23,7 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
       sample.evaluatedBytes shouldBe 4096L
       sample.returnedItemCount shouldBe 3L
       sample.returnedBytes shouldBe 1024L
+      sample.projectionSatisfaction shouldBe ProjectionSatisfaction.FullySatisfiedByIndex
     }
 
     "reject invalid evaluated and returned relationships" in {
@@ -62,6 +63,35 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
 
       error.getMessage should include("QuerySample requires")
     }
+
+    "reject invalid projection-aware combinations" in {
+      val projectionBytesError = the[IllegalArgumentException] thrownBy {
+        QuerySample(
+          evaluatedItemCount = 2L,
+          evaluatedBytes = 100L,
+          returnedItemCount = 1L,
+          returnedBytes = 50L,
+          projectedBytesReturned = 75L,
+          logicalPartitionAccess = SingleLogicalPartitionKey("k1")
+        )
+      }
+      projectionBytesError.getMessage should include("projectedBytesReturned")
+
+      val fetchRequirementError = the[IllegalArgumentException] thrownBy {
+        QuerySample(
+          evaluatedItemCount = 2L,
+          evaluatedBytes = 100L,
+          returnedItemCount = 1L,
+          returnedBytes = 50L,
+          projectedBytesReturned = 20L,
+          baseTableFetchBytes = 0L,
+          baseTableFetchItemCount = 1L,
+          projectionSatisfaction = ProjectionSatisfaction.PartiallySatisfiedByIndexWithBaseTableFetch,
+          logicalPartitionAccess = SingleLogicalPartitionKey("k1")
+        )
+      }
+      fetchRequirementError.getMessage should include("baseTableFetchBytes")
+    }
   }
 
   "ScanSample" should {
@@ -78,6 +108,7 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
       sample.evaluatedBytes shouldBe 12288L
       sample.returnedItemCount shouldBe 4L
       sample.returnedBytes shouldBe 2048L
+      sample.projectionSatisfaction shouldBe ProjectionSatisfaction.FullySatisfiedByIndex
     }
 
     "reject invalid evaluated and returned relationships" in {
@@ -117,6 +148,21 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
 
       error.getMessage should include("ScanSample requires")
     }
+
+    "reject invalid fetch combinations" in {
+      val limitedProjectionError = the[IllegalArgumentException] thrownBy {
+        ScanSample(
+          evaluatedItemCount = 2L,
+          evaluatedBytes = 100L,
+          returnedItemCount = 1L,
+          returnedBytes = 50L,
+          baseTableFetchBytes = 10L,
+          baseTableFetchItemCount = 1L,
+          projectionSatisfaction = ProjectionSatisfaction.LimitedToProjectedAttributes
+        )
+      }
+      limitedProjectionError.getMessage should include("LimitedToProjectedAttributes")
+    }
   }
 
   "UseCaseSampler" should {
@@ -125,7 +171,8 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
       val request = QueryRequest(
         eventTime = SimTime.of(1L),
         usecase = "unsupported-query",
-        target = DynamoDbReadTarget.Table("orders")
+        target = DynamoDbReadTarget.Table("orders"),
+        requestedReadShape = RequestedReadShape.ProjectedOnly
       )
 
       val error = the[UnsupportedOperationException] thrownBy {

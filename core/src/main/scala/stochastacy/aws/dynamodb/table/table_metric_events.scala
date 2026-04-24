@@ -38,7 +38,8 @@ object Stage1MetricEvent:
                                     burstConsumedRequestUnits: BigDecimal,
                                     burstRemainingRequestUnits: BigDecimal,
                                     topologyPartitionCount: Int,
-                                    resolvedPartitionFootprint: ResolvedPartitionFootprint
+                                    resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                                    indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
                                   ) extends Stage1MetricEvent
 
   final case class RequestThrottled(
@@ -52,7 +53,8 @@ object Stage1MetricEvent:
                                      adaptiveAvailableRequestUnits: BigDecimal,
                                      burstAvailableRequestUnits: BigDecimal,
                                      topologyPartitionCount: Int,
-                                     resolvedPartitionFootprint: ResolvedPartitionFootprint
+                                     resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                                     indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
                                    ) extends Stage1MetricEvent
 
   final case class TopologyChanged(

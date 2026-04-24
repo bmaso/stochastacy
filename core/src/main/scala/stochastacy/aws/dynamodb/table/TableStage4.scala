@@ -15,8 +15,63 @@ import stochastacy.aws.dynamodb.table.LogicalPartitionAccess.SingleLogicalPartit
  */
 object TableStage4:
 
+  private final case class EffectiveReadSample(
+                                                returnedBytes: Long,
+                                                baseTableFetchBytes: Long,
+                                                baseTableFetchItemCount: Long,
+                                                usedIndexOnly: Boolean
+                                              )
+
+  private def effectiveReadSample(
+                                   executionTarget: DynamoDbTarget,
+                                   projectedBytesReturned: Long,
+                                   returnedBytes: Long,
+                                   baseTableFetchBytes: Long,
+                                   baseTableFetchItemCount: Long,
+                                   projectionSatisfaction: ProjectionSatisfaction,
+                                   indexProjection: Option[DynamoDbTable.IndexProjection]
+                                 ): EffectiveReadSample =
+    executionTarget match
+      case _: DynamoDbTarget.GlobalSecondaryIndex =>
+        val limitedBytes =
+          if projectionSatisfaction == ProjectionSatisfaction.PartiallySatisfiedByIndexWithBaseTableFetch then
+            projectedBytesReturned
+          else returnedBytes
+        EffectiveReadSample(
+          returnedBytes = limitedBytes,
+          baseTableFetchBytes = 0L,
+          baseTableFetchItemCount = 0L,
+          usedIndexOnly = true
+        )
+
+      case _: DynamoDbTarget.LocalSecondaryIndex =>
+        indexProjection match
+          case Some(DynamoDbTable.IndexProjection.All) =>
+            EffectiveReadSample(
+              returnedBytes = returnedBytes,
+              baseTableFetchBytes = 0L,
+              baseTableFetchItemCount = 0L,
+              usedIndexOnly = true
+            )
+          case _ =>
+            EffectiveReadSample(
+              returnedBytes = returnedBytes,
+              baseTableFetchBytes = baseTableFetchBytes,
+              baseTableFetchItemCount = baseTableFetchItemCount,
+              usedIndexOnly = baseTableFetchBytes == 0L && baseTableFetchItemCount == 0L
+            )
+
+      case _: DynamoDbTarget.Table =>
+        EffectiveReadSample(
+          returnedBytes = returnedBytes,
+          baseTableFetchBytes = 0L,
+          baseTableFetchItemCount = 0L,
+          usedIndexOnly = false
+        )
+
   private[table] def componentOfAdmitted(
-                                          stateModel: TableState
+                                          stateModel: TableState,
+                                          indexProjection: Option[DynamoDbTable.IndexProjection] = None
                                         ): Graph[
     FanOutShape3[
       TimedElement[AdmittedRequestSample],
@@ -61,7 +116,17 @@ object TableStage4:
               itemBytes = s.itemBytes
             )
 
-          case AdmittedQuerySample(r, _, _, s, _, _) =>
+          case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
+            val effectiveSample =
+              effectiveReadSample(
+                executionTarget = executionTarget,
+                projectedBytesReturned = s.projectedBytesReturned,
+                returnedBytes = s.returnedBytes,
+                baseTableFetchBytes = s.baseTableFetchBytes,
+                baseTableFetchItemCount = s.baseTableFetchItemCount,
+                projectionSatisfaction = s.projectionSatisfaction,
+                indexProjection = indexProjection
+              )
             QueryResponse(
               eventTime = r.eventTime,
               usecase = r.usecase,
@@ -70,10 +135,20 @@ object TableStage4:
               evaluatedItemCount = s.evaluatedItemCount,
               evaluatedBytes = s.evaluatedBytes,
               returnedItemCount = s.returnedItemCount,
-              returnedBytes = s.returnedBytes
+              returnedBytes = effectiveSample.returnedBytes
             )
 
-          case AdmittedScanSample(r, _, _, s, _, _) =>
+          case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
+            val effectiveSample =
+              effectiveReadSample(
+                executionTarget = executionTarget,
+                projectedBytesReturned = s.projectedBytesReturned,
+                returnedBytes = s.returnedBytes,
+                baseTableFetchBytes = s.baseTableFetchBytes,
+                baseTableFetchItemCount = s.baseTableFetchItemCount,
+                projectionSatisfaction = s.projectionSatisfaction,
+                indexProjection = indexProjection
+              )
             ScanResponse(
               eventTime = r.eventTime,
               usecase = r.usecase,
@@ -82,7 +157,7 @@ object TableStage4:
               evaluatedItemCount = s.evaluatedItemCount,
               evaluatedBytes = s.evaluatedBytes,
               returnedItemCount = s.returnedItemCount,
-              returnedBytes = s.returnedBytes
+              returnedBytes = effectiveSample.returnedBytes
             )
 
           case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
@@ -125,29 +200,83 @@ object TableStage4:
               Stage4MetricEvent.GetItemObserved(r.eventTime, r.usecase)
             ) ++ returnedEvents
 
-          case AdmittedQuerySample(r, _, _, s, _, _) =>
+          case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
+            val effectiveSample =
+              effectiveReadSample(
+                executionTarget = executionTarget,
+                projectedBytesReturned = s.projectedBytesReturned,
+                returnedBytes = s.returnedBytes,
+                baseTableFetchBytes = s.baseTableFetchBytes,
+                baseTableFetchItemCount = s.baseTableFetchItemCount,
+                projectionSatisfaction = s.projectionSatisfaction,
+                indexProjection = indexProjection
+              )
             val returnedEvents =
-              if s.returnedItemCount > 0L || s.returnedBytes > 0L then
+              if s.returnedItemCount > 0L || effectiveSample.returnedBytes > 0L then
                 List(
-                  Stage4MetricEvent.QueryReturned(r.eventTime, r.usecase, r.target, s.returnedItemCount, s.returnedBytes)
+                  Stage4MetricEvent.QueryReturned(r.eventTime, r.usecase, r.target, s.returnedItemCount, effectiveSample.returnedBytes)
                 )
               else Nil
+            val projectionEvents =
+              executionTarget match
+                case _: DynamoDbTarget.GlobalSecondaryIndex | _: DynamoDbTarget.LocalSecondaryIndex =>
+                  if effectiveSample.usedIndexOnly then
+                    List(Stage4MetricEvent.QueryUsedIndexOnly(r.eventTime, r.usecase, r.target))
+                  else if effectiveSample.baseTableFetchBytes > 0L || effectiveSample.baseTableFetchItemCount > 0L then
+                    List(
+                      Stage4MetricEvent.QueryFetchedFromBaseTable(
+                        r.eventTime,
+                        r.usecase,
+                        r.target,
+                        effectiveSample.baseTableFetchItemCount,
+                        effectiveSample.baseTableFetchBytes
+                      )
+                    )
+                  else Nil
+                case _: DynamoDbTarget.Table => Nil
             List(
               Stage4MetricEvent.QueryObserved(r.eventTime, r.usecase, r.target),
               Stage4MetricEvent.QueryEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
-            ) ++ returnedEvents
+            ) ++ returnedEvents ++ projectionEvents
 
-          case AdmittedScanSample(r, _, _, s, _, _) =>
+          case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
+            val effectiveSample =
+              effectiveReadSample(
+                executionTarget = executionTarget,
+                projectedBytesReturned = s.projectedBytesReturned,
+                returnedBytes = s.returnedBytes,
+                baseTableFetchBytes = s.baseTableFetchBytes,
+                baseTableFetchItemCount = s.baseTableFetchItemCount,
+                projectionSatisfaction = s.projectionSatisfaction,
+                indexProjection = indexProjection
+              )
             val returnedEvents =
-              if s.returnedItemCount > 0L || s.returnedBytes > 0L then
+              if s.returnedItemCount > 0L || effectiveSample.returnedBytes > 0L then
                 List(
-                  Stage4MetricEvent.ScanReturned(r.eventTime, r.usecase, r.target, s.returnedItemCount, s.returnedBytes)
+                  Stage4MetricEvent.ScanReturned(r.eventTime, r.usecase, r.target, s.returnedItemCount, effectiveSample.returnedBytes)
                 )
               else Nil
+            val projectionEvents =
+              executionTarget match
+                case _: DynamoDbTarget.GlobalSecondaryIndex | _: DynamoDbTarget.LocalSecondaryIndex =>
+                  if effectiveSample.usedIndexOnly then
+                    List(Stage4MetricEvent.ScanUsedIndexOnly(r.eventTime, r.usecase, r.target))
+                  else if effectiveSample.baseTableFetchBytes > 0L || effectiveSample.baseTableFetchItemCount > 0L then
+                    List(
+                      Stage4MetricEvent.ScanFetchedFromBaseTable(
+                        r.eventTime,
+                        r.usecase,
+                        r.target,
+                        effectiveSample.baseTableFetchItemCount,
+                        effectiveSample.baseTableFetchBytes
+                      )
+                    )
+                  else Nil
+                case _: DynamoDbTarget.Table => Nil
             List(
               Stage4MetricEvent.ScanObserved(r.eventTime, r.usecase, r.target),
               Stage4MetricEvent.ScanEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
-            ) ++ returnedEvents
+            ) ++ returnedEvents ++ projectionEvents
 
           case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
             List(
@@ -204,7 +333,17 @@ object TableStage4:
               )
             ) ++ bytesReadEvents
 
-          case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
+          case AdmittedQuerySample(r, executionTarget, admissionTarget, s, _, _) =>
+            val effectiveSample =
+              effectiveReadSample(
+                executionTarget = executionTarget,
+                projectedBytesReturned = s.projectedBytesReturned,
+                returnedBytes = s.returnedBytes,
+                baseTableFetchBytes = s.baseTableFetchBytes,
+                baseTableFetchItemCount = s.baseTableFetchItemCount,
+                projectionSatisfaction = s.projectionSatisfaction,
+                indexProjection = indexProjection
+              )
             val bytesReadEvents =
               if s.evaluatedBytes > 0L then
                 List(
@@ -213,6 +352,24 @@ object TableStage4:
                     usecase = r.usecase,
                     target = executionTarget,
                     bytes = s.evaluatedBytes
+                  )
+                )
+              else Nil
+            val baseTableFetchEvents =
+              if effectiveSample.baseTableFetchBytes > 0L then
+                List(
+                  DynamoDbConsumptionEvent.ReadCapacityConsumed(
+                    eventTime = r.eventTime,
+                    usecase = r.usecase,
+                    target = admissionTarget,
+                    units = TableThroughputMath.readCapacityUnitsFor(Some(effectiveSample.baseTableFetchBytes), r.readConsistency),
+                    consistency = r.readConsistency
+                  ),
+                  DynamoDbConsumptionEvent.StorageBytesRead(
+                    eventTime = r.eventTime,
+                    usecase = r.usecase,
+                    target = admissionTarget,
+                    bytes = effectiveSample.baseTableFetchBytes
                   )
                 )
               else Nil
@@ -225,9 +382,19 @@ object TableStage4:
                 units = TableThroughputMath.readCapacityUnitsFor(Some(s.evaluatedBytes), r.readConsistency),
                 consistency = r.readConsistency
               )
-            ) ++ bytesReadEvents
+            ) ++ bytesReadEvents ++ baseTableFetchEvents
 
-          case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
+          case AdmittedScanSample(r, executionTarget, admissionTarget, s, _, _) =>
+            val effectiveSample =
+              effectiveReadSample(
+                executionTarget = executionTarget,
+                projectedBytesReturned = s.projectedBytesReturned,
+                returnedBytes = s.returnedBytes,
+                baseTableFetchBytes = s.baseTableFetchBytes,
+                baseTableFetchItemCount = s.baseTableFetchItemCount,
+                projectionSatisfaction = s.projectionSatisfaction,
+                indexProjection = indexProjection
+              )
             val bytesReadEvents =
               if s.evaluatedBytes > 0L then
                 List(
@@ -236,6 +403,24 @@ object TableStage4:
                     usecase = r.usecase,
                     target = executionTarget,
                     bytes = s.evaluatedBytes
+                  )
+                )
+              else Nil
+            val baseTableFetchEvents =
+              if effectiveSample.baseTableFetchBytes > 0L then
+                List(
+                  DynamoDbConsumptionEvent.ReadCapacityConsumed(
+                    eventTime = r.eventTime,
+                    usecase = r.usecase,
+                    target = admissionTarget,
+                    units = TableThroughputMath.readCapacityUnitsFor(Some(effectiveSample.baseTableFetchBytes), r.readConsistency),
+                    consistency = r.readConsistency
+                  ),
+                  DynamoDbConsumptionEvent.StorageBytesRead(
+                    eventTime = r.eventTime,
+                    usecase = r.usecase,
+                    target = admissionTarget,
+                    bytes = effectiveSample.baseTableFetchBytes
                   )
                 )
               else Nil
@@ -248,7 +433,7 @@ object TableStage4:
                 units = TableThroughputMath.readCapacityUnitsFor(Some(s.evaluatedBytes), r.readConsistency),
                 consistency = r.readConsistency
               )
-            ) ++ bytesReadEvents
+            ) ++ bytesReadEvents ++ baseTableFetchEvents
 
           case AdmittedPutItemSample(r, executionTarget, _, s, _, _, _) =>
             List(
@@ -309,7 +494,8 @@ object TableStage4:
                    stateModel: TableState,
                    useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
                    tableTarget: DynamoDbTarget = DynamoDbTarget.Table("table"),
-                   readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
+                   readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent,
+                   indexProjection: Option[DynamoDbTable.IndexProjection] = None
                  ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -334,7 +520,12 @@ object TableStage4:
         case DynamoDbReadTarget.LocalSecondaryIndex(tableName, indexName) =>
           DynamoDbTarget.LocalSecondaryIndex(tableName, indexName)
 
-    val admittedGraph = componentOfAdmitted(stateModel)
+    def admissionTargetFor(readTarget: DynamoDbReadTarget): DynamoDbTarget =
+      readTarget match
+        case _: DynamoDbReadTarget.LocalSecondaryIndex => tableTarget
+        case other => executionTargetFor(other)
+
+    val admittedGraph = componentOfAdmitted(stateModel, indexProjection = indexProjection)
 
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits.*
@@ -377,7 +568,7 @@ object TableStage4:
             AdmittedQuerySample(
               req = r,
               executionTarget = executionTargetFor(r.target),
-              admissionTarget = executionTargetFor(r.target),
+              admissionTarget = admissionTargetFor(r.target),
               sample = sample,
               throughputDemand = TableThroughputMath.readCapacityUnitsFor(Some(sample.evaluatedBytes), r.readConsistency),
               resolvedPartitionFootprint = PartitionAccessResolver.resolve(
@@ -392,7 +583,7 @@ object TableStage4:
             AdmittedScanSample(
               req = r,
               executionTarget = executionTargetFor(r.target),
-              admissionTarget = executionTargetFor(r.target),
+              admissionTarget = admissionTargetFor(r.target),
               sample = sample,
               throughputDemand = TableThroughputMath.readCapacityUnitsFor(Some(sample.evaluatedBytes), r.readConsistency),
               resolvedPartitionFootprint = PartitionAccessResolver.resolve(

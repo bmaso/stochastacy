@@ -25,6 +25,7 @@ In the composed DynamoDB `Table` graph:
 - `TableStage1` also owns the current partition-topology snapshot and may evolve that topology at tick boundaries before later requests are admitted
 - `TableStage1` may now also reject a base-table write because a derived internal GSI write scope cannot be admitted
 - `TableStage4` decides what storage-level effect an already admitted request has
+- `TableStage4` now also enforces projection-aware GSI-vs-LSI read behavior for admitted `Query` and `Scan` requests
 - downstream consumers aggregate responses, costs, and metrics across the whole simulation
 
 If an upstream stage throttles or rejects a request, that response should be produced before `TableStage4`, and the request should not be forwarded into `TableStage4`.
@@ -38,6 +39,7 @@ If an upstream stage throttles or rejects a request, that response should be pro
 - generating the logical response for admitted requests
 - emitting storage/resource facts caused by the operation
 - emitting data-plane metric events
+- enforcing whether an admitted index read remains index-only or requires additional base-table fetch work
 
 `TableStage4` is not responsible for:
 
@@ -94,7 +96,8 @@ The important phase-3 rule is:
 - the sampled demand and sampled outcome are memorialized
 - `TableStage4` does not independently resample admitted requests
 - any resolved partition footprint used for admission also travels with the admitted request envelope
-- any memorialized GSI write propagation plan for an admitted base-table write also travels with the admitted request envelope
+- any memorialized index-maintenance plan for an admitted base-table write also travels with the admitted request envelope
+- any projection-aware query or scan summary also travels with the admitted request envelope
 
 ## State Model
 
@@ -173,6 +176,13 @@ Current implementation notes:
 - adaptive-backed requests use the same admitted-request path as normal requests
 - burst-backed requests use the same admitted-request path as normal requests
 - `GetItem` emits read-capacity and byte-read facts
+- `Query` and `Scan` now emit projection-aware read facts:
+  - GSI reads stay index-only
+  - LSI reads may emit additional base-table read-capacity and byte-read facts when fetches are needed
+- precise downstream index maintenance now lives beside `TableStage4` in the composed table graph:
+  - GSI and LSI write effects are driven from a memorialized maintenance plan
+  - `NoOp` entries emit no index write consumption
+  - insert/replace/delete entries emit index-targeted write and storage facts
 - `PutItem` and `UpdateItem` emit write-capacity, bytes-written, and storage-delta facts
 - `DeleteItem` emits write-capacity, bytes-deleted, and storage-delta facts
 - a downstream usage aggregation layer folds those raw facts into stable totals
@@ -192,6 +202,15 @@ The metric/telemetry output is the observability-facing stream. It should repres
 - table byte total changed
 
 Metric events should be additive and aggregation-friendly.
+
+Current query/scan metric notes:
+
+- `QueryUsedIndexOnly` and `ScanUsedIndexOnly` report index-only execution for GSI/LSI reads
+- `QueryFetchedFromBaseTable` and `ScanFetchedFromBaseTable` report additional base-table fetch work for LSI reads
+
+Current write-side index metric notes:
+
+- `IndexEntryInserted`, `IndexEntryReplaced`, `IndexEntryDeleted`, and `IndexEntryUnchanged` describe downstream index-maintenance execution
 
 ## Timing Semantics
 

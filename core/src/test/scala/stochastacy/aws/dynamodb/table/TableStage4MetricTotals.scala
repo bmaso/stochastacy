@@ -77,6 +77,24 @@ object Stage4MetricTotals:
       case _: Stage4MetricEvent.QueryReturned =>
         acc
 
+      case _: Stage4MetricEvent.QueryUsedIndexOnly =>
+        acc
+
+      case _: Stage4MetricEvent.QueryFetchedFromBaseTable =>
+        acc
+
+      case _: Stage4MetricEvent.IndexEntryInserted =>
+        acc
+
+      case _: Stage4MetricEvent.IndexEntryReplaced =>
+        acc
+
+      case _: Stage4MetricEvent.IndexEntryDeleted =>
+        acc
+
+      case _: Stage4MetricEvent.IndexEntryUnchanged =>
+        acc
+
       case _: Stage4MetricEvent.ScanObserved =>
         acc
 
@@ -84,4 +102,10 @@ object Stage4MetricTotals:
         acc
 
       case _: Stage4MetricEvent.ScanReturned =>
+        acc
+
+      case _: Stage4MetricEvent.ScanUsedIndexOnly =>
+        acc
+
+      case _: Stage4MetricEvent.ScanFetchedFromBaseTable =>
         acc

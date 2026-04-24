@@ -865,6 +865,55 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
       )
     }
+
+    "memorialize a precise index maintenance plan and skip GSI pressure for no-op maintenance" in {
+      val (admittedFuture, responseFuture, metricFuture) =
+        runStage(
+          Source.single(UpdateItemRequest(eventTime = SimTime.of(1L), usecase = "update-existing", itemBytes = 2048L)),
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map(
+              "update-existing" -> FixedUpdateItemBehavior(2048L, Some(1024L), SingleLogicalPartitionKey("same-key"))
+            ),
+            stateModel = FixedTableState(1L, 1024L),
+            maxWriteRequestUnitsPerSecond = Some(BigDecimal(10)),
+            indexMaintenanceTargets = Vector(
+              TableStage1.IndexMaintenanceTargetConfig(
+                target = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
+                projection = DynamoDbTable.IndexProjection.KeysOnly
+              ),
+              TableStage1.IndexMaintenanceTargetConfig(
+                target = DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index"),
+                projection = DynamoDbTable.IndexProjection.All
+              )
+            ),
+            gsiWriteScopes = Vector(
+              TableStage1.GsiWriteScopeConfig(
+                target = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
+                stateModel = FixedTableState(1L, 128L),
+                maxWriteRequestUnitsPerSecond = Some(BigDecimal("0.5"))
+              )
+            )
+          )
+        )
+
+      val admitted = Await.result(admittedFuture, 3.seconds)
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      val writeSample =
+        admitted.collectFirst { case sample: AdmittedUpdateItemSample => sample }
+          .getOrElse(fail("Expected admitted update sample"))
+      val planByTarget = writeSample.indexMaintenancePlan.map(plan => plan.target -> plan).toMap
+
+      responses shouldBe empty
+      planByTarget(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")).action shouldBe IndexMaintenanceAction.NoOp
+      planByTarget(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")).throughputDemand shouldBe BigDecimal(0)
+      planByTarget(DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index")).action shouldBe IndexMaintenanceAction.ReplaceEntry
+      planByTarget(DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index")).newIndexEntryBytes shouldBe Some(2048L)
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.indexMaintenanceSummary.size } shouldBe Vector(2)
+    }
   }
 
   private def runStage(
@@ -897,6 +946,12 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
                                          override val logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-put")
                                        ) extends PutItemSample
 
+  private case class FixedUpdateItemSample(
+                                            override val writtenItemBytes: Long,
+                                            override val previousItemBytes: Option[Long],
+                                            override val logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-update")
+                                          ) extends UpdateItemSample
+
   private case class FixedHitGetItemBehavior(
                                               bytes: Long,
                                               logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-get")
@@ -911,6 +966,14 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
                                          ) extends UseCaseSampler[TableState]:
     override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
       FixedPutItemSample(writtenItemBytes, previousItemBytes, logicalPartitionAccess)
+
+  private case class FixedUpdateItemBehavior(
+                                              writtenItemBytes: Long,
+                                              previousItemBytes: Option[Long],
+                                              logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-update")
+                                            ) extends UseCaseSampler[TableState]:
+    override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
+      FixedUpdateItemSample(writtenItemBytes, previousItemBytes, logicalPartitionAccess)
 
   private case class FixedQueryBehavior(
                                          evaluatedBytes: Long,

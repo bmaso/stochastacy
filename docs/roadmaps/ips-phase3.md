@@ -90,4 +90,4 @@ That means the following remain secondary or deferred until the on-demand-mode t
 
 Recommended starting point:
 
-- `slice 7: projection-aware index reads`
+- `slice 9: LSI item-collection constraints`
