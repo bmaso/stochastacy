@@ -974,6 +974,42 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         Vector((TopologyChangeReason.ThroughputGrowth, 1, 2))
       metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.topologyPartitionCount } shouldBe Vector(1, 2)
     }
+
+    "throttle a base-table write when GSI write back-pressure blocks internal propagation" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map(
+            "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L, previousItemBytes = None, logicalPartitionAccess = SingleLogicalPartitionKey("hot-gsi-write"))
+          ),
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(10)),
+            globalSecondaryIndexMaxWriteRequestUnitsPerSecond = Map("status-index" -> BigDecimal("0.5"))
+          ),
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = FixedTableState(0L, 0L))
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(Source.single(PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)), config)
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case response: ThrottledResponse => (response.target, response.reason) } shouldBe Vector(
+        (
+          DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
+          DynamoDbThrottleReason.GlobalSecondaryIndexWriteMaxOnDemandThroughputExceeded
+        )
+      )
+      resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
+      )
+    }
   }
 
   private def indexedConfig(): DynamoDbTable.Config =

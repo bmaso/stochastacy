@@ -85,7 +85,7 @@ object TableStage4:
               returnedBytes = s.returnedBytes
             )
 
-          case AdmittedPutItemSample(r, _, _, s, _, _) =>
+          case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
             PutItemResponse(
               eventTime = r.eventTime,
               usecase = r.usecase,
@@ -94,7 +94,7 @@ object TableStage4:
               previousItemBytes = s.previousItemBytes
             )
 
-          case AdmittedUpdateItemSample(r, _, _, s, _, _) =>
+          case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
             UpdateItemResponse(
               eventTime = r.eventTime,
               usecase = r.usecase,
@@ -103,7 +103,7 @@ object TableStage4:
               previousItemBytes = s.previousItemBytes
             )
 
-          case AdmittedDeleteItemSample(r, _, _, s, _, _) =>
+          case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
             DeleteItemResponse(
               eventTime = r.eventTime,
               usecase = r.usecase,
@@ -149,7 +149,7 @@ object TableStage4:
               Stage4MetricEvent.ScanEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
             ) ++ returnedEvents
 
-          case AdmittedPutItemSample(r, _, _, s, _, _) =>
+          case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
             List(
               Stage4MetricEvent.PutItemObserved(r.eventTime, r.usecase),
               Stage4MetricEvent.PutItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
@@ -157,7 +157,7 @@ object TableStage4:
               Stage4MetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
             )
 
-          case AdmittedUpdateItemSample(r, _, _, s, _, _) =>
+          case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
             List(
               Stage4MetricEvent.UpdateItemObserved(r.eventTime, r.usecase),
               Stage4MetricEvent.UpdateItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
@@ -165,7 +165,7 @@ object TableStage4:
               Stage4MetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
             )
 
-          case AdmittedDeleteItemSample(r, _, _, s, _, _) =>
+          case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
             val deleteEvents =
               s.deletedItemBytes.toList.map { bytes =>
                 Stage4MetricEvent.DeleteItemDeleted(r.eventTime, r.usecase, bytes)
@@ -250,7 +250,7 @@ object TableStage4:
               )
             ) ++ bytesReadEvents
 
-          case AdmittedPutItemSample(r, executionTarget, _, s, _, _) =>
+          case AdmittedPutItemSample(r, executionTarget, _, s, _, _, _) =>
             List(
               DynamoDbConsumptionEvent.WriteCapacityConsumed(
                 eventTime = r.eventTime,
@@ -262,7 +262,7 @@ object TableStage4:
               DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, executionTarget, s.storageBytesDelta)
             )
 
-          case AdmittedUpdateItemSample(r, executionTarget, _, s, _, _) =>
+          case AdmittedUpdateItemSample(r, executionTarget, _, s, _, _, _) =>
             List(
               DynamoDbConsumptionEvent.WriteCapacityConsumed(
                 eventTime = r.eventTime,
@@ -274,7 +274,7 @@ object TableStage4:
               DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, executionTarget, s.storageBytesDelta)
             )
 
-          case AdmittedDeleteItemSample(r, executionTarget, _, s, _, _) =>
+          case AdmittedDeleteItemSample(r, executionTarget, _, s, _, _, _) =>
             val deletedBytesEvents =
               s.deletedItemBytes.toList.map { bytes =>
                 DynamoDbConsumptionEvent.StorageBytesDeleted(r.eventTime, r.usecase, executionTarget, bytes)

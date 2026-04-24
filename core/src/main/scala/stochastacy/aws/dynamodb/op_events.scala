@@ -44,9 +44,11 @@ object DynamoDbThrottleReason:
   case object TableReadMaxOnDemandThroughputExceeded extends DynamoDbThrottleReason
   case object TableWriteMaxOnDemandThroughputExceeded extends DynamoDbThrottleReason
   case object GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded extends DynamoDbThrottleReason
+  case object GlobalSecondaryIndexWriteMaxOnDemandThroughputExceeded extends DynamoDbThrottleReason
   case object TableReadHotPartitionThroughputExceeded extends DynamoDbThrottleReason
   case object TableWriteHotPartitionThroughputExceeded extends DynamoDbThrottleReason
   case object GlobalSecondaryIndexReadHotPartitionThroughputExceeded extends DynamoDbThrottleReason
+  case object GlobalSecondaryIndexWriteHotPartitionThroughputExceeded extends DynamoDbThrottleReason
 
 sealed trait DynamoDBRequest extends AWSServiceRequestEvent
 sealed trait DynamoDBResponse extends AWSServiceResponseEvent

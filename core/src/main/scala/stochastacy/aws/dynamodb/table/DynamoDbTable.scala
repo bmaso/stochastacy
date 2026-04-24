@@ -11,7 +11,8 @@ object DynamoDbTable:
   final case class OnDemandMaxThroughput(
                                           tableMaxReadRequestUnitsPerSecond: Option[BigDecimal] = None,
                                           tableMaxWriteRequestUnitsPerSecond: Option[BigDecimal] = None,
-                                          globalSecondaryIndexMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
+                                          globalSecondaryIndexMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty,
+                                          globalSecondaryIndexMaxWriteRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
                                         ):
     require(tableMaxReadRequestUnitsPerSecond.forall(_ > 0), "tableMaxReadRequestUnitsPerSecond must be positive when defined")
     require(tableMaxWriteRequestUnitsPerSecond.forall(_ > 0), "tableMaxWriteRequestUnitsPerSecond must be positive when defined")
@@ -19,13 +20,18 @@ object DynamoDbTable:
       globalSecondaryIndexMaxReadRequestUnitsPerSecond.values.forall(_ > 0),
       "globalSecondaryIndexMaxReadRequestUnitsPerSecond values must be positive"
     )
+    require(
+      globalSecondaryIndexMaxWriteRequestUnitsPerSecond.values.forall(_ > 0),
+      "globalSecondaryIndexMaxWriteRequestUnitsPerSecond values must be positive"
+    )
 
   final case class HotPartitionModel(
                                       tablePartitionCount: Int,
                                       tablePerPartitionMaxReadRequestUnitsPerSecond: Option[BigDecimal] = None,
                                       tablePerPartitionMaxWriteRequestUnitsPerSecond: Option[BigDecimal] = None,
                                       globalSecondaryIndexPartitionCounts: Map[String, Int] = Map.empty,
-                                      globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
+                                      globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty,
+                                      globalSecondaryIndexPerPartitionMaxWriteRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
                                     ):
     require(tablePartitionCount > 0, s"tablePartitionCount must be positive, got $tablePartitionCount")
     require(
@@ -44,13 +50,18 @@ object DynamoDbTable:
       globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.values.forall(_ > 0),
       "globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond values must be positive"
     )
+    require(
+      globalSecondaryIndexPerPartitionMaxWriteRequestUnitsPerSecond.values.forall(_ > 0),
+      "globalSecondaryIndexPerPartitionMaxWriteRequestUnitsPerSecond values must be positive"
+    )
 
   final case class BurstCapacityModel(
                                        enabled: Boolean = true,
                                        retentionWindowSeconds: Int = 300,
                                        initialTableReadBurstRequestUnits: Option[BigDecimal] = None,
                                        initialTableWriteBurstRequestUnits: Option[BigDecimal] = None,
-                                       initialGlobalSecondaryIndexReadBurstRequestUnits: Map[String, BigDecimal] = Map.empty
+                                       initialGlobalSecondaryIndexReadBurstRequestUnits: Map[String, BigDecimal] = Map.empty,
+                                       initialGlobalSecondaryIndexWriteBurstRequestUnits: Map[String, BigDecimal] = Map.empty
                                      ):
     require(retentionWindowSeconds > 0, s"retentionWindowSeconds must be positive, got $retentionWindowSeconds")
     require(
@@ -65,11 +76,16 @@ object DynamoDbTable:
       initialGlobalSecondaryIndexReadBurstRequestUnits.values.forall(_ >= 0),
       "initialGlobalSecondaryIndexReadBurstRequestUnits values must be non-negative"
     )
+    require(
+      initialGlobalSecondaryIndexWriteBurstRequestUnits.values.forall(_ >= 0),
+      "initialGlobalSecondaryIndexWriteBurstRequestUnits values must be non-negative"
+    )
 
   final case class AdaptiveCapacityModel(
                                           tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond: Option[BigDecimal] = None,
                                           tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond: Option[BigDecimal] = None,
-                                          globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
+                                          globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty,
+                                          globalSecondaryIndexPerPartitionAdaptiveMaxWriteRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
                                         ):
     require(
       tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond.forall(_ > 0),
@@ -83,6 +99,10 @@ object DynamoDbTable:
       globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.values.forall(_ > 0),
       "globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond values must be positive"
     )
+    require(
+      globalSecondaryIndexPerPartitionAdaptiveMaxWriteRequestUnitsPerSecond.values.forall(_ > 0),
+      "globalSecondaryIndexPerPartitionAdaptiveMaxWriteRequestUnitsPerSecond values must be positive"
+    )
 
   final case class DynamicPartitionTopologyModel(
                                                   enabled: Boolean = true,
@@ -93,10 +113,12 @@ object DynamoDbTable:
                                                   tableThroughputGrowthSplitThresholdRequestUnitsPerSecond: Option[BigDecimal] = None,
                                                   tableWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond: Option[BigDecimal] = None,
                                                   globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty,
+                                                  globalSecondaryIndexWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty,
                                                   heatSplitSustainWindowSeconds: Int = 1,
                                                   tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
                                                   tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
                                                   globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition: Map[String, BigDecimal] = Map.empty,
+                                                  globalSecondaryIndexWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition: Map[String, BigDecimal] = Map.empty,
                                                   maxTablePartitionCount: Option[Int] = None,
                                                   maxGlobalSecondaryIndexPartitionCounts: Map[String, Int] = Map.empty
                                                 ):
@@ -122,6 +144,10 @@ object DynamoDbTable:
       globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond.values.forall(_ > 0),
       "globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond values must be positive"
     )
+    require(
+      globalSecondaryIndexWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond.values.forall(_ > 0),
+      "globalSecondaryIndexWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond values must be positive"
+    )
     require(heatSplitSustainWindowSeconds > 0, s"heatSplitSustainWindowSeconds must be positive, got $heatSplitSustainWindowSeconds")
     require(
       tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.forall(_ > 0),
@@ -134,6 +160,10 @@ object DynamoDbTable:
     require(
       globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.values.forall(_ > 0),
       "globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition values must be positive"
+    )
+    require(
+      globalSecondaryIndexWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition.values.forall(_ > 0),
+      "globalSecondaryIndexWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition values must be positive"
     )
     require(maxTablePartitionCount.forall(_ >= tableInitialPartitionCount), "maxTablePartitionCount must be >= tableInitialPartitionCount when defined")
     require(
@@ -185,7 +215,8 @@ object DynamoDbTable:
       )
 
       val unknownGlobalSecondaryIndexNames =
-        config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.keySet --
+        (config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.keySet ++
+          config.onDemandMaxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.keySet) --
           config.globalSecondaryIndexes.map(_.indexName).toSet
 
       require(
@@ -196,7 +227,8 @@ object DynamoDbTable:
       val unknownGlobalSecondaryIndexNamesForHotPartitions =
         config.hotPartitionModel.toVector.flatMap { model =>
           (model.globalSecondaryIndexPartitionCounts.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
-            (model.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
+            (model.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
+            (model.globalSecondaryIndexPerPartitionMaxWriteRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
         }.distinct.sorted
 
       require(
@@ -206,7 +238,11 @@ object DynamoDbTable:
 
       val unknownGlobalSecondaryIndexNamesForBurst =
         config.burstCapacityModel.toVector
-          .flatMap(_.initialGlobalSecondaryIndexReadBurstRequestUnits.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
+          .flatMap(model =>
+            (model.initialGlobalSecondaryIndexReadBurstRequestUnits.keySet ++
+              model.initialGlobalSecondaryIndexWriteBurstRequestUnits.keySet) --
+              config.globalSecondaryIndexes.map(_.indexName).toSet
+          )
           .distinct
           .sorted
 
@@ -229,8 +265,10 @@ object DynamoDbTable:
           )
 
         val missingThroughputForInitialGsiBurst =
-          burst.initialGlobalSecondaryIndexReadBurstRequestUnits.keySet
-            .filterNot(config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.contains)
+          (burst.initialGlobalSecondaryIndexReadBurstRequestUnits.keySet
+            .filterNot(config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.contains) ++
+            burst.initialGlobalSecondaryIndexWriteBurstRequestUnits.keySet
+              .filterNot(config.onDemandMaxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.contains))
             .toVector
             .sorted
 
@@ -242,7 +280,11 @@ object DynamoDbTable:
 
       val unknownGlobalSecondaryIndexNamesForAdaptive =
         config.adaptiveCapacityModel.toVector
-          .flatMap(_.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
+          .flatMap(model =>
+            (model.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.keySet ++
+              model.globalSecondaryIndexPerPartitionAdaptiveMaxWriteRequestUnitsPerSecond.keySet) --
+              config.globalSecondaryIndexes.map(_.indexName).toSet
+          )
           .distinct
           .sorted
 
@@ -256,7 +298,9 @@ object DynamoDbTable:
           (model.globalSecondaryIndexInitialPartitionCounts.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
             (model.globalSecondaryIndexStorageSplitThresholdBytes.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
             (model.globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
+            (model.globalSecondaryIndexWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
             (model.globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
+            (model.globalSecondaryIndexWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
             (model.maxGlobalSecondaryIndexPartitionCounts.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
         }.distinct.sorted
 
@@ -295,6 +339,8 @@ object DynamoDbTable:
 
         val gsiBaselines =
           config.hotPartitionModel.toVector.flatMap(_.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond).toMap
+        val gsiWriteBaselines =
+          config.hotPartitionModel.toVector.flatMap(_.globalSecondaryIndexPerPartitionMaxWriteRequestUnitsPerSecond).toMap
 
         adaptive.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.foreach { case (indexName, adaptiveMax) =>
           val baseline =
@@ -307,6 +353,20 @@ object DynamoDbTable:
           require(
             adaptiveMax >= baseline,
             s"Adaptive-capacity config for table '${config.tableName}' requires GSI read adaptive max for '$indexName' ($adaptiveMax) to be >= the GSI read hot-partition baseline ($baseline)"
+          )
+        }
+
+        adaptive.globalSecondaryIndexPerPartitionAdaptiveMaxWriteRequestUnitsPerSecond.foreach { case (indexName, adaptiveMax) =>
+          val baseline =
+            gsiWriteBaselines.getOrElse(
+              indexName,
+              throw new IllegalArgumentException(
+                s"Adaptive-capacity config for table '${config.tableName}' defines GSI adaptive write max for '$indexName' without a GSI write hot-partition baseline"
+              )
+            )
+          require(
+            adaptiveMax >= baseline,
+            s"Adaptive-capacity config for table '${config.tableName}' requires GSI write adaptive max for '$indexName' ($adaptiveMax) to be >= the GSI write hot-partition baseline ($baseline)"
           )
         }
       }
@@ -428,6 +488,48 @@ object DynamoDbTable:
 
     globalSecondaryIndexes ++ localSecondaryIndexes
 
+  private def gsiWriteScopesFor(
+                                 config: Config,
+                                 indexRuntimes: Vector[InternalIndexRuntime]
+                               ): Vector[TableStage1.GsiWriteScopeConfig] =
+    config.globalSecondaryIndexes.map { definition =>
+      val indexRuntime = indexRuntimes.collectFirst {
+        case gsi: InternalIndexRuntime.GlobalSecondaryIndex if gsi.indexName == definition.indexName => gsi
+      }.getOrElse(
+        throw new IllegalStateException(s"Missing runtime for global secondary index '${definition.indexName}'")
+      )
+
+      TableStage1.GsiWriteScopeConfig(
+        target = indexRuntime.target,
+        stateModel = indexRuntime.stateModel,
+        maxWriteRequestUnitsPerSecond =
+          config.onDemandMaxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.get(definition.indexName),
+        maxWriteRequestUnitsPerSecondPerPartition =
+          config.hotPartitionModel.flatMap(_.globalSecondaryIndexPerPartitionMaxWriteRequestUnitsPerSecond.get(definition.indexName)),
+        adaptiveMaxWriteRequestUnitsPerSecondPerPartition =
+          config.adaptiveCapacityModel.flatMap(_.globalSecondaryIndexPerPartitionAdaptiveMaxWriteRequestUnitsPerSecond.get(definition.indexName)),
+        burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+        initialWriteBurstRequestUnits =
+          config.burstCapacityModel.flatMap(_.initialGlobalSecondaryIndexWriteBurstRequestUnits.get(definition.indexName)),
+        dynamicPartitionTopologyConfig =
+          config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+            TableStage1.DynamicPartitionTopologyConfig(
+              initialPartitionCount =
+                dynamic.globalSecondaryIndexInitialPartitionCounts.getOrElse(definition.indexName, dynamic.tableInitialPartitionCount),
+              storageSplitThresholdBytes = dynamic.globalSecondaryIndexStorageSplitThresholdBytes.get(definition.indexName),
+              readThroughputGrowthSplitThresholdRequestUnitsPerSecond = None,
+              writeThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                dynamic.globalSecondaryIndexWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond.get(definition.indexName),
+              heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+              readHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
+              writeHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                dynamic.globalSecondaryIndexWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition.get(definition.indexName),
+              maxPartitionCount = dynamic.maxGlobalSecondaryIndexPartitionCounts.get(definition.indexName)
+            )
+          }
+      )
+    }
+
   private def branchGraph(
                            stateModel: TableState,
                            useCaseBehaviors: Map[Any, UseCaseSampler[TableState]],
@@ -444,7 +546,8 @@ object DynamoDbTable:
                            burstRetentionWindowSeconds: Option[Int],
                            initialReadBurstRequestUnits: Option[BigDecimal],
                            initialWriteBurstRequestUnits: Option[BigDecimal],
-                           dynamicPartitionTopologyConfig: Option[TableStage1.DynamicPartitionTopologyConfig]
+                           dynamicPartitionTopologyConfig: Option[TableStage1.DynamicPartitionTopologyConfig],
+                           gsiWriteScopes: Vector[TableStage1.GsiWriteScopeConfig] = Vector.empty
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -475,7 +578,8 @@ object DynamoDbTable:
             burstRetentionWindowSeconds = burstRetentionWindowSeconds,
             initialReadBurstRequestUnits = initialReadBurstRequestUnits,
             initialWriteBurstRequestUnits = initialWriteBurstRequestUnits,
-            dynamicPartitionTopologyConfig = dynamicPartitionTopologyConfig
+            dynamicPartitionTopologyConfig = dynamicPartitionTopologyConfig,
+            gsiWriteScopes = gsiWriteScopes
           )
         )
       )
@@ -516,6 +620,7 @@ object DynamoDbTable:
     ],
     NotUsed
   ] =
+    val indexRuntimes = indexRuntimesFor(config)
     val baseTableGraph =
       branchGraph(
         stateModel = config.stateModel,
@@ -553,12 +658,12 @@ object DynamoDbTable:
                 dynamic.tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition,
               maxPartitionCount = dynamic.maxTablePartitionCount
             )
-          }
+          },
+        gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes)
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
     val localSecondaryIndexes = config.localSecondaryIndexes
-    val indexRuntimes = indexRuntimesFor(config)
 
     if globalSecondaryIndexes.isEmpty && localSecondaryIndexes.isEmpty then
       baseTableGraph

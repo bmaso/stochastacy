@@ -13,6 +13,19 @@ private[table] sealed trait AdmittedRequestSample extends TimedEvent:
   override val eventTime: SimTime = req.eventTime
   override val usecase: Any = req.usecase
 
+private[table] final case class GsiWritePropagation(
+                                                     indexTarget: DynamoDbTarget.GlobalSecondaryIndex,
+                                                     throughputDemand: BigDecimal,
+                                                     logicalPartitionAccess: LogicalPartitionAccess,
+                                                     resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                                                     writtenItemBytes: Option[Long],
+                                                     previousItemBytes: Option[Long],
+                                                     deletedItemBytes: Option[Long]
+                                                   )
+
+private[table] sealed trait AdmittedWriteRequestSample extends AdmittedRequestSample:
+  def gsiWritePropagationPlan: Vector[GsiWritePropagation]
+
 private[table] final case class AdmittedGetItemSample(
                                                        req: GetItemRequest,
                                                        executionTarget: DynamoDbTarget,
@@ -50,8 +63,9 @@ private[table] final case class AdmittedPutItemSample(
                                                        admissionTarget: DynamoDbTarget,
                                                        sample: PutItemSample,
                                                        throughputDemand: BigDecimal,
-                                                       resolvedPartitionFootprint: ResolvedPartitionFootprint
-                                                     ) extends AdmittedRequestSample:
+                                                       resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                                                       gsiWritePropagationPlan: Vector[GsiWritePropagation] = Vector.empty
+                                                     ) extends AdmittedWriteRequestSample:
   override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Write
 
 private[table] final case class AdmittedUpdateItemSample(
@@ -60,8 +74,9 @@ private[table] final case class AdmittedUpdateItemSample(
                                                           admissionTarget: DynamoDbTarget,
                                                           sample: UpdateItemSample,
                                                           throughputDemand: BigDecimal,
-                                                          resolvedPartitionFootprint: ResolvedPartitionFootprint
-                                                        ) extends AdmittedRequestSample:
+                                                          resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                                                          gsiWritePropagationPlan: Vector[GsiWritePropagation] = Vector.empty
+                                                        ) extends AdmittedWriteRequestSample:
   override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Write
 
 private[table] final case class AdmittedDeleteItemSample(
@@ -70,6 +85,7 @@ private[table] final case class AdmittedDeleteItemSample(
                                                           admissionTarget: DynamoDbTarget,
                                                           sample: DeleteItemSample,
                                                           throughputDemand: BigDecimal,
-                                                          resolvedPartitionFootprint: ResolvedPartitionFootprint
-                                                        ) extends AdmittedRequestSample:
+                                                          resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                                                          gsiWritePropagationPlan: Vector[GsiWritePropagation] = Vector.empty
+                                                        ) extends AdmittedWriteRequestSample:
   override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Write

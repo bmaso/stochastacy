@@ -23,6 +23,7 @@ In the composed DynamoDB `Table` graph:
 - `TableStage1` samples incoming requests, applies on-demand hard checks, and either throttles or admits them
 - `TableStage1` may now admit requests normally, with adaptive backing, with burst backing, or with both adaptive and burst backing before forwarding them
 - `TableStage1` also owns the current partition-topology snapshot and may evolve that topology at tick boundaries before later requests are admitted
+- `TableStage1` may now also reject a base-table write because a derived internal GSI write scope cannot be admitted
 - `TableStage4` decides what storage-level effect an already admitted request has
 - downstream consumers aggregate responses, costs, and metrics across the whole simulation
 
@@ -45,6 +46,7 @@ If an upstream stage throttles or rejects a request, that response should be pro
 - adaptive-capacity admission decisions
 - burst-capacity admission decisions
 - partition-topology evolution decisions
+- GSI write back-pressure admission decisions
 - retry policy
 - client behavior
 - orchestration outside the table
@@ -92,6 +94,7 @@ The important phase-3 rule is:
 - the sampled demand and sampled outcome are memorialized
 - `TableStage4` does not independently resample admitted requests
 - any resolved partition footprint used for admission also travels with the admitted request envelope
+- any memorialized GSI write propagation plan for an admitted base-table write also travels with the admitted request envelope
 
 ## State Model
 

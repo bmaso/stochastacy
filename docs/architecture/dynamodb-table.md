@@ -125,6 +125,20 @@ In phase-3 slice 5:
 - LSIs continue to share the base-table topology model at the admission layer
 - item isolation remains deferred
 
+In phase-3 slice 6:
+
+- base-table writes now depend on internal GSI write admission before they are allowed into the data plane
+- `TableStage1` derives internal GSI write propagation effects at table ingress for admitted base-table writes
+- the same memorialized GSI write plan is carried with admitted write requests for downstream propagation
+- a base-table write may now throttle because a specific GSI cannot absorb the induced internal write pressure
+- GSI write back-pressure uses the same simulator machinery already built for other scopes:
+  - whole-resource on-demand checks
+  - hot partitions
+  - adaptive capacity
+  - burst capacity
+  - dynamic partition topology
+- LSI write back-pressure remains deferred
+
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
 ## Layering
@@ -136,7 +150,8 @@ In the full `Table` component, requests now flow through several conceptual laye
 3. Same-tick adaptive-capacity redistribution
 4. Burst-backed admission using retained unused throughput
 5. Tick-boundary topology evolution
-6. Data-plane storage execution in `TableStage4`
+6. Internal GSI write back-pressure checks for base-table writes
+7. Data-plane storage execution in `TableStage4`
 
 That storage layer should itself be internally composed of:
 

@@ -110,7 +110,8 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
           onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
             tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(100)),
             tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(200)),
-            globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal(25))
+            globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal(25)),
+            globalSecondaryIndexMaxWriteRequestUnitsPerSecond = Map("status-index" -> BigDecimal(10))
           )
         )
 
@@ -118,6 +119,9 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
       config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond shouldBe Some(BigDecimal(200))
       config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond shouldBe Map(
         "status-index" -> BigDecimal(25)
+      )
+      config.onDemandMaxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond shouldBe Map(
+        "status-index" -> BigDecimal(10)
       )
     }
 

@@ -828,6 +828,43 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       )
       metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => metric.eventTime } shouldBe Vector(SimTime.of(3L))
     }
+
+    "throttle a base-table write when an internal GSI write scope is over its max throughput" in {
+      val (_, responseFuture, metricFuture) =
+        runStage(
+          Source.single(PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)),
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map(
+              "put-new" -> FixedPutItemBehavior(1024L, None, SingleLogicalPartitionKey("hot-gsi-write"))
+            ),
+            stateModel = FixedTableState(0L, 0L),
+            maxWriteRequestUnitsPerSecond = Some(BigDecimal(10)),
+            gsiWriteScopes = Vector(
+              TableStage1.GsiWriteScopeConfig(
+                target = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
+                stateModel = FixedTableState(0L, 0L),
+                maxWriteRequestUnitsPerSecond = Some(BigDecimal("0.5"))
+              )
+            )
+          )
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      responses.collect { case response: ThrottledResponse => (response.target, response.reason, response.dimension) } shouldBe Vector(
+        (
+          DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
+          DynamoDbThrottleReason.GlobalSecondaryIndexWriteMaxOnDemandThroughputExceeded,
+          DynamoDbThroughputDimension.Write
+        )
+      )
+      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+        DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
+      )
+    }
   }
 
   private def runStage(
