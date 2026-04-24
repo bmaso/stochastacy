@@ -90,4 +90,4 @@ That means the following remain secondary or deferred until the on-demand-mode t
 
 Recommended starting point:
 
-- `slice 4: adaptive capacity`
+- `slice 5: dynamic partition topology`

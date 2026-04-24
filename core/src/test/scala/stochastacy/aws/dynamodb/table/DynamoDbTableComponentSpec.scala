@@ -689,6 +689,110 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
     }
 
+    "adaptively admit base-table reads through the composed table path without spending burst" in {
+      val (coolKey, hotKey) = twoKeysForDifferentPartitions(partitionCount = 4)
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 8192L),
+          useCaseBehaviors = Map(
+            "cool-read" -> FixedHitGetItemBehavior(2048L, SingleLogicalPartitionKey(coolKey)),
+            "hot-read" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey(hotKey))
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          hotPartitionModel = Some(
+            DynamoDbTable.HotPartitionModel(
+              tablePartitionCount = 4,
+              tablePerPartitionMaxReadRequestUnitsPerSecond = Some(BigDecimal(1))
+            )
+          ),
+          adaptiveCapacityModel = Some(
+            DynamoDbTable.AdaptiveCapacityModel(
+              tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond = Some(BigDecimal(2))
+            )
+          )
+        )
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(
+          Source(
+            Vector[TimedElement[DynamoDBRequest]](
+              GetItemRequest(eventTime = SimTime.of(1L), usecase = "cool-read"),
+              GetItemRequest(eventTime = SimTime.of(1L), usecase = "hot-read")
+            )
+          ),
+          config
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case _: GetItemResponse => 1 } shouldBe Vector(1, 1)
+      resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.units }.sum shouldBe BigDecimal(3)
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.Normal,
+        Stage1AdmissionMode.AdaptiveBacked
+      )
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
+        BigDecimal(0),
+        BigDecimal(0)
+      )
+    }
+
+    "combine adaptive relief and burst for routed reads when both are needed" in {
+      val (coolKey, hotKey) = twoKeysForDifferentPartitions(partitionCount = 4)
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 10240L),
+          useCaseBehaviors = Map(
+            "cool-read" -> FixedHitGetItemBehavior(1024L, SingleLogicalPartitionKey(coolKey)),
+            "hot-read" -> FixedHitGetItemBehavior(10240L, SingleLogicalPartitionKey(hotKey))
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+            tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(3))
+          ),
+          hotPartitionModel = Some(
+            DynamoDbTable.HotPartitionModel(
+              tablePartitionCount = 4,
+              tablePerPartitionMaxReadRequestUnitsPerSecond = Some(BigDecimal(1))
+            )
+          ),
+          adaptiveCapacityModel = Some(
+            DynamoDbTable.AdaptiveCapacityModel(
+              tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond = Some(BigDecimal("1.5"))
+            )
+          ),
+          burstCapacityModel = Some(
+            DynamoDbTable.BurstCapacityModel(
+              initialTableReadBurstRequestUnits = Some(BigDecimal(1))
+            )
+          )
+        )
+
+      val (responseFuture, _, metricsFuture) =
+        runComponent(
+          Source(
+            Vector[TimedElement[DynamoDBRequest]](
+              GetItemRequest(eventTime = SimTime.of(1L), usecase = "cool-read"),
+              GetItemRequest(eventTime = SimTime.of(1L), usecase = "hot-read")
+            )
+          ),
+          config
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      responses.collect { case _: GetItemResponse => 1 } shouldBe Vector(1, 1)
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.Normal,
+        Stage1AdmissionMode.AdaptiveAndBurstBacked
+      )
+    }
+
     "sample admitted requests once and carry that sampled outcome through storage execution" in {
       val invocationCount = AtomicInteger(0)
       val config =
@@ -967,3 +1071,15 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       invocation match
         case 1 => FixedPutItemSample(writtenItemBytes = 1024L, previousItemBytes = None)
         case _ => FixedPutItemSample(writtenItemBytes = 2048L, previousItemBytes = None)
+
+  private def twoKeysForDifferentPartitions(partitionCount: Int): (String, String) =
+    val keysByPartition =
+      (0 until 10_000)
+        .map(i => s"component-key-$i")
+        .groupBy { token =>
+          PartitionAccessResolver.resolve(SingleLogicalPartitionKey(token), BigDecimal(1), partitionCount).partitionDemandById.head._1
+        }
+        .toVector
+
+    if keysByPartition.size < 2 then fail("Unable to find keys for different partitions")
+    else (keysByPartition(0)._2.head, keysByPartition(1)._2.head)

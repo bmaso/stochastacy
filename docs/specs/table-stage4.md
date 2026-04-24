@@ -21,7 +21,7 @@ All streams use the simulator's timed-event protocol.
 In the composed DynamoDB `Table` graph:
 
 - `TableStage1` samples incoming requests, applies on-demand hard checks, and either throttles or admits them
-- `TableStage1` may now admit requests normally or with burst backing before forwarding them
+- `TableStage1` may now admit requests normally, with adaptive backing, with burst backing, or with both adaptive and burst backing before forwarding them
 - `TableStage4` decides what storage-level effect an already admitted request has
 - downstream consumers aggregate responses, costs, and metrics across the whole simulation
 
@@ -41,6 +41,7 @@ If an upstream stage throttles or rejects a request, that response should be pro
 
 - account-wide quotas
 - provisioned throughput admission checks
+- adaptive-capacity admission decisions
 - burst-capacity admission decisions
 - retry policy
 - client behavior
@@ -164,6 +165,7 @@ Current implementation notes:
 - `TableStage4` has a primary admitted-request execution path used by `DynamoDbTable`
 - a raw-request adapter path remains available for direct storage-level tests
 - `TableStage4` currently carries the resolved partition footprint forward unchanged but does not yet act on it directly
+- adaptive-backed requests use the same admitted-request path as normal requests
 - burst-backed requests use the same admitted-request path as normal requests
 - `GetItem` emits read-capacity and byte-read facts
 - `PutItem` and `UpdateItem` emit write-capacity, bytes-written, and storage-delta facts

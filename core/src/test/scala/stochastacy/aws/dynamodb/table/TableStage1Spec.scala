@@ -386,6 +386,218 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       )
     }
 
+    "adaptively admit a hot read partition without spending burst when cooler partitions have unused headroom" in {
+      val (coolKey, hotKey) = twoKeysForDifferentPartitions(partitionCount = 4)
+      val requests = Source(
+        Vector[TimedElement[DynamoDBRequest]](
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "cool-read"),
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "hot-read")
+        )
+      )
+
+      val (_, responseFuture, metricFuture) =
+        runStage(
+          requests,
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map(
+              "cool-read" -> FixedHitGetItemBehavior(2048L, SingleLogicalPartitionKey(coolKey)),
+              "hot-read" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey(hotKey))
+            ),
+            stateModel = FixedTableState(1L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            partitionCount = 4,
+            maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+            adaptiveMaxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(2))
+          )
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      responses shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.Normal,
+        Stage1AdmissionMode.AdaptiveBacked
+      )
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.adaptiveConsumedRequestUnits } shouldBe Vector(
+        BigDecimal(0),
+        BigDecimal(1)
+      )
+    }
+
+    "adaptively admit a hot write partition without spending burst" in {
+      val (coolKey, hotKey) = twoKeysForDifferentPartitions(partitionCount = 4)
+      val requests = Source(
+        Vector[TimedElement[DynamoDBRequest]](
+          PutItemRequest(eventTime = SimTime.of(1L), usecase = "cool-write", itemBytes = 1024L),
+          PutItemRequest(eventTime = SimTime.of(1L), usecase = "hot-write", itemBytes = 2048L)
+        )
+      )
+
+      val (_, responseFuture, metricFuture) =
+        runStage(
+          requests,
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map(
+              "cool-write" -> FixedPutItemBehavior(1024L, None, SingleLogicalPartitionKey(coolKey)),
+              "hot-write" -> FixedPutItemBehavior(2048L, None, SingleLogicalPartitionKey(hotKey))
+            ),
+            stateModel = FixedTableState(0L, 0L),
+            partitionCount = 4,
+            maxWriteRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+            adaptiveMaxWriteRequestUnitsPerSecondPerPartition = Some(BigDecimal(2))
+          )
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      responses shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.Normal,
+        Stage1AdmissionMode.AdaptiveBacked
+      )
+    }
+
+    "use GSI-local adaptive relief for hot GSI reads and table adaptive relief for LSI reads" in {
+      val (coolKey, hotKey) = twoKeysForDifferentPartitions(partitionCount = 4)
+      val (_, gsiResponseFuture, gsiMetricFuture) =
+        runStage(
+          Source(
+            Vector[TimedElement[DynamoDBRequest]](
+              QueryRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "gsi-cool",
+                target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+              ),
+              QueryRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "gsi-hot",
+                target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
+              )
+            )
+          ),
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
+            admissionTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
+            useCaseBehaviors = Map(
+              "gsi-cool" -> FixedQueryBehavior(2048L, SingleLogicalPartitionKey(coolKey)),
+              "gsi-hot" -> FixedQueryBehavior(8192L, SingleLogicalPartitionKey(hotKey))
+            ),
+            stateModel = FixedTableState(5L, 8192L),
+            partitionCount = 4,
+            maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal("0.5")),
+            adaptiveMaxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(1))
+          )
+        )
+
+      val (_, lsiResponseFuture, lsiMetricFuture) =
+        runStage(
+          Source(
+            Vector[TimedElement[DynamoDBRequest]](
+              QueryRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "lsi-cool",
+                target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+                readConsistency = ReadConsistency.StronglyConsistent
+              ),
+              QueryRequest(
+                eventTime = SimTime.of(1L),
+                usecase = "lsi-hot",
+                target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),
+                readConsistency = ReadConsistency.StronglyConsistent
+              )
+            )
+          ),
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map(
+              "lsi-cool" -> FixedQueryBehavior(2048L, SingleLogicalPartitionKey(coolKey)),
+              "lsi-hot" -> FixedQueryBehavior(8192L, SingleLogicalPartitionKey(hotKey))
+            ),
+            stateModel = FixedTableState(5L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            partitionCount = 4,
+            maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+            adaptiveMaxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(2))
+          )
+        )
+
+      val gsiResponses = Await.result(gsiResponseFuture, 3.seconds)
+      val gsiMetrics = Await.result(gsiMetricFuture, 3.seconds)
+      val lsiResponses = Await.result(lsiResponseFuture, 3.seconds)
+      val lsiMetrics = Await.result(lsiMetricFuture, 3.seconds)
+
+      gsiResponses shouldBe empty
+      lsiResponses shouldBe empty
+      gsiMetrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode }.last shouldBe Stage1AdmissionMode.AdaptiveBacked
+      lsiMetrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode }.last shouldBe Stage1AdmissionMode.AdaptiveBacked
+    }
+
+    "not use adaptive capacity for pure whole-resource overage and combine adaptive relief with burst when needed" in {
+      val (coolKey, hotKey) = twoKeysForDifferentPartitions(partitionCount = 4)
+      val pureWholeResourceResponses =
+        Await.result(
+          runStage(
+            Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "whole-only")),
+            TableStage1.Config(
+              executionTarget = DynamoDbTarget.Table("orders"),
+              admissionTarget = DynamoDbTarget.Table("orders"),
+              useCaseBehaviors = Map("whole-only" -> FixedHitGetItemBehavior(8192L)),
+              stateModel = FixedTableState(1L, 8192L),
+              readConsistency = ReadConsistency.StronglyConsistent,
+              maxReadRequestUnitsPerSecond = Some(BigDecimal(1)),
+              partitionCount = 4,
+              maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(10)),
+              adaptiveMaxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(20))
+            )
+          )._2,
+          3.seconds
+        )
+
+      val comboMetrics =
+        Await.result(
+          runStage(
+            Source(
+              Vector[TimedElement[DynamoDBRequest]](
+                GetItemRequest(eventTime = SimTime.of(1L), usecase = "cool-for-combo"),
+                GetItemRequest(eventTime = SimTime.of(1L), usecase = "combo-hot")
+              )
+            ),
+            TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map(
+              "cool-for-combo" -> FixedHitGetItemBehavior(1024L, SingleLogicalPartitionKey(coolKey)),
+              "combo-hot" -> FixedHitGetItemBehavior(10240L, SingleLogicalPartitionKey(hotKey))
+            ),
+              stateModel = FixedTableState(1L, 10240L),
+              readConsistency = ReadConsistency.StronglyConsistent,
+              maxReadRequestUnitsPerSecond = Some(BigDecimal(3)),
+              partitionCount = 4,
+              maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+              adaptiveMaxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal("1.5")),
+              burstRetentionWindowSeconds = Some(300),
+              initialReadBurstRequestUnits = Some(BigDecimal(1))
+            )
+          )._3,
+          3.seconds
+        )
+
+      pureWholeResourceResponses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
+      )
+      comboMetrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        Stage1AdmissionMode.Normal,
+        Stage1AdmissionMode.AdaptiveAndBurstBacked
+      )
+    }
+
     "burst-admit a request that exceeds steady-state read throughput and report burst usage" in {
       val (admittedFuture, responseFuture, metricFuture) =
         runStage(

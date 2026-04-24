@@ -66,6 +66,24 @@ object DynamoDbTable:
       "initialGlobalSecondaryIndexReadBurstRequestUnits values must be non-negative"
     )
 
+  final case class AdaptiveCapacityModel(
+                                          tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                          tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                          globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty
+                                        ):
+    require(
+      tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond.forall(_ > 0),
+      "tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond must be positive when defined"
+    )
+    require(
+      tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond.forall(_ > 0),
+      "tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond must be positive when defined"
+    )
+    require(
+      globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.values.forall(_ > 0),
+      "globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond values must be positive"
+    )
+
   final case class GlobalSecondaryIndexDefinition(
                                                    indexName: String,
                                                    stateModel: TableState = SummaryTableState(0L, 0L)
@@ -85,7 +103,8 @@ object DynamoDbTable:
                            localSecondaryIndexes: Vector[LocalSecondaryIndexDefinition] = Vector.empty,
                            onDemandMaxThroughput: OnDemandMaxThroughput = OnDemandMaxThroughput(),
                            hotPartitionModel: Option[HotPartitionModel] = None,
-                           burstCapacityModel: Option[BurstCapacityModel] = None
+                           burstCapacityModel: Option[BurstCapacityModel] = None,
+                           adaptiveCapacityModel: Option[AdaptiveCapacityModel] = None
                          ):
     Config.validate(this)
 
@@ -159,6 +178,63 @@ object DynamoDbTable:
           missingThroughputForInitialGsiBurst.isEmpty,
           s"Burst-capacity config for table '${config.tableName}' defines initial GSI burst for indexes without GSI max throughput: ${missingThroughputForInitialGsiBurst.mkString(", ")}"
         )
+      }
+
+      val unknownGlobalSecondaryIndexNamesForAdaptive =
+        config.adaptiveCapacityModel.toVector
+          .flatMap(_.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
+          .distinct
+          .sorted
+
+      require(
+        unknownGlobalSecondaryIndexNamesForAdaptive.isEmpty,
+        s"Adaptive-capacity config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNamesForAdaptive.mkString(", ")}"
+      )
+
+      config.adaptiveCapacityModel.foreach { adaptive =>
+        require(
+          config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond).isDefined ||
+            adaptive.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond.isEmpty,
+          s"Adaptive-capacity config for table '${config.tableName}' defines tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond without a table read hot-partition baseline"
+        )
+        require(
+          config.hotPartitionModel.flatMap(_.tablePerPartitionMaxWriteRequestUnitsPerSecond).isDefined ||
+            adaptive.tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond.isEmpty,
+          s"Adaptive-capacity config for table '${config.tableName}' defines tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond without a table write hot-partition baseline"
+        )
+
+        adaptive.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond.foreach { adaptiveMax =>
+          val baseline = config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond).get
+          require(
+            adaptiveMax >= baseline,
+            s"Adaptive-capacity config for table '${config.tableName}' requires table read adaptive max ($adaptiveMax) to be >= the table read hot-partition baseline ($baseline)"
+          )
+        }
+
+        adaptive.tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond.foreach { adaptiveMax =>
+          val baseline = config.hotPartitionModel.flatMap(_.tablePerPartitionMaxWriteRequestUnitsPerSecond).get
+          require(
+            adaptiveMax >= baseline,
+            s"Adaptive-capacity config for table '${config.tableName}' requires table write adaptive max ($adaptiveMax) to be >= the table write hot-partition baseline ($baseline)"
+          )
+        }
+
+        val gsiBaselines =
+          config.hotPartitionModel.toVector.flatMap(_.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond).toMap
+
+        adaptive.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.foreach { case (indexName, adaptiveMax) =>
+          val baseline =
+            gsiBaselines.getOrElse(
+              indexName,
+              throw new IllegalArgumentException(
+                s"Adaptive-capacity config for table '${config.tableName}' defines GSI adaptive max for '$indexName' without a GSI read hot-partition baseline"
+              )
+            )
+          require(
+            adaptiveMax >= baseline,
+            s"Adaptive-capacity config for table '${config.tableName}' requires GSI read adaptive max for '$indexName' ($adaptiveMax) to be >= the GSI read hot-partition baseline ($baseline)"
+          )
+        }
       }
 
   private enum RouteBranch:
@@ -289,6 +365,8 @@ object DynamoDbTable:
                            partitionCount: Int,
                            maxReadRequestUnitsPerSecondPerPartition: Option[BigDecimal],
                            maxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal],
+                           adaptiveMaxReadRequestUnitsPerSecondPerPartition: Option[BigDecimal],
+                           adaptiveMaxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal],
                            burstRetentionWindowSeconds: Option[Int],
                            initialReadBurstRequestUnits: Option[BigDecimal],
                            initialWriteBurstRequestUnits: Option[BigDecimal]
@@ -317,6 +395,8 @@ object DynamoDbTable:
             partitionCount = partitionCount,
             maxReadRequestUnitsPerSecondPerPartition = maxReadRequestUnitsPerSecondPerPartition,
             maxWriteRequestUnitsPerSecondPerPartition = maxWriteRequestUnitsPerSecondPerPartition,
+            adaptiveMaxReadRequestUnitsPerSecondPerPartition = adaptiveMaxReadRequestUnitsPerSecondPerPartition,
+            adaptiveMaxWriteRequestUnitsPerSecondPerPartition = adaptiveMaxWriteRequestUnitsPerSecondPerPartition,
             burstRetentionWindowSeconds = burstRetentionWindowSeconds,
             initialReadBurstRequestUnits = initialReadBurstRequestUnits,
             initialWriteBurstRequestUnits = initialWriteBurstRequestUnits
@@ -374,6 +454,10 @@ object DynamoDbTable:
           config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
         maxWriteRequestUnitsPerSecondPerPartition =
           config.hotPartitionModel.flatMap(_.tablePerPartitionMaxWriteRequestUnitsPerSecond),
+        adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+          config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond),
+        adaptiveMaxWriteRequestUnitsPerSecondPerPartition =
+          config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond),
         burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
         initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
         initialWriteBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableWriteBurstRequestUnits)
@@ -556,6 +640,9 @@ object DynamoDbTable:
               maxReadRequestUnitsPerSecondPerPartition =
                 config.hotPartitionModel.flatMap(_.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)),
               maxWriteRequestUnitsPerSecondPerPartition = None,
+              adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+                config.adaptiveCapacityModel.flatMap(_.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)),
+              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = None,
               burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
               initialReadBurstRequestUnits =
                 config.burstCapacityModel.flatMap(_.initialGlobalSecondaryIndexReadBurstRequestUnits.get(indexDefinition.indexName)),
@@ -599,6 +686,9 @@ object DynamoDbTable:
               maxReadRequestUnitsPerSecondPerPartition =
                 config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
               maxWriteRequestUnitsPerSecondPerPartition = None,
+              adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+                config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond),
+              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = None,
               burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
               initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
               initialWriteBurstRequestUnits = None

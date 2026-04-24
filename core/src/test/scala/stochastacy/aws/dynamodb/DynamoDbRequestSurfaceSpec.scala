@@ -114,6 +114,8 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
           dimension = DynamoDbThroughputDimension.Read,
           throughputDemand = BigDecimal(1),
           admissionMode = Stage1AdmissionMode.Normal,
+          adaptiveConsumedRequestUnits = BigDecimal(0),
+          adaptiveAvailableRequestUnits = BigDecimal(0),
           burstConsumedRequestUnits = BigDecimal(0),
           burstRemainingRequestUnits = BigDecimal(300),
           resolvedPartitionFootprint = ResolvedPartitionFootprint(

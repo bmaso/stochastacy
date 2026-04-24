@@ -20,6 +20,8 @@ object TableStage1:
                            partitionCount: Int = 1,
                            maxReadRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
                            maxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
+                           adaptiveMaxReadRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
+                           adaptiveMaxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
                            burstRetentionWindowSeconds: Option[Int] = None,
                            initialReadBurstRequestUnits: Option[BigDecimal] = None,
                            initialWriteBurstRequestUnits: Option[BigDecimal] = None
@@ -34,6 +36,34 @@ object TableStage1:
     require(
       maxWriteRequestUnitsPerSecondPerPartition.forall(_ > 0),
       "maxWriteRequestUnitsPerSecondPerPartition must be positive when defined"
+    )
+    require(
+      adaptiveMaxReadRequestUnitsPerSecondPerPartition.forall(_ > 0),
+      "adaptiveMaxReadRequestUnitsPerSecondPerPartition must be positive when defined"
+    )
+    require(
+      adaptiveMaxWriteRequestUnitsPerSecondPerPartition.forall(_ > 0),
+      "adaptiveMaxWriteRequestUnitsPerSecondPerPartition must be positive when defined"
+    )
+    require(
+      adaptiveMaxReadRequestUnitsPerSecondPerPartition.forall(adaptive =>
+        maxReadRequestUnitsPerSecondPerPartition.forall(baseline => adaptive >= baseline)
+      ),
+      "adaptiveMaxReadRequestUnitsPerSecondPerPartition must be >= maxReadRequestUnitsPerSecondPerPartition when both are defined"
+    )
+    require(
+      adaptiveMaxWriteRequestUnitsPerSecondPerPartition.forall(adaptive =>
+        maxWriteRequestUnitsPerSecondPerPartition.forall(baseline => adaptive >= baseline)
+      ),
+      "adaptiveMaxWriteRequestUnitsPerSecondPerPartition must be >= maxWriteRequestUnitsPerSecondPerPartition when both are defined"
+    )
+    require(
+      adaptiveMaxReadRequestUnitsPerSecondPerPartition.isEmpty || maxReadRequestUnitsPerSecondPerPartition.isDefined,
+      "adaptiveMaxReadRequestUnitsPerSecondPerPartition requires maxReadRequestUnitsPerSecondPerPartition to be defined"
+    )
+    require(
+      adaptiveMaxWriteRequestUnitsPerSecondPerPartition.isEmpty || maxWriteRequestUnitsPerSecondPerPartition.isDefined,
+      "adaptiveMaxWriteRequestUnitsPerSecondPerPartition requires maxWriteRequestUnitsPerSecondPerPartition to be defined"
     )
     require(burstRetentionWindowSeconds.forall(_ > 0), "burstRetentionWindowSeconds must be positive when defined")
     require(
@@ -150,6 +180,12 @@ object TableStage1:
         case DynamoDbThroughputDimension.Read => copy(readBurst = readBurst.consume(requestUnits))
         case DynamoDbThroughputDimension.Write => copy(writeBurst = writeBurst.consume(requestUnits))
 
+  private final case class AdaptiveRelief(
+                                           consumedRequestUnits: BigDecimal,
+                                           availableRequestUnits: BigDecimal,
+                                           remainingHotPartitionOverage: BigDecimal
+                                         )
+
   def componentOf(
                    config: Config
                  ): Graph[
@@ -172,6 +208,8 @@ object TableStage1:
                             dimension: DynamoDbThroughputDimension,
                             throughputDemand: BigDecimal,
                             admissionMode: Stage1AdmissionMode,
+                            adaptiveConsumedRequestUnits: BigDecimal,
+                            adaptiveAvailableRequestUnits: BigDecimal,
                             burstConsumedRequestUnits: BigDecimal,
                             burstRemainingRequestUnits: BigDecimal,
                             resolvedPartitionFootprint: ResolvedPartitionFootprint
@@ -184,6 +222,8 @@ object TableStage1:
         dimension = dimension,
         throughputDemand = throughputDemand,
         admissionMode = admissionMode,
+        adaptiveConsumedRequestUnits = adaptiveConsumedRequestUnits,
+        adaptiveAvailableRequestUnits = adaptiveAvailableRequestUnits,
         burstConsumedRequestUnits = burstConsumedRequestUnits,
         burstRemainingRequestUnits = burstRemainingRequestUnits,
         resolvedPartitionFootprint = resolvedPartitionFootprint
@@ -194,6 +234,7 @@ object TableStage1:
                            dimension: DynamoDbThroughputDimension,
                            throughputDemand: BigDecimal,
                            reason: DynamoDbThrottleReason,
+                           adaptiveAvailableRequestUnits: BigDecimal,
                            burstAvailableRequestUnits: BigDecimal,
                            resolvedPartitionFootprint: ResolvedPartitionFootprint
                          ): Stage1MetricEvent.RequestThrottled =
@@ -205,6 +246,7 @@ object TableStage1:
         dimension = dimension,
         throughputDemand = throughputDemand,
         reason = reason,
+        adaptiveAvailableRequestUnits = adaptiveAvailableRequestUnits,
         burstAvailableRequestUnits = burstAvailableRequestUnits,
         resolvedPartitionFootprint = resolvedPartitionFootprint
       )
@@ -214,6 +256,7 @@ object TableStage1:
                    dimension: DynamoDbThroughputDimension,
                    throughputDemand: BigDecimal,
                    reason: DynamoDbThrottleReason,
+                   adaptiveAvailableRequestUnits: BigDecimal,
                    burstAvailableRequestUnits: BigDecimal,
                    resolvedPartitionFootprint: ResolvedPartitionFootprint
                  ): Throttled =
@@ -232,6 +275,7 @@ object TableStage1:
           dimension,
           throughputDemand,
           reason,
+          adaptiveAvailableRequestUnits,
           burstAvailableRequestUnits,
           resolvedPartitionFootprint
         )
@@ -290,14 +334,15 @@ object TableStage1:
         case (DynamoDbThroughputDimension.Write, _) =>
           DynamoDbThrottleReason.TableWriteMaxOnDemandThroughputExceeded
 
-    def partitionOverage(
-                          currentlyUsedByPartition: Map[Int, BigDecimal],
-                          resolvedPartitionFootprint: ResolvedPartitionFootprint,
-                          partitionLimit: BigDecimal
-                        ): BigDecimal =
-      resolvedPartitionFootprint.partitionDemandById.foldLeft(BigDecimal(0)) { case (currentMax, (partitionId, demand)) =>
-        val overage = currentlyUsedByPartition.getOrElse(partitionId, BigDecimal(0)) + demand - partitionLimit
-        currentMax.max(overage.max(BigDecimal(0)))
+    def partitionOverages(
+                           currentlyUsedByPartition: Map[Int, BigDecimal],
+                           resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                           partitionLimit: BigDecimal
+                         ): Map[Int, BigDecimal] =
+      resolvedPartitionFootprint.partitionDemandById.collect {
+        case (partitionId, demand)
+            if currentlyUsedByPartition.getOrElse(partitionId, BigDecimal(0)) + demand > partitionLimit =>
+          partitionId -> ((currentlyUsedByPartition.getOrElse(partitionId, BigDecimal(0)) + demand) - partitionLimit)
       }
 
     def wholeResourceOverage(
@@ -307,8 +352,67 @@ object TableStage1:
                             ): BigDecimal =
       (currentlyUsed + throughputDemand - limit).max(BigDecimal(0))
 
-    def admissionModeFor(burstConsumedRequestUnits: BigDecimal): Stage1AdmissionMode =
-      if burstConsumedRequestUnits > 0 then Stage1AdmissionMode.BurstBacked else Stage1AdmissionMode.Normal
+    def admissionModeFor(
+                         adaptiveConsumedRequestUnits: BigDecimal,
+                         burstConsumedRequestUnits: BigDecimal
+                       ): Stage1AdmissionMode =
+      if adaptiveConsumedRequestUnits > 0 && burstConsumedRequestUnits > 0 then
+        Stage1AdmissionMode.AdaptiveAndBurstBacked
+      else if adaptiveConsumedRequestUnits > 0 then
+        Stage1AdmissionMode.AdaptiveBacked
+      else if burstConsumedRequestUnits > 0 then
+        Stage1AdmissionMode.BurstBacked
+      else
+        Stage1AdmissionMode.Normal
+
+    def adaptiveReliefFor(
+                           currentlyUsedByPartition: Map[Int, BigDecimal],
+                           resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                           baselineLimit: Option[BigDecimal],
+                           adaptiveLimit: Option[BigDecimal]
+                         ): AdaptiveRelief =
+      baselineLimit match
+        case Some(baseline) =>
+          val hotPartitionOverages =
+            partitionOverages(currentlyUsedByPartition, resolvedPartitionFootprint, baseline)
+          val totalHotOverage = hotPartitionOverages.values.sum
+
+          adaptiveLimit match
+            case Some(adaptiveMax) if hotPartitionOverages.nonEmpty =>
+              val projectedUsageByPartition =
+                (0 until resolvedPartitionFootprint.totalPartitionCount).map { partitionId =>
+                  partitionId ->
+                    (currentlyUsedByPartition.getOrElse(partitionId, BigDecimal(0)) +
+                      resolvedPartitionFootprint.partitionDemandById.getOrElse(partitionId, BigDecimal(0)))
+                }.toMap
+
+              val totalCoolPartitionHeadroom =
+                projectedUsageByPartition.iterator.collect {
+                  case (partitionId, projectedUsage) if !hotPartitionOverages.contains(partitionId) =>
+                    (baseline - projectedUsage).max(BigDecimal(0))
+                }.foldLeft(BigDecimal(0))(_ + _)
+
+              val totalAdaptiveCeilingRoomOnHotPartitions =
+                hotPartitionOverages.keysIterator.map { partitionId =>
+                  (adaptiveMax - currentlyUsedByPartition.getOrElse(partitionId, BigDecimal(0))).max(BigDecimal(0))
+                }.foldLeft(BigDecimal(0))(_ + _)
+
+              val adaptiveAvailable =
+                totalHotOverage.min(totalCoolPartitionHeadroom).min(totalAdaptiveCeilingRoomOnHotPartitions)
+
+              AdaptiveRelief(
+                consumedRequestUnits = adaptiveAvailable,
+                availableRequestUnits = adaptiveAvailable,
+                remainingHotPartitionOverage = (totalHotOverage - adaptiveAvailable).max(BigDecimal(0))
+              )
+            case _ =>
+              AdaptiveRelief(
+                consumedRequestUnits = BigDecimal(0),
+                availableRequestUnits = BigDecimal(0),
+                remainingHotPartitionOverage = totalHotOverage
+              )
+        case None =>
+          AdaptiveRelief(BigDecimal(0), BigDecimal(0), BigDecimal(0))
 
     def evaluateReadAdmission(
                                request: DynamoDBRequest,
@@ -318,17 +422,20 @@ object TableStage1:
                                burstState: BurstState,
                                admittedSample: => AdmittedRequestSample
                              ): Stage1Decision =
-      val hotOverage =
-        config.maxReadRequestUnitsPerSecondPerPartition.map { limit =>
-          partitionOverage(usageState.readUnitsByPartition, resolvedPartitionFootprint, limit)
-        }.getOrElse(BigDecimal(0))
+      val adaptiveRelief =
+        adaptiveReliefFor(
+          currentlyUsedByPartition = usageState.readUnitsByPartition,
+          resolvedPartitionFootprint = resolvedPartitionFootprint,
+          baselineLimit = config.maxReadRequestUnitsPerSecondPerPartition,
+          adaptiveLimit = config.adaptiveMaxReadRequestUnitsPerSecondPerPartition
+        )
 
       val wholeOverage =
         config.maxReadRequestUnitsPerSecond.map { limit =>
           wholeResourceOverage(usageState.readUnits, throughputDemand, limit)
         }.getOrElse(BigDecimal(0))
 
-      val requiredBurst = hotOverage.max(wholeOverage)
+      val requiredBurst = adaptiveRelief.remainingHotPartitionOverage.max(wholeOverage)
       val burstAvailable = burstState.availableFor(DynamoDbThroughputDimension.Read)
 
       if requiredBurst > 0 && burstAvailable < requiredBurst then
@@ -337,13 +444,14 @@ object TableStage1:
           dimension = DynamoDbThroughputDimension.Read,
           throughputDemand = throughputDemand,
           reason =
-            if hotOverage > 0 then hotPartitionReason(DynamoDbThroughputDimension.Read)
+            if adaptiveRelief.remainingHotPartitionOverage > 0 then hotPartitionReason(DynamoDbThroughputDimension.Read)
             else wholeResourceReason(DynamoDbThroughputDimension.Read),
+          adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
           burstAvailableRequestUnits = burstAvailable,
           resolvedPartitionFootprint = resolvedPartitionFootprint
         )
       else
-        val remainingBurst = burstAvailable - requiredBurst
+        val remainingBurst = (burstAvailable - requiredBurst).max(BigDecimal(0))
         Admitted(
           request = request,
           sample = admittedSample,
@@ -351,9 +459,11 @@ object TableStage1:
             request = request,
             dimension = DynamoDbThroughputDimension.Read,
             throughputDemand = throughputDemand,
-            admissionMode = admissionModeFor(requiredBurst),
+            admissionMode = admissionModeFor(adaptiveRelief.consumedRequestUnits, requiredBurst),
+            adaptiveConsumedRequestUnits = adaptiveRelief.consumedRequestUnits,
+            adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
             burstConsumedRequestUnits = requiredBurst,
-            burstRemainingRequestUnits = remainingBurst.max(BigDecimal(0)),
+            burstRemainingRequestUnits = remainingBurst,
             resolvedPartitionFootprint = resolvedPartitionFootprint
           )
         )
@@ -366,17 +476,20 @@ object TableStage1:
                                 burstState: BurstState,
                                 admittedSample: => AdmittedRequestSample
                               ): Stage1Decision =
-      val hotOverage =
-        config.maxWriteRequestUnitsPerSecondPerPartition.map { limit =>
-          partitionOverage(usageState.writeUnitsByPartition, resolvedPartitionFootprint, limit)
-        }.getOrElse(BigDecimal(0))
+      val adaptiveRelief =
+        adaptiveReliefFor(
+          currentlyUsedByPartition = usageState.writeUnitsByPartition,
+          resolvedPartitionFootprint = resolvedPartitionFootprint,
+          baselineLimit = config.maxWriteRequestUnitsPerSecondPerPartition,
+          adaptiveLimit = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
+        )
 
       val wholeOverage =
         config.maxWriteRequestUnitsPerSecond.map { limit =>
           wholeResourceOverage(usageState.writeUnits, throughputDemand, limit)
         }.getOrElse(BigDecimal(0))
 
-      val requiredBurst = hotOverage.max(wholeOverage)
+      val requiredBurst = adaptiveRelief.remainingHotPartitionOverage.max(wholeOverage)
       val burstAvailable = burstState.availableFor(DynamoDbThroughputDimension.Write)
 
       if requiredBurst > 0 && burstAvailable < requiredBurst then
@@ -385,13 +498,14 @@ object TableStage1:
           dimension = DynamoDbThroughputDimension.Write,
           throughputDemand = throughputDemand,
           reason =
-            if hotOverage > 0 then hotPartitionReason(DynamoDbThroughputDimension.Write)
+            if adaptiveRelief.remainingHotPartitionOverage > 0 then hotPartitionReason(DynamoDbThroughputDimension.Write)
             else wholeResourceReason(DynamoDbThroughputDimension.Write),
+          adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
           burstAvailableRequestUnits = burstAvailable,
           resolvedPartitionFootprint = resolvedPartitionFootprint
         )
       else
-        val remainingBurst = burstAvailable - requiredBurst
+        val remainingBurst = (burstAvailable - requiredBurst).max(BigDecimal(0))
         Admitted(
           request = request,
           sample = admittedSample,
@@ -399,9 +513,11 @@ object TableStage1:
             request = request,
             dimension = DynamoDbThroughputDimension.Write,
             throughputDemand = throughputDemand,
-            admissionMode = admissionModeFor(requiredBurst),
+            admissionMode = admissionModeFor(adaptiveRelief.consumedRequestUnits, requiredBurst),
+            adaptiveConsumedRequestUnits = adaptiveRelief.consumedRequestUnits,
+            adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
             burstConsumedRequestUnits = requiredBurst,
-            burstRemainingRequestUnits = remainingBurst.max(BigDecimal(0)),
+            burstRemainingRequestUnits = remainingBurst,
             resolvedPartitionFootprint = resolvedPartitionFootprint
           )
         )

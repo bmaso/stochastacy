@@ -252,4 +252,93 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
 
       missingThroughputError.getMessage should include("initialTableReadBurstRequestUnits without tableMaxReadRequestUnitsPerSecond")
     }
+
+    "accept optional adaptive-capacity config for the table and configured GSIs" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map.empty,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index")
+          ),
+          hotPartitionModel = Some(
+            DynamoDbTable.HotPartitionModel(
+              tablePartitionCount = 8,
+              tablePerPartitionMaxReadRequestUnitsPerSecond = Some(BigDecimal(2)),
+              tablePerPartitionMaxWriteRequestUnitsPerSecond = Some(BigDecimal(1)),
+              globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal("0.5"))
+            )
+          ),
+          adaptiveCapacityModel = Some(
+            DynamoDbTable.AdaptiveCapacityModel(
+              tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond = Some(BigDecimal(4)),
+              tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond = Some(BigDecimal(2)),
+              globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal(1))
+            )
+          )
+        )
+
+      config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond) shouldBe Some(BigDecimal(4))
+      config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond) shouldBe Some(BigDecimal(2))
+      config.adaptiveCapacityModel.map(_.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond) shouldBe Some(
+        Map("status-index" -> BigDecimal(1))
+      )
+    }
+
+    "reject adaptive-capacity config for unknown GSIs or invalid baseline relationships" in {
+      val unknownIndexError =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+            useCaseBehaviors = Map.empty,
+            adaptiveCapacityModel = Some(
+              DynamoDbTable.AdaptiveCapacityModel(
+                globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond = Map("missing-index" -> BigDecimal(1))
+              )
+            )
+          )
+        }
+
+      unknownIndexError.getMessage should include("Adaptive-capacity config references unknown global secondary indexes")
+
+      val missingBaselineError =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+            useCaseBehaviors = Map.empty,
+            adaptiveCapacityModel = Some(
+              DynamoDbTable.AdaptiveCapacityModel(
+                tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond = Some(BigDecimal(2))
+              )
+            )
+          )
+        }
+
+      missingBaselineError.getMessage should include("tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond without a table read hot-partition baseline")
+
+      val belowBaselineError =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+            useCaseBehaviors = Map.empty,
+            hotPartitionModel = Some(
+              DynamoDbTable.HotPartitionModel(
+                tablePartitionCount = 4,
+                tablePerPartitionMaxReadRequestUnitsPerSecond = Some(BigDecimal(2))
+              )
+            ),
+            adaptiveCapacityModel = Some(
+              DynamoDbTable.AdaptiveCapacityModel(
+                tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond = Some(BigDecimal(1))
+              )
+            )
+          )
+        }
+
+      belowBaselineError.getMessage should include("requires table read adaptive max")
+    }
   }
