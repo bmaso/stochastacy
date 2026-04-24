@@ -167,6 +167,39 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
       config.hotPartitionModel.map(_.globalSecondaryIndexPartitionCounts) shouldBe Some(Map("status-index" -> 4))
     }
 
+    "accept optional dynamic partition-topology config for the table and configured GSIs" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map.empty,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index")
+          ),
+          dynamicPartitionTopologyModel = Some(
+            DynamoDbTable.DynamicPartitionTopologyModel(
+              tableInitialPartitionCount = 2,
+              globalSecondaryIndexInitialPartitionCounts = Map("status-index" -> 3),
+              tableStorageSplitThresholdBytes = Some(1024L),
+              globalSecondaryIndexStorageSplitThresholdBytes = Map("status-index" -> 2048L),
+              tableThroughputGrowthSplitThresholdRequestUnitsPerSecond = Some(BigDecimal(5)),
+              tableWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond = Some(BigDecimal(4)),
+              globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond = Map("status-index" -> BigDecimal(3)),
+              heatSplitSustainWindowSeconds = 2,
+              tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition = Some(BigDecimal(2)),
+              tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+              globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition = Map("status-index" -> BigDecimal("0.5")),
+              maxTablePartitionCount = Some(6),
+              maxGlobalSecondaryIndexPartitionCounts = Map("status-index" -> 5)
+            )
+          )
+        )
+
+      config.dynamicPartitionTopologyModel.map(_.tableInitialPartitionCount) shouldBe Some(2)
+      config.dynamicPartitionTopologyModel.map(_.globalSecondaryIndexInitialPartitionCounts) shouldBe Some(Map("status-index" -> 3))
+      config.dynamicPartitionTopologyModel.map(_.maxTablePartitionCount) shouldBe Some(Some(6))
+    }
+
     "reject hot-partition config for unknown global secondary indexes" in {
       val error =
         the[IllegalArgumentException] thrownBy {
@@ -185,6 +218,36 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
 
       error.getMessage should include("Hot-partition config references unknown global secondary indexes")
       error.getMessage should include("missing-index")
+    }
+
+    "reject dynamic partition-topology config for unknown global secondary indexes or invalid maxima" in {
+      val unknownIndexError =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+            useCaseBehaviors = Map.empty,
+            dynamicPartitionTopologyModel = Some(
+              DynamoDbTable.DynamicPartitionTopologyModel(
+                tableInitialPartitionCount = 2,
+                globalSecondaryIndexInitialPartitionCounts = Map("missing-index" -> 3)
+              )
+            )
+          )
+        }
+
+      unknownIndexError.getMessage should include("Dynamic partition-topology config references unknown global secondary indexes")
+      unknownIndexError.getMessage should include("missing-index")
+
+      val invalidMaxError =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.DynamicPartitionTopologyModel(
+            tableInitialPartitionCount = 4,
+            maxTablePartitionCount = Some(3)
+          )
+        }
+
+      invalidMaxError.getMessage should include("maxTablePartitionCount must be >= tableInitialPartitionCount")
     }
 
     "accept optional burst-capacity config for the table and configured GSIs" in {

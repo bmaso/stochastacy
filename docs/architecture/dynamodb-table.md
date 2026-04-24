@@ -72,14 +72,14 @@ In phase-3 slice 1:
 
 In phase-3 slice 2:
 
-- hot partitions are now modeled with a fixed partition topology for the duration of a simulation run
+- hot partitions are now modeled with a partition topology known to the admission layer
 - the sampler returns logical partition access rather than concrete partition ids
 - `TableStage1` resolves that logical access into concrete partition footprints at admission time
 - per-partition hot-partition limits now sit alongside the slice-1 whole-resource hard checks
 - `Query` may now be modeled as single-partition or multi-partition access
 - `Scan` is modeled as all-partitions access
 - LSI reads share the base table partition topology and hot-partition enforcement
-- dynamic partition splitting and repartitioning remain deferred
+- dynamic partition splitting and repartitioning remained deferred at this slice
 
 In phase-3 slice 3:
 
@@ -110,7 +110,20 @@ In phase-3 slice 4:
   - adaptive-backed admission
   - burst-backed admission
   - adaptive-and-burst-backed admission
-- item isolation and dynamic partition topology remain deferred
+
+In phase-3 slice 5:
+
+- `TableStage1` now owns a time-varying partition topology snapshot for the table or index branch it admits
+- logical partition access is resolved against the topology active at the current simulated tick
+- topology changes are applied only at tick boundaries
+- topology growth is modeled heuristically from AWS-documented trigger categories:
+  - storage growth
+  - throughput growth
+  - sustained heat
+- topology changes are reported as stage-1 telemetry events
+- the current model grows partition counts and rehashes logical access; it does not model explicit physical split locations
+- LSIs continue to share the base-table topology model at the admission layer
+- item isolation remains deferred
 
 The intent is to keep graph construction safe and coherent. A caller should not need to manually wire table writes into separate public index components in order to obtain valid DynamoDB-like behavior.
 
@@ -119,10 +132,11 @@ The intent is to keep graph construction safe and coherent. A caller should not 
 In the full `Table` component, requests now flow through several conceptual layers before reaching `TableStage4`:
 
 1. Request admission and shaping in `TableStage1`
-2. Fixed-topology hot-partition resolution and enforcement
+2. Topology-aware partition resolution and hot-partition enforcement
 3. Same-tick adaptive-capacity redistribution
 4. Burst-backed admission using retained unused throughput
-5. Data-plane storage execution in `TableStage4`
+5. Tick-boundary topology evolution
+6. Data-plane storage execution in `TableStage4`
 
 That storage layer should itself be internally composed of:
 

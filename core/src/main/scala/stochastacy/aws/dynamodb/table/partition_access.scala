@@ -30,6 +30,15 @@ final case class ResolvedPartitionFootprint(
     "partition demand values must be non-negative"
   )
 
+final case class PartitionTopologySnapshot(
+                                            partitionCount: Int,
+                                            version: Long,
+                                            effectiveFromTick: Long
+                                          ):
+  require(partitionCount > 0, s"partitionCount must be positive, got $partitionCount")
+  require(version >= 0L, s"version must be non-negative, got $version")
+  require(effectiveFromTick >= 0L, s"effectiveFromTick must be non-negative, got $effectiveFromTick")
+
 private[table] object PartitionAccessResolver:
 
   def validateOperationAccess(request: stochastacy.aws.dynamodb.DynamoDBRequest, access: LogicalPartitionAccess): Unit =
@@ -71,9 +80,25 @@ private[table] object PartitionAccessResolver:
                throughputDemand: BigDecimal,
                partitionCount: Int
              ): ResolvedPartitionFootprint =
-    require(partitionCount > 0, s"partitionCount must be positive, got $partitionCount")
+    resolve(
+      access = access,
+      throughputDemand = throughputDemand,
+      topology = PartitionTopologySnapshot(
+        partitionCount = partitionCount,
+        version = 0L,
+        effectiveFromTick = 0L
+      )
+    )
 
+  def resolve(
+               access: LogicalPartitionAccess,
+               throughputDemand: BigDecimal,
+               topology: PartitionTopologySnapshot
+             ): ResolvedPartitionFootprint =
     import LogicalPartitionAccess.*
+
+    val partitionCount = topology.partitionCount
+    require(partitionCount > 0, s"partitionCount must be positive, got $partitionCount")
 
     val partitionDemandById: SortedMap[Int, BigDecimal] =
       access match

@@ -2,7 +2,7 @@ package stochastacy.aws.dynamodb
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.table.{DynamoDbTarget, LogicalPartitionAccess, ReadConsistency, ResolvedPartitionFootprint, Stage1AdmissionMode, Stage1MetricEvent, Stage4MetricEvent, TableMetricEvent}
+import stochastacy.aws.dynamodb.table.{DynamoDbTarget, LogicalPartitionAccess, ReadConsistency, ResolvedPartitionFootprint, Stage1AdmissionMode, Stage1MetricEvent, Stage4MetricEvent, TableMetricEvent, TopologyChangeReason, TopologyScope}
 import scala.collection.immutable.SortedMap
 import stochastacy.sim.SimTime
 
@@ -118,10 +118,20 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
           adaptiveAvailableRequestUnits = BigDecimal(0),
           burstConsumedRequestUnits = BigDecimal(0),
           burstRemainingRequestUnits = BigDecimal(300),
+          topologyPartitionCount = 1,
           resolvedPartitionFootprint = ResolvedPartitionFootprint(
             totalPartitionCount = 1,
             partitionDemandById = SortedMap(0 -> BigDecimal(1))
           )
+        )
+      val topologyMetric: TableMetricEvent =
+        Stage1MetricEvent.TopologyChanged(
+          eventTime = SimTime.of(9L),
+          usecase = "topology-change",
+          scope = TopologyScope.Table,
+          reason = TopologyChangeReason.ThroughputGrowth,
+          previousPartitionCount = 1,
+          newPartitionCount = 2
         )
       val observedMetric: TableMetricEvent =
         Stage4MetricEvent.GetItemObserved(
@@ -130,8 +140,10 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
         )
 
       admittedMetric shouldBe a[TableMetricEvent]
+      topologyMetric shouldBe a[TableMetricEvent]
       observedMetric shouldBe a[TableMetricEvent]
       admittedMetric shouldBe a[Stage1MetricEvent.RequestAdmitted]
+      topologyMetric shouldBe a[Stage1MetricEvent.TopologyChanged]
       observedMetric shouldBe a[Stage4MetricEvent.GetItemObserved]
     }
   }

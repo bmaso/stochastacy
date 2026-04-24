@@ -14,6 +14,15 @@ enum Stage1AdmissionMode:
   case BurstBacked
   case AdaptiveAndBurstBacked
 
+enum TopologyScope:
+  case Table
+  case GlobalSecondaryIndex(indexName: String)
+
+enum TopologyChangeReason:
+  case StorageGrowth
+  case ThroughputGrowth
+  case SustainedHeat
+
 object Stage1MetricEvent:
 
   final case class RequestAdmitted(
@@ -28,6 +37,7 @@ object Stage1MetricEvent:
                                     adaptiveAvailableRequestUnits: BigDecimal,
                                     burstConsumedRequestUnits: BigDecimal,
                                     burstRemainingRequestUnits: BigDecimal,
+                                    topologyPartitionCount: Int,
                                     resolvedPartitionFootprint: ResolvedPartitionFootprint
                                   ) extends Stage1MetricEvent
 
@@ -41,5 +51,15 @@ object Stage1MetricEvent:
                                      reason: DynamoDbThrottleReason,
                                      adaptiveAvailableRequestUnits: BigDecimal,
                                      burstAvailableRequestUnits: BigDecimal,
+                                     topologyPartitionCount: Int,
                                      resolvedPartitionFootprint: ResolvedPartitionFootprint
                                    ) extends Stage1MetricEvent
+
+  final case class TopologyChanged(
+                                    eventTime: SimTime,
+                                    usecase: Any,
+                                    scope: TopologyScope,
+                                    reason: TopologyChangeReason,
+                                    previousPartitionCount: Int,
+                                    newPartitionCount: Int
+                                  ) extends Stage1MetricEvent

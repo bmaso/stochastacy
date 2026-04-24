@@ -935,6 +935,45 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
       metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.totalPartitionCount } shouldBe Vector(2)
     }
+
+    "evolve table topology over time and expose topology-change metrics through the composed table component" in {
+      val movingKey = keyForPartition(partitionCount = 2, partitionId = 1)
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 8192L),
+          useCaseBehaviors = Map(
+            "moving-read" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey(movingKey))
+          ),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          dynamicPartitionTopologyModel = Some(
+            DynamoDbTable.DynamicPartitionTopologyModel(
+              tableInitialPartitionCount = 1,
+              tableThroughputGrowthSplitThresholdRequestUnitsPerSecond = Some(BigDecimal(1)),
+              maxTablePartitionCount = Some(2)
+            )
+          )
+        )
+
+      val (_, resourceFuture, metricsFuture) =
+        runComponent(
+          Source(
+            Vector[TimedElement[DynamoDBRequest]](
+              GetItemRequest(eventTime = SimTime.of(1L), usecase = "moving-read"),
+              GetItemRequest(eventTime = SimTime.of(2L), usecase = "moving-read")
+            )
+          ),
+          config
+        )
+
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics = Await.result(metricsFuture, 3.seconds)
+
+      resources.collect { case _: DynamoDbConsumptionEvent => 1 } should not be empty
+      metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => (metric.reason, metric.previousPartitionCount, metric.newPartitionCount) } shouldBe
+        Vector((TopologyChangeReason.ThroughputGrowth, 1, 2))
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.topologyPartitionCount } shouldBe Vector(1, 2)
+    }
   }
 
   private def indexedConfig(): DynamoDbTable.Config =
@@ -1083,3 +1122,11 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
 
     if keysByPartition.size < 2 then fail("Unable to find keys for different partitions")
     else (keysByPartition(0)._2.head, keysByPartition(1)._2.head)
+
+  private def keyForPartition(partitionCount: Int, partitionId: Int): String =
+    (0 until 10_000)
+      .map(i => s"component-key-$i")
+      .find { token =>
+        PartitionAccessResolver.resolve(SingleLogicalPartitionKey(token), BigDecimal(1), partitionCount).partitionDemandById.head._1 == partitionId
+      }
+      .getOrElse(fail(s"Unable to find key for partition $partitionId with partitionCount=$partitionCount"))

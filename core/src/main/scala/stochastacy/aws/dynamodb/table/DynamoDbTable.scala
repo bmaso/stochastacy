@@ -84,6 +84,65 @@ object DynamoDbTable:
       "globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond values must be positive"
     )
 
+  final case class DynamicPartitionTopologyModel(
+                                                  enabled: Boolean = true,
+                                                  tableInitialPartitionCount: Int,
+                                                  globalSecondaryIndexInitialPartitionCounts: Map[String, Int] = Map.empty,
+                                                  tableStorageSplitThresholdBytes: Option[Long] = None,
+                                                  globalSecondaryIndexStorageSplitThresholdBytes: Map[String, Long] = Map.empty,
+                                                  tableThroughputGrowthSplitThresholdRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                                  tableWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                                  globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond: Map[String, BigDecimal] = Map.empty,
+                                                  heatSplitSustainWindowSeconds: Int = 1,
+                                                  tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
+                                                  tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
+                                                  globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition: Map[String, BigDecimal] = Map.empty,
+                                                  maxTablePartitionCount: Option[Int] = None,
+                                                  maxGlobalSecondaryIndexPartitionCounts: Map[String, Int] = Map.empty
+                                                ):
+    require(tableInitialPartitionCount > 0, s"tableInitialPartitionCount must be positive, got $tableInitialPartitionCount")
+    require(
+      globalSecondaryIndexInitialPartitionCounts.values.forall(_ > 0),
+      "globalSecondaryIndexInitialPartitionCounts values must be positive"
+    )
+    require(tableStorageSplitThresholdBytes.forall(_ > 0L), "tableStorageSplitThresholdBytes must be positive when defined")
+    require(
+      globalSecondaryIndexStorageSplitThresholdBytes.values.forall(_ > 0L),
+      "globalSecondaryIndexStorageSplitThresholdBytes values must be positive"
+    )
+    require(
+      tableThroughputGrowthSplitThresholdRequestUnitsPerSecond.forall(_ > 0),
+      "tableThroughputGrowthSplitThresholdRequestUnitsPerSecond must be positive when defined"
+    )
+    require(
+      tableWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond.forall(_ > 0),
+      "tableWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond must be positive when defined"
+    )
+    require(
+      globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond.values.forall(_ > 0),
+      "globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond values must be positive"
+    )
+    require(heatSplitSustainWindowSeconds > 0, s"heatSplitSustainWindowSeconds must be positive, got $heatSplitSustainWindowSeconds")
+    require(
+      tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.forall(_ > 0),
+      "tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition must be positive when defined"
+    )
+    require(
+      tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition.forall(_ > 0),
+      "tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition must be positive when defined"
+    )
+    require(
+      globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.values.forall(_ > 0),
+      "globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition values must be positive"
+    )
+    require(maxTablePartitionCount.forall(_ >= tableInitialPartitionCount), "maxTablePartitionCount must be >= tableInitialPartitionCount when defined")
+    require(
+      maxGlobalSecondaryIndexPartitionCounts.forall { case (indexName, maxCount) =>
+        maxCount >= globalSecondaryIndexInitialPartitionCounts.getOrElse(indexName, tableInitialPartitionCount)
+      },
+      "maxGlobalSecondaryIndexPartitionCounts values must be >= their initial partition counts"
+    )
+
   final case class GlobalSecondaryIndexDefinition(
                                                    indexName: String,
                                                    stateModel: TableState = SummaryTableState(0L, 0L)
@@ -104,7 +163,8 @@ object DynamoDbTable:
                            onDemandMaxThroughput: OnDemandMaxThroughput = OnDemandMaxThroughput(),
                            hotPartitionModel: Option[HotPartitionModel] = None,
                            burstCapacityModel: Option[BurstCapacityModel] = None,
-                           adaptiveCapacityModel: Option[AdaptiveCapacityModel] = None
+                           adaptiveCapacityModel: Option[AdaptiveCapacityModel] = None,
+                           dynamicPartitionTopologyModel: Option[DynamicPartitionTopologyModel] = None
                          ):
     Config.validate(this)
 
@@ -189,6 +249,20 @@ object DynamoDbTable:
       require(
         unknownGlobalSecondaryIndexNamesForAdaptive.isEmpty,
         s"Adaptive-capacity config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNamesForAdaptive.mkString(", ")}"
+      )
+
+      val unknownGlobalSecondaryIndexNamesForDynamicTopology =
+        config.dynamicPartitionTopologyModel.toVector.flatMap { model =>
+          (model.globalSecondaryIndexInitialPartitionCounts.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
+            (model.globalSecondaryIndexStorageSplitThresholdBytes.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
+            (model.globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
+            (model.globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet) ++
+            (model.maxGlobalSecondaryIndexPartitionCounts.keySet -- config.globalSecondaryIndexes.map(_.indexName).toSet)
+        }.distinct.sorted
+
+      require(
+        unknownGlobalSecondaryIndexNamesForDynamicTopology.isEmpty,
+        s"Dynamic partition-topology config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNamesForDynamicTopology.mkString(", ")}"
       )
 
       config.adaptiveCapacityModel.foreach { adaptive =>
@@ -369,7 +443,8 @@ object DynamoDbTable:
                            adaptiveMaxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal],
                            burstRetentionWindowSeconds: Option[Int],
                            initialReadBurstRequestUnits: Option[BigDecimal],
-                           initialWriteBurstRequestUnits: Option[BigDecimal]
+                           initialWriteBurstRequestUnits: Option[BigDecimal],
+                           dynamicPartitionTopologyConfig: Option[TableStage1.DynamicPartitionTopologyConfig]
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -399,7 +474,8 @@ object DynamoDbTable:
             adaptiveMaxWriteRequestUnitsPerSecondPerPartition = adaptiveMaxWriteRequestUnitsPerSecondPerPartition,
             burstRetentionWindowSeconds = burstRetentionWindowSeconds,
             initialReadBurstRequestUnits = initialReadBurstRequestUnits,
-            initialWriteBurstRequestUnits = initialWriteBurstRequestUnits
+            initialWriteBurstRequestUnits = initialWriteBurstRequestUnits,
+            dynamicPartitionTopologyConfig = dynamicPartitionTopologyConfig
           )
         )
       )
@@ -460,7 +536,24 @@ object DynamoDbTable:
           config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond),
         burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
         initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
-        initialWriteBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableWriteBurstRequestUnits)
+        initialWriteBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableWriteBurstRequestUnits),
+        dynamicPartitionTopologyConfig =
+          config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+            TableStage1.DynamicPartitionTopologyConfig(
+              initialPartitionCount = dynamic.tableInitialPartitionCount,
+              storageSplitThresholdBytes = dynamic.tableStorageSplitThresholdBytes,
+              readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                dynamic.tableThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+              writeThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                dynamic.tableWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+              heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+              readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                dynamic.tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+              writeHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                dynamic.tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+              maxPartitionCount = dynamic.maxTablePartitionCount
+            )
+          }
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -646,7 +739,23 @@ object DynamoDbTable:
               burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
               initialReadBurstRequestUnits =
                 config.burstCapacityModel.flatMap(_.initialGlobalSecondaryIndexReadBurstRequestUnits.get(indexDefinition.indexName)),
-              initialWriteBurstRequestUnits = None
+              initialWriteBurstRequestUnits = None,
+              dynamicPartitionTopologyConfig =
+                config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+                  TableStage1.DynamicPartitionTopologyConfig(
+                    initialPartitionCount =
+                      dynamic.globalSecondaryIndexInitialPartitionCounts.getOrElse(indexDefinition.indexName, dynamic.tableInitialPartitionCount),
+                    storageSplitThresholdBytes = dynamic.globalSecondaryIndexStorageSplitThresholdBytes.get(indexDefinition.indexName),
+                    readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                      dynamic.globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond.get(indexDefinition.indexName),
+                    writeThroughputGrowthSplitThresholdRequestUnitsPerSecond = None,
+                    heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+                    readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                      dynamic.globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.get(indexDefinition.indexName),
+                    writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
+                    maxPartitionCount = dynamic.maxGlobalSecondaryIndexPartitionCounts.get(indexDefinition.indexName)
+                  )
+                }
             )
           )
 
@@ -691,7 +800,22 @@ object DynamoDbTable:
               adaptiveMaxWriteRequestUnitsPerSecondPerPartition = None,
               burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
               initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
-              initialWriteBurstRequestUnits = None
+              initialWriteBurstRequestUnits = None,
+              dynamicPartitionTopologyConfig =
+                config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+                  TableStage1.DynamicPartitionTopologyConfig(
+                    initialPartitionCount = dynamic.tableInitialPartitionCount,
+                    storageSplitThresholdBytes = dynamic.tableStorageSplitThresholdBytes,
+                    readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                      dynamic.tableThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+                    writeThroughputGrowthSplitThresholdRequestUnitsPerSecond = None,
+                    heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+                    readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                      dynamic.tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                    writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
+                    maxPartitionCount = dynamic.maxTablePartitionCount
+                  )
+                }
             )
           )
 

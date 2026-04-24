@@ -752,6 +752,82 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
         BigDecimal(1)
       )
     }
+
+    "grow topology at tick boundaries from throughput pressure and resolve later requests against the new topology" in {
+      val movingKey = keyForPartition(partitionCount = 2, partitionId = 1)
+
+      val (_, responseFuture, metricFuture) =
+        runStage(
+          Source(
+            Vector[TimedElement[DynamoDBRequest]](
+              GetItemRequest(eventTime = SimTime.of(1L), usecase = "moving-read"),
+              GetItemRequest(eventTime = SimTime.of(2L), usecase = "moving-read")
+            )
+          ),
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map(
+              "moving-read" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey(movingKey))
+            ),
+            stateModel = FixedTableState(1L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            dynamicPartitionTopologyConfig = Some(
+              TableStage1.DynamicPartitionTopologyConfig(
+                initialPartitionCount = 1,
+                readThroughputGrowthSplitThresholdRequestUnitsPerSecond = Some(BigDecimal(1)),
+                maxPartitionCount = Some(2)
+              )
+            )
+          )
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      responses shouldBe empty
+      metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => (metric.reason, metric.previousPartitionCount, metric.newPartitionCount) } shouldBe
+        Vector((TopologyChangeReason.ThroughputGrowth, 1, 2))
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.topologyPartitionCount } shouldBe Vector(1, 2)
+      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.resolvedPartitionFootprint.partitionDemandById.head._1 } shouldBe Vector(0, 1)
+    }
+
+    "grow topology from sustained heat only after the full sustain window" in {
+      val hotKey = SingleLogicalPartitionKey("sustained-heat")
+
+      val (_, _, metricFuture) =
+        runStage(
+          Source(
+            Vector[TimedElement[DynamoDBRequest]](
+              GetItemRequest(eventTime = SimTime.of(1L), usecase = "hot-read"),
+              GetItemRequest(eventTime = SimTime.of(2L), usecase = "hot-read"),
+              GetItemRequest(eventTime = SimTime.of(3L), usecase = "hot-read")
+            )
+          ),
+          TableStage1.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map("hot-read" -> FixedHitGetItemBehavior(8192L, hotKey)),
+            stateModel = FixedTableState(1L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            dynamicPartitionTopologyConfig = Some(
+              TableStage1.DynamicPartitionTopologyConfig(
+                initialPartitionCount = 1,
+                heatSplitSustainWindowSeconds = 2,
+                readHeatSplitTriggerRequestUnitsPerSecondPerPartition = Some(BigDecimal(2)),
+                maxPartitionCount = Some(2)
+              )
+            )
+          )
+        )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => metric.reason } shouldBe Vector(
+        TopologyChangeReason.SustainedHeat
+      )
+      metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => metric.eventTime } shouldBe Vector(SimTime.of(3L))
+    }
   }
 
   private def runStage(
@@ -844,3 +920,11 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
 
     if keysByPartition.size < 2 then fail("Unable to find keys for different partitions")
     else (keysByPartition(0)._2.head, keysByPartition(1)._2.head)
+
+  private def keyForPartition(partitionCount: Int, partitionId: Int): String =
+    (0 until 10_000)
+      .map(i => s"partition-key-$i")
+      .find { token =>
+        PartitionAccessResolver.resolve(SingleLogicalPartitionKey(token), BigDecimal(1), partitionCount).partitionDemandById.head._1 == partitionId
+      }
+      .getOrElse(fail(s"Unable to find key for partition $partitionId with partitionCount=$partitionCount"))

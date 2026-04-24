@@ -47,6 +47,37 @@ class PartitionAccessResolverSpec extends AnyWordSpec with should.Matchers:
       footprint.partitionDemandById.keySet shouldBe Set(0, 1, 2)
       footprint.partitionDemandById.values.toSet shouldBe Set(BigDecimal(2))
     }
+
+    "resolve against the active topology snapshot rather than a fixed partition count" in {
+      val movedKey =
+        (0 until 10_000)
+          .map(i => s"moving-key-$i")
+          .find { token =>
+            PartitionAccessResolver
+              .resolve(SingleLogicalPartitionKey(token), BigDecimal(1), partitionCount = 2)
+              .partitionDemandById
+              .head
+              ._1 == 1
+          }
+          .getOrElse(fail("Unable to find key that moves under a larger topology"))
+
+      val before =
+        PartitionAccessResolver.resolve(
+          SingleLogicalPartitionKey(movedKey),
+          BigDecimal(1),
+          PartitionTopologySnapshot(partitionCount = 1, version = 0L, effectiveFromTick = 0L)
+        )
+      val after =
+        PartitionAccessResolver.resolve(
+          SingleLogicalPartitionKey(movedKey),
+          BigDecimal(1),
+          PartitionTopologySnapshot(partitionCount = 2, version = 1L, effectiveFromTick = 2L)
+        )
+
+      before.totalPartitionCount shouldBe 1
+      after.totalPartitionCount shouldBe 2
+      before.partitionDemandById.head._1 should not be after.partitionDemandById.head._1
+    }
   }
 
   private def twoKeysForSamePartition(partitionCount: Int): (String, String) =

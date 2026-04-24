@@ -9,6 +9,37 @@ import stochastacy.sim.ticks
 
 object TableStage1:
 
+  final case class DynamicPartitionTopologyConfig(
+                                                   initialPartitionCount: Int,
+                                                   storageSplitThresholdBytes: Option[Long] = None,
+                                                   readThroughputGrowthSplitThresholdRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                                   writeThroughputGrowthSplitThresholdRequestUnitsPerSecond: Option[BigDecimal] = None,
+                                                   heatSplitSustainWindowSeconds: Int = 1,
+                                                   readHeatSplitTriggerRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
+                                                   writeHeatSplitTriggerRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
+                                                   maxPartitionCount: Option[Int] = None
+                                                 ):
+    require(initialPartitionCount > 0, s"initialPartitionCount must be positive, got $initialPartitionCount")
+    require(storageSplitThresholdBytes.forall(_ > 0L), "storageSplitThresholdBytes must be positive when defined")
+    require(
+      readThroughputGrowthSplitThresholdRequestUnitsPerSecond.forall(_ > 0),
+      "readThroughputGrowthSplitThresholdRequestUnitsPerSecond must be positive when defined"
+    )
+    require(
+      writeThroughputGrowthSplitThresholdRequestUnitsPerSecond.forall(_ > 0),
+      "writeThroughputGrowthSplitThresholdRequestUnitsPerSecond must be positive when defined"
+    )
+    require(heatSplitSustainWindowSeconds > 0, s"heatSplitSustainWindowSeconds must be positive, got $heatSplitSustainWindowSeconds")
+    require(
+      readHeatSplitTriggerRequestUnitsPerSecondPerPartition.forall(_ > 0),
+      "readHeatSplitTriggerRequestUnitsPerSecondPerPartition must be positive when defined"
+    )
+    require(
+      writeHeatSplitTriggerRequestUnitsPerSecondPerPartition.forall(_ > 0),
+      "writeHeatSplitTriggerRequestUnitsPerSecondPerPartition must be positive when defined"
+    )
+    require(maxPartitionCount.forall(_ >= initialPartitionCount), "maxPartitionCount must be >= initialPartitionCount when defined")
+
   final case class Config(
                            executionTarget: DynamoDbTarget,
                            admissionTarget: DynamoDbTarget,
@@ -24,7 +55,8 @@ object TableStage1:
                            adaptiveMaxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal] = None,
                            burstRetentionWindowSeconds: Option[Int] = None,
                            initialReadBurstRequestUnits: Option[BigDecimal] = None,
-                           initialWriteBurstRequestUnits: Option[BigDecimal] = None
+                           initialWriteBurstRequestUnits: Option[BigDecimal] = None,
+                           dynamicPartitionTopologyConfig: Option[DynamicPartitionTopologyConfig] = None
                          ):
     require(maxReadRequestUnitsPerSecond.forall(_ > 0), "maxReadRequestUnitsPerSecond must be positive when defined")
     require(maxWriteRequestUnitsPerSecond.forall(_ > 0), "maxWriteRequestUnitsPerSecond must be positive when defined")
@@ -81,6 +113,10 @@ object TableStage1:
     require(
       initialWriteBurstRequestUnits.isEmpty || maxWriteRequestUnitsPerSecond.isDefined,
       "initialWriteBurstRequestUnits requires maxWriteRequestUnitsPerSecond to be defined"
+    )
+    require(
+      dynamicPartitionTopologyConfig.forall(_.initialPartitionCount > 0),
+      "dynamicPartitionTopologyConfig.initialPartitionCount must be positive when defined"
     )
 
   private final case class BurstReservoir(
@@ -186,6 +222,16 @@ object TableStage1:
                                            remainingHotPartitionOverage: BigDecimal
                                          )
 
+  private final case class DynamicTopologyHeatState(
+                                                     consecutiveReadHotTicks: Int = 0,
+                                                     consecutiveWriteHotTicks: Int = 0
+                                                   )
+
+  private final case class DynamicTopologyState(
+                                                 snapshot: PartitionTopologySnapshot,
+                                                 heatState: DynamicTopologyHeatState = DynamicTopologyHeatState()
+                                               )
+
   def componentOf(
                    config: Config
                  ): Graph[
@@ -212,6 +258,7 @@ object TableStage1:
                             adaptiveAvailableRequestUnits: BigDecimal,
                             burstConsumedRequestUnits: BigDecimal,
                             burstRemainingRequestUnits: BigDecimal,
+                            topologyPartitionCount: Int,
                             resolvedPartitionFootprint: ResolvedPartitionFootprint
                           ): Stage1MetricEvent.RequestAdmitted =
       Stage1MetricEvent.RequestAdmitted(
@@ -226,6 +273,7 @@ object TableStage1:
         adaptiveAvailableRequestUnits = adaptiveAvailableRequestUnits,
         burstConsumedRequestUnits = burstConsumedRequestUnits,
         burstRemainingRequestUnits = burstRemainingRequestUnits,
+        topologyPartitionCount = topologyPartitionCount,
         resolvedPartitionFootprint = resolvedPartitionFootprint
       )
 
@@ -236,6 +284,7 @@ object TableStage1:
                            reason: DynamoDbThrottleReason,
                            adaptiveAvailableRequestUnits: BigDecimal,
                            burstAvailableRequestUnits: BigDecimal,
+                           topologyPartitionCount: Int,
                            resolvedPartitionFootprint: ResolvedPartitionFootprint
                          ): Stage1MetricEvent.RequestThrottled =
       Stage1MetricEvent.RequestThrottled(
@@ -248,7 +297,26 @@ object TableStage1:
         reason = reason,
         adaptiveAvailableRequestUnits = adaptiveAvailableRequestUnits,
         burstAvailableRequestUnits = burstAvailableRequestUnits,
+        topologyPartitionCount = topologyPartitionCount,
         resolvedPartitionFootprint = resolvedPartitionFootprint
+      )
+
+    def topologyMetricFor(
+                           eventTime: SimTime,
+                           previousPartitionCount: Int,
+                           newPartitionCount: Int,
+                           reason: TopologyChangeReason
+                         ): Stage1MetricEvent.TopologyChanged =
+      Stage1MetricEvent.TopologyChanged(
+        eventTime = eventTime,
+        usecase = "topology-change",
+        scope =
+          config.executionTarget match
+            case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) => TopologyScope.GlobalSecondaryIndex(indexName)
+            case _ => TopologyScope.Table,
+        reason = reason,
+        previousPartitionCount = previousPartitionCount,
+        newPartitionCount = newPartitionCount
       )
 
     def throttled(
@@ -258,6 +326,7 @@ object TableStage1:
                    reason: DynamoDbThrottleReason,
                    adaptiveAvailableRequestUnits: BigDecimal,
                    burstAvailableRequestUnits: BigDecimal,
+                   topologyPartitionCount: Int,
                    resolvedPartitionFootprint: ResolvedPartitionFootprint
                  ): Throttled =
       Throttled(
@@ -277,6 +346,7 @@ object TableStage1:
           reason,
           adaptiveAvailableRequestUnits,
           burstAvailableRequestUnits,
+          topologyPartitionCount,
           resolvedPartitionFootprint
         )
       )
@@ -306,12 +376,13 @@ object TableStage1:
     def resolveFootprint(
                           request: DynamoDBRequest,
                           sampledOutcome: Any,
-                          throughputDemand: BigDecimal
+                          throughputDemand: BigDecimal,
+                          topologySnapshot: PartitionTopologySnapshot
                         ): ResolvedPartitionFootprint =
       PartitionAccessResolver.resolve(
         access = logicalAccessFor(request, sampledOutcome),
         throughputDemand = throughputDemand,
-        partitionCount = config.partitionCount
+        topology = topologySnapshot
       )
 
     def hotPartitionReason(dimension: DynamoDbThroughputDimension): DynamoDbThrottleReason =
@@ -414,6 +485,95 @@ object TableStage1:
         case None =>
           AdaptiveRelief(BigDecimal(0), BigDecimal(0), BigDecimal(0))
 
+    def maybeGrowTopology(
+                           eventTime: SimTime,
+                           usageState: PerTickUsageState,
+                           topologyState: DynamicTopologyState,
+                           stateModel: TableState
+                         ): (DynamicTopologyState, Vector[Stage1MetricEvent.TopologyChanged]) =
+      config.dynamicPartitionTopologyConfig match
+        case None => (topologyState, Vector.empty)
+        case Some(dynamicConfig) =>
+          val currentCount = topologyState.snapshot.partitionCount
+          val maxCount = dynamicConfig.maxPartitionCount.getOrElse(Int.MaxValue)
+
+          if currentCount >= maxCount then
+            val nextHeat =
+              DynamicTopologyHeatState(
+                consecutiveReadHotTicks = nextHotTickCount(
+                  usageState.readUnitsByPartition.values.maxOption.getOrElse(BigDecimal(0)),
+                  dynamicConfig.readHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                  topologyState.heatState.consecutiveReadHotTicks
+                ),
+                consecutiveWriteHotTicks = nextHotTickCount(
+                  usageState.writeUnitsByPartition.values.maxOption.getOrElse(BigDecimal(0)),
+                  dynamicConfig.writeHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                  topologyState.heatState.consecutiveWriteHotTicks
+                )
+              )
+            (topologyState.copy(heatState = nextHeat), Vector.empty)
+          else
+            val nextHeat =
+              DynamicTopologyHeatState(
+                consecutiveReadHotTicks = nextHotTickCount(
+                  usageState.readUnitsByPartition.values.maxOption.getOrElse(BigDecimal(0)),
+                  dynamicConfig.readHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                  topologyState.heatState.consecutiveReadHotTicks
+                ),
+                consecutiveWriteHotTicks = nextHotTickCount(
+                  usageState.writeUnitsByPartition.values.maxOption.getOrElse(BigDecimal(0)),
+                  dynamicConfig.writeHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                  topologyState.heatState.consecutiveWriteHotTicks
+                )
+              )
+
+            val growthReason =
+              if nextHeat.consecutiveReadHotTicks >= dynamicConfig.heatSplitSustainWindowSeconds ||
+                nextHeat.consecutiveWriteHotTicks >= dynamicConfig.heatSplitSustainWindowSeconds
+              then Some(TopologyChangeReason.SustainedHeat)
+              else if dynamicConfig.readThroughputGrowthSplitThresholdRequestUnitsPerSecond.exists(threshold =>
+                  usageState.readUnits > BigDecimal(currentCount) * threshold
+                ) || dynamicConfig.writeThroughputGrowthSplitThresholdRequestUnitsPerSecond.exists(threshold =>
+                  usageState.writeUnits > BigDecimal(currentCount) * threshold
+                )
+              then Some(TopologyChangeReason.ThroughputGrowth)
+              else if dynamicConfig.storageSplitThresholdBytes.exists(threshold =>
+                  BigDecimal(stateModel.totalItemBytes) > BigDecimal(currentCount) * BigDecimal(threshold)
+                )
+              then Some(TopologyChangeReason.StorageGrowth)
+              else None
+
+            growthReason match
+              case Some(reason) =>
+                val newCount = (currentCount + 1).min(maxCount)
+                if newCount == currentCount then
+                  (topologyState.copy(heatState = nextHeat), Vector.empty)
+                else
+                  (
+                    topologyState.copy(
+                      snapshot = topologyState.snapshot.copy(
+                        partitionCount = newCount,
+                        version = topologyState.snapshot.version + 1L,
+                        effectiveFromTick = eventTime.ticks
+                      ),
+                      heatState =
+                        if reason == TopologyChangeReason.SustainedHeat then DynamicTopologyHeatState()
+                        else nextHeat
+                    ),
+                    Vector(topologyMetricFor(eventTime, currentCount, newCount, reason))
+                  )
+              case None =>
+                (topologyState.copy(heatState = nextHeat), Vector.empty)
+
+    def nextHotTickCount(
+                          observedPeakByPartition: BigDecimal,
+                          trigger: Option[BigDecimal],
+                          previousCount: Int
+                        ): Int =
+      trigger match
+        case Some(threshold) if observedPeakByPartition >= threshold => previousCount + 1
+        case _ => 0
+
     def evaluateReadAdmission(
                                request: DynamoDBRequest,
                                throughputDemand: BigDecimal,
@@ -448,6 +608,7 @@ object TableStage1:
             else wholeResourceReason(DynamoDbThroughputDimension.Read),
           adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
           burstAvailableRequestUnits = burstAvailable,
+          topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
           resolvedPartitionFootprint = resolvedPartitionFootprint
         )
       else
@@ -464,6 +625,7 @@ object TableStage1:
             adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
             burstConsumedRequestUnits = requiredBurst,
             burstRemainingRequestUnits = remainingBurst,
+            topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
             resolvedPartitionFootprint = resolvedPartitionFootprint
           )
         )
@@ -502,6 +664,7 @@ object TableStage1:
             else wholeResourceReason(DynamoDbThroughputDimension.Write),
           adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
           burstAvailableRequestUnits = burstAvailable,
+          topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
           resolvedPartitionFootprint = resolvedPartitionFootprint
         )
       else
@@ -518,16 +681,22 @@ object TableStage1:
             adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
             burstConsumedRequestUnits = requiredBurst,
             burstRemainingRequestUnits = remainingBurst,
+            topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
             resolvedPartitionFootprint = resolvedPartitionFootprint
           )
         )
 
-    def decide(request: DynamoDBRequest, usageState: PerTickUsageState, burstState: BurstState): Stage1Decision =
+    def decide(
+                request: DynamoDBRequest,
+                usageState: PerTickUsageState,
+                burstState: BurstState,
+                topologySnapshot: PartitionTopologySnapshot
+              ): Stage1Decision =
       request match
         case r: GetItemRequest =>
           val sample = samplerFor(r).getItem(r, config.stateModel)
           val demand = TableThroughputMath.readCapacityUnitsFor(sample.itemBytes, config.readConsistency)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand)
+          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
           evaluateReadAdmission(
             request = r,
             throughputDemand = demand,
@@ -549,7 +718,7 @@ object TableStage1:
         case r: QueryRequest =>
           val sample = samplerFor(r).query(r, config.stateModel)
           val demand = TableThroughputMath.readCapacityUnitsFor(Some(sample.evaluatedBytes), r.readConsistency)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand)
+          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
           evaluateReadAdmission(
             request = r,
             throughputDemand = demand,
@@ -570,7 +739,7 @@ object TableStage1:
         case r: ScanRequest =>
           val sample = samplerFor(r).scan(r, config.stateModel)
           val demand = TableThroughputMath.readCapacityUnitsFor(Some(sample.evaluatedBytes), r.readConsistency)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand)
+          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
           evaluateReadAdmission(
             request = r,
             throughputDemand = demand,
@@ -591,7 +760,7 @@ object TableStage1:
         case r: PutItemRequest =>
           val sample = samplerFor(r).putItem(r, config.stateModel)
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.writtenItemBytes)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand)
+          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
           evaluateWriteAdmission(
             request = r,
             throughputDemand = demand,
@@ -612,7 +781,7 @@ object TableStage1:
         case r: UpdateItemRequest =>
           val sample = samplerFor(r).updateItem(r, config.stateModel)
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.writtenItemBytes)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand)
+          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
           evaluateWriteAdmission(
             request = r,
             throughputDemand = demand,
@@ -633,7 +802,7 @@ object TableStage1:
         case r: DeleteItemRequest =>
           val sample = samplerFor(r).deleteItem(r, config.stateModel)
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.deletedItemBytes.getOrElse(0L))
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand)
+          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
           evaluateWriteAdmission(
             request = r,
             throughputDemand = demand,
@@ -658,7 +827,7 @@ object TableStage1:
       import GraphDSL.Implicits.*
 
       val decisionFlow = b.add(
-        Flow[TimedElement[DynamoDBRequest]].statefulMapConcat[TimedElement[Stage1Decision]] { () =>
+        Flow[TimedElement[DynamoDBRequest]].statefulMapConcat[TimedElement[TimedEvent]] { () =>
           var currentTick: Option[Long] = None
           var usageState = PerTickUsageState()
           var burstState =
@@ -676,25 +845,50 @@ object TableStage1:
                   config.initialWriteBurstRequestUnits
                 )
             )
+          var topologyState =
+            DynamicTopologyState(
+              snapshot =
+                PartitionTopologySnapshot(
+                  partitionCount =
+                    config.dynamicPartitionTopologyConfig.map(_.initialPartitionCount).getOrElse(config.partitionCount),
+                  version = 0L,
+                  effectiveFromTick = 0L
+                )
+            )
 
-          def advanceTo(tick: Long): Unit =
+          def advanceTo(eventTime: SimTime): Vector[TimedEvent] =
+            val tick = eventTime.ticks
             if currentTick.forall(_ != tick) then
-              if currentTick.nonEmpty then
-                burstState = burstState.replenish(usageState, config)
+              val topologyEvents =
+                if currentTick.nonEmpty then
+                  burstState = burstState.replenish(usageState, config)
+                  val (nextTopologyState, events) =
+                    maybeGrowTopology(
+                      eventTime = eventTime,
+                      usageState = usageState,
+                      topologyState = topologyState,
+                      stateModel = config.stateModel
+                    )
+                  topologyState = nextTopologyState
+                  usageState = PerTickUsageState()
+                  events
+                else
+                  Vector.empty
               currentTick = Some(tick)
-              usageState = PerTickUsageState()
+              topologyEvents
+            else
+              Vector.empty
 
           {
             case t: TimedControlEvent.Tick =>
-              advanceTo(t.eventTime.ticks)
-              List(t)
+              advanceTo(t.eventTime) :+ t
 
             case t: TimedControlEvent =>
               List(t)
 
             case request: DynamoDBRequest =>
-              advanceTo(request.eventTime.ticks)
-              val decision = decide(request, usageState, burstState)
+              val boundaryEvents = advanceTo(request.eventTime)
+              val decision = decide(request, usageState, burstState, topologyState.snapshot)
               decision match
                 case admitted: Admitted =>
                   burstState = burstState.consume(
@@ -707,9 +901,9 @@ object TableStage1:
                       case DynamoDbThroughputDimension.Read => config.maxReadRequestUnitsPerSecond
                       case DynamoDbThroughputDimension.Write => config.maxWriteRequestUnitsPerSecond
                   )
-                  List(admitted)
+                  boundaryEvents :+ admitted
                 case throttled: Throttled =>
-                  List(throttled)
+                  boundaryEvents :+ throttled
           }
         }
       )
@@ -719,6 +913,7 @@ object TableStage1:
       val admittedFlow = b.add(
         Flow[TimedEvent].mapConcat[TimedElement[AdmittedRequestSample]] {
           case t: TimedControlEvent => List(t)
+          case _: Stage1MetricEvent.TopologyChanged => Nil
           case Admitted(_, sample, _) => List(sample)
           case _: Throttled => Nil
         }
@@ -727,6 +922,7 @@ object TableStage1:
       val responseFlow = b.add(
         Flow[TimedEvent].mapConcat[TimedElement[DynamoDBResponse]] {
           case t: TimedControlEvent => List(t)
+          case _: Stage1MetricEvent.TopologyChanged => Nil
           case Throttled(_, response, _) => List(response)
           case _: Admitted => Nil
         }
@@ -735,6 +931,7 @@ object TableStage1:
       val metricFlow = b.add(
         Flow[TimedEvent].mapConcat[TimedElement[Stage1MetricEvent]] {
           case t: TimedControlEvent => List(t)
+          case metric: Stage1MetricEvent.TopologyChanged => List(metric)
           case Admitted(_, _, metric) => List(metric)
           case Throttled(_, _, metric) => List(metric)
         }
