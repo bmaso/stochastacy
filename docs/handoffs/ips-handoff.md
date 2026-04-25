@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-04-21
+Last updated: 2026-04-24 (slice 8b added)
 
 ## Current Position
 
@@ -12,6 +12,15 @@ The project currently centers on a DynamoDB simulator that supports:
 - a public `DynamoDbTable` table-and-indexes component
 - internal GSI and LSI execution units
 - internal index-state ownership and write propagation
+- a first-class `TableStage1` admission layer in front of `TableStage4`
+- on-demand hard admission checks for base-table reads and writes plus GSI reads and writes
+- hot-partition enforcement against table and index partition topology
+- burst-capacity admission rescue
+- adaptive-capacity admission rescue
+- dynamic partition-topology evolution at tick boundaries
+- GSI write back-pressure for base-table writes
+- projection-aware GSI-vs-LSI read execution
+- bytes-oriented, plan-driven index maintenance for admitted writes
 - raw DynamoDB consumption events
 - additive usage aggregation
 - time-based storage usage aggregation from timed event streams
@@ -23,15 +32,18 @@ The project currently centers on a DynamoDB simulator that supports:
 - a provisioned Grafana dashboard
 - overall demo reporting plus per-GSI consumed read/write reporting
 
-The current runnable demo surface is the order-tracking phase-2 demo.
+The current runnable demo surface is still the order-tracking phase-2 demo, but the simulator frontier has moved into phase 3 and is currently implemented through slice 8.
 
 ## Architectural Direction
 
 The implemented design direction is:
 
 - `TableStage4` remains the storage-facing execution core
+- `TableStage1` is the upstream admission, shaping, and throttling layer
 - `DynamoDbTable` is the public table-and-indexes graph component
 - GSIs and LSIs are represented as internal execution units, not separately wired public graph components
+- admission-time sampled request envelopes carry the information downstream that later stages need, rather than resampling in `TableStage4`
+- on-demand behavior is still the primary planning axis; provisioned-mode fidelity is still intentionally secondary
 - additive request-priced usage is folded into `DynamoDbUsageTotals`
 - duration-based storage usage is derived from timed consumption streams into `DynamoDbTimeBasedUsageTotals`
 - pricing is computed downstream from those two usage layers
@@ -45,8 +57,10 @@ The implemented design direction is:
 ## Key Code Locations
 
 - [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala)
+- [TableStage1.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage1.scala)
 - [TableStage4.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage4.scala)
 - [state.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/state.scala)
+- [table_metric_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/table_metric_events.scala)
 - [UseCaseSampler.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/UseCaseSampler.scala)
 - [op_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/op_events.scala)
 - [consumption_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/consumption_events.scala)
@@ -69,7 +83,10 @@ The implemented design direction is:
 - [TableStage4DeleteItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4DeleteItemSpec.scala)
 - [TableStage4QuerySpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4QuerySpec.scala)
 - [TableStage4ScanSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4ScanSpec.scala)
+- [TableStage1Spec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage1Spec.scala)
 - [DynamoDbTableComponentSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableComponentSpec.scala)
+- [DynamoDbTableConfigSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableConfigSpec.scala)
+- [DynamoDbRequestSurfaceSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/DynamoDbRequestSurfaceSpec.scala)
 - [TableStage4PricingIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/pricing/TableStage4PricingIntegrationSpec.scala)
 - [OrderTrackingPhase2DemoRunnerSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPhase2DemoRunnerSpec.scala)
 - [OrderTrackingPostgresBridgeSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPostgresBridgeSpec.scala)
@@ -86,19 +103,140 @@ The current demo workflow is:
 
 ## Recommended Next Work
 
-The main remaining work is:
+The main remaining work has moved into phase 3:
 
-1. phase-2 demo finalization and polish on top of the current indexed-table demo path
-2. any remaining documentation cleanup needed to reflect the now-canonical phase-2 demo surface
-3. the narrow PartiQL parser/classification stub if that phase-2 item is still desired
+1. implement `slice 8b: TableStage1 decomposition` — extract sampling and shaping into a separate upstream stage
+2. implement `slice 9: LSI item-collection constraints`
+3. implement `slice 10: global tables and cross-Region replication`
+4. keep the runnable phase-2 demo stable while the simulator internals advance
+5. perform any targeted documentation cleanup needed so the public docs stop implying phase 2 is still the simulator frontier
 
-Treat [ips-phase2.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/roadmaps/ips-phase2.md) as the canonical planning anchor for ongoing simulator work.
+Treat [ips-phase3.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/roadmaps/ips-phase3.md) as the canonical planning anchor for ongoing simulator work, and use [dynamodb-table.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/architecture/dynamodb-table.md) as the design-boundary reference for where new slice logic should live.
+
+## Upcoming Phase-3 Slices
+
+### Slice 8b: TableStage1 Decomposition
+
+This should be treated as the immediate next implementation target.
+
+The goal is to extract sampling, throughput-demand calculation, partition resolution, and index-maintenance-plan derivation out of `TableStage1` into a separate upstream sampling-and-shaping stage. This is a structural refactoring that does not change observable simulator behavior. It decomposes the `TableStage1` monolith into sequential pipeline stages with narrower responsibilities so that slice 9 and later slices have a clean place to add new write-path logic.
+
+The decomposition target is:
+
+- a new upstream sampling-and-shaping stage that takes raw `DynamoDBRequest` elements, invokes the use-case sampler, computes throughput demand, resolves partition footprints, derives the index-maintenance plan for writes, and emits a fully-shaped request envelope
+- a slimmed-down `TableStage1` that receives shaped envelopes and applies the admission sequence without re-invoking the sampler or re-deriving the maintenance plan
+
+Key constraints:
+
+- no observable behavior change
+- all existing tests must remain green
+- timed-event protocol invariants must be preserved across the new stage boundary
+- topology snapshots are owned by the admission stage and made available to the sampling stage
+
+### Slice 9: LSI Item-Collection Constraints
+
+This should be treated as the next concrete implementation target after slice 8b is stable.
+
+The intended goal is to model the DynamoDB behavior that only shows up when a table has one or more LSIs and a single partition-key value accumulates too much combined table-plus-LSI data. The important realism target is the LSI-specific item-collection ceiling, not a general rewrite of storage accounting.
+
+Guidance for this slice:
+
+- keep the project single-Region; do not mix replication work into this slice
+- keep `DynamoDbTable` as the public resource boundary; do not expose LSIs as separate public components
+- preserve the existing split where `TableStage1` handles admission concerns and `TableStage4` handles storage semantics and downstream physical effects
+- model the constraint at the item-collection level keyed by the base-table partition key, because LSIs share the table partition key
+- make the limit depend on the combined size of base-table items plus corresponding LSI entries for that partition-key value
+- prefer deterministic, bytes-oriented accounting over heuristic “risk of exceeding” guesses when the simulator already has enough data to decide
+- allow writes that shrink the affected item collection even if earlier growth would have pushed the collection near or over the limit
+- avoid turning this into a full per-item exact replica of DynamoDB internals; summary-oriented state is still the project norm unless exactness is required for the limit check
+
+Likely implementation shape:
+
+- extend table state so the simulator can track item-collection byte totals per base partition-key value when LSIs exist
+- derive the effect of a write on that item collection from the same memorialized write-maintenance plan that now drives precise index maintenance
+- reject or fail writes whose resulting item collection would exceed the configured LSI-aware limit
+- emit a response and telemetry shape that makes it obvious the failure came from the LSI item-collection rule rather than ordinary throughput throttling
+- ensure deletes and shrinking updates reduce the tracked item-collection footprint correctly
+
+Likely code touchpoints:
+
+- [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala)
+- [TableStage1.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage1.scala)
+- [TableStage4.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage4.scala)
+- [state.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/state.scala)
+- [op_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/op_events.scala)
+- [consumption_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/consumption_events.scala)
+- [table_metric_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/table_metric_events.scala)
+
+The most important wobble-avoidance note is that slice 9 should stay tightly scoped to LSI-specific item-collection realism. It should not quietly become:
+
+- generic write validation for unrelated table limits
+- a new provisioned-throughput slice
+- global-table groundwork unless that groundwork is directly reusable and low-risk
+- a broad redesign of how mutable state is stored
+
+Recommended test focus:
+
+- writes that grow one item collection past the limit fail
+- writes against a different partition-key value still succeed
+- deletes and shrinking updates remain allowed
+- LSI projection width changes the item-collection outcome when it should
+- failures are distinguishable from ordinary throttling in both responses and metric events
+- existing slice-8 write-maintenance and projection-aware behaviors remain intact
+
+### Slice 10: Global Tables And Cross-Region Replication
+
+This slice should begin only after slice 9 is stable, because it introduces a new simulator dimension rather than refining the existing single-Region table.
+
+The intended goal is to model a single logical DynamoDB table with multiple regional replicas, where a write accepted in one Region causes downstream replicated work in other Regions with corresponding billing and transfer effects. The simulator should capture the shape of replication and per-replica consequences without requiring a perfect reproduction of every operational detail of DynamoDB global tables.
+
+Guidance for this slice:
+
+- keep the public abstraction centered on one logical table resource, not a bag of loosely coupled per-Region tables that the caller wires manually
+- make one Region the ingress point for each client write, then derive replica-side propagation from that admitted write
+- preserve the local table pipeline inside each Region as much as possible instead of forking a second implementation path for replicas
+- treat replicated writes as downstream consequences of a successful origin write, not as independent user requests
+- keep billing and consumption accounting explicit per Region so later reporting layers can aggregate or break down by replica
+- separate replication transport/propagation effects from base-table admission logic so single-Region behavior stays understandable
+- avoid overcommitting to undocumented conflict-resolution internals; if a heuristic is required, document it plainly
+
+Likely implementation shape:
+
+- introduce a global-table configuration layer that names participating Regions and replica topology
+- reuse the existing table-and-indexes execution model per Region, with additional replication envelopes or events emitted after successful origin writes
+- emit replicated write consumption for each replica Region, plus any cross-Region transfer usage the simulator chooses to model
+- decide explicitly whether replica-side writes should reuse the same index-maintenance plan bytes from the origin Region or re-derive them from replica state; the project will likely wobble if this is left implicit
+- keep replica application ordering deterministic within the simulated tick model
+- leave advanced conflict-resolution nuance, failover orchestration, and account-crossing behavior as documented non-goals unless the implementation genuinely needs them
+
+Likely code touchpoints:
+
+- [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala)
+- [TableStage4.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage4.scala)
+- [state.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/state.scala)
+- [op_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/op_events.scala)
+- [consumption_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/consumption_events.scala)
+- [DynamoDbUsageTotals.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/usage/DynamoDbUsageTotals.scala)
+- [DynamoDbTimeBasedUsageTotals.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/usage/DynamoDbTimeBasedUsageTotals.scala)
+- [DynamoDbPricing.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/pricing/DynamoDbPricing.scala)
+
+The most important wobble-avoidance note is that slice 10 should introduce a clean replication model, not a second unrelated simulator. The next agent should prefer thin new orchestration around existing per-Region table logic over cloning or bypassing the current `DynamoDbTable -> TableStage1 -> TableStage4` flow.
+
+Recommended test focus:
+
+- one origin-region write produces replica-region write effects in every configured replica
+- replica-side index maintenance and consumption align with the already-admitted origin write plan
+- per-Region usage totals and downstream pricing include replicated work in the expected places
+- single-Region tables continue to behave exactly as before when global-table mode is absent
+- ordering and timing of replicated effects stay deterministic within the existing tick model
 
 ## Notes For A Fresh Session
 
 - the mutable table state is intentionally stochastic-summary-oriented, not key-accurate
+- the simulator frontier is phase 3 slice 8, even though the demo surface is still named and organized around phase 2
 - countable usage is priced from totals, while storage-like duration pricing is derived from timed streams
 - raw per-tick records remain the source of truth, while windowed records are derived for reporting and dashboard use
 - per-window values are reporting artifacts, not authoritative billed prices
 - visible per-GSI reporting is for read/write capacity only; storage and cost remain overall-only in the demo
-- if the next session starts with planning work, use the current handoff plus the phase-2 roadmap together rather than relying on older phase-specific demo notes
+- phase-3 slices should continue to be implemented one at a time; do not bundle slice 9 and slice 10 together
+- if the next session starts with planning work, use the current handoff plus the phase-3 roadmap and the DynamoDB table architecture doc rather than relying on older phase-specific demo notes
