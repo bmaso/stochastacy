@@ -126,6 +126,14 @@ trait WriteItemSample:
   def previousItemBytes: Option[Long]
   def logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default")
 
+  /**
+   * The sampler's stochastic estimate of the size in bytes of the LSI-backed item
+   * collection (base item + sum of LSI projected entries) that this write's partition
+   * key falls into, BEFORE this write is applied. Default `0L` means "trivially under
+   * any limit" — fixtures that don't model item collections preserve their behavior.
+   */
+  def currentItemCollectionBytes: Long = 0L
+
   def createdNewItem: Boolean = previousItemBytes.isEmpty
 
   def storageBytesDelta: Long = writtenItemBytes - previousItemBytes.getOrElse(0L)
@@ -139,6 +147,14 @@ trait UpdateItemSample extends WriteItemSample
 trait DeleteItemSample:
   def deletedItemBytes: Option[Long]
   def logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default")
+
+  /**
+   * The sampler's stochastic estimate of the size in bytes of the LSI-backed item
+   * collection (base item + sum of LSI projected entries) that this delete's partition
+   * key falls into, BEFORE the delete is applied. Default `0L` means "trivially under
+   * any limit" — fixtures that don't model item collections preserve their behavior.
+   */
+  def currentItemCollectionBytes: Long = 0L
 
   def deletedExistingItem: Boolean = deletedItemBytes.isDefined
 

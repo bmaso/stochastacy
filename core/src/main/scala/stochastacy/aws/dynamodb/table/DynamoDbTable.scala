@@ -1,7 +1,7 @@
 package stochastacy.aws.dynamodb.table
 
 import org.apache.pekko.NotUsed
-import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL, Merge}
+import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL, Merge, Sink}
 import org.apache.pekko.stream.{FanOutShape2, FanOutShape3, Graph}
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.*
@@ -204,9 +204,20 @@ object DynamoDbTable:
                            hotPartitionModel: Option[HotPartitionModel] = None,
                            burstCapacityModel: Option[BurstCapacityModel] = None,
                            adaptiveCapacityModel: Option[AdaptiveCapacityModel] = None,
-                           dynamicPartitionTopologyModel: Option[DynamicPartitionTopologyModel] = None
+                           dynamicPartitionTopologyModel: Option[DynamicPartitionTopologyModel] = None,
+                           itemCollectionSizeLimitBytes: Option[Long] = None
                          ):
     Config.validate(this)
+
+    /**
+     * The effective per-collection byte limit applied at the storage stage.
+     * Returns `None` when no LSIs are configured (rule does not apply). When LSIs
+     * are configured and `itemCollectionSizeLimitBytes` is `None`, defaults to
+     * 10 GiB to match real DynamoDB.
+     */
+    private[table] def effectiveItemCollectionSizeLimitBytes: Option[Long] =
+      if localSecondaryIndexes.isEmpty then None
+      else itemCollectionSizeLimitBytes.orElse(Some(10L * 1024L * 1024L * 1024L))
 
   object Config:
     private def validate(config: Config): Unit =
@@ -379,6 +390,13 @@ object DynamoDbTable:
             s"Adaptive-capacity config for table '${config.tableName}' requires GSI write adaptive max for '$indexName' ($adaptiveMax) to be >= the GSI write hot-partition baseline ($baseline)"
           )
         }
+      }
+
+      config.itemCollectionSizeLimitBytes.foreach { limit =>
+        require(
+          limit > 0L,
+          s"itemCollectionSizeLimitBytes for table '${config.tableName}' must be positive when defined, got $limit"
+        )
       }
 
   private enum RouteBranch:
@@ -729,7 +747,8 @@ object DynamoDbTable:
                            dynamicPartitionTopologyConfig: Option[TableAdmissionStage.DynamicPartitionTopologyConfig],
                            indexMaintenanceTargets: Vector[TableAdmissionStage.IndexMaintenanceTargetConfig] = Vector.empty,
                            indexMaintenanceRuntimes: Vector[InternalIndexRuntime] = Vector.empty,
-                           gsiWriteScopes: Vector[TableAdmissionStage.GsiWriteScopeConfig] = Vector.empty
+                           gsiWriteScopes: Vector[TableAdmissionStage.GsiWriteScopeConfig] = Vector.empty,
+                           itemCollectionSizeLimitBytes: Option[Long] = None
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -766,7 +785,13 @@ object DynamoDbTable:
           )
         )
       )
-      val storage = b.add(TableStorageStage.componentOfAdmitted(stateModel, indexProjection = indexProjection))
+      val storage = b.add(
+        TableStorageStage.componentOfAdmitted(
+          stateModel = stateModel,
+          indexProjection = indexProjection,
+          itemCollectionSizeLimitBytes = itemCollectionSizeLimitBytes
+        )
+      )
       val throttledResponseFilter = b.add(
         Flow[TimedElement[DynamoDBResponse]].collect[TimedElement[DynamoDBResponse]] {
           case response: DynamoDBResponse => response
@@ -780,10 +805,12 @@ object DynamoDbTable:
       val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
       val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](if indexMaintenanceRuntimes.nonEmpty then 2 else 1))
       val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](if indexMaintenanceRuntimes.nonEmpty then 3 else 2))
-      val admittedBroadcast = b.add(Broadcast[TimedElement[AdmittedRequestSample]](if indexMaintenanceRuntimes.nonEmpty then 2 else 1))
 
-      admission.out0 ~> admittedBroadcast.in
-      admittedBroadcast.out(0) ~> storage.in
+      // The storage stage now sits between admission and index-maintenance: only
+      // writes that pass the item-collection check are forwarded to maintenance via
+      // storage.out3 (validated samples). Rejected writes are absent from out3, so
+      // their maintenance plans never propagate.
+      admission.out0 ~> storage.in
       admission.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
       storage.out0 ~> responseMerge.in(1)
       storage.out1 ~> consumptionMerge.in(0)
@@ -792,9 +819,12 @@ object DynamoDbTable:
 
       if indexMaintenanceRuntimes.nonEmpty then
         val maintenanceStage = b.add(indexMaintenanceGraph(indexMaintenanceRuntimes))
-        admittedBroadcast.out(1) ~> maintenanceStage.in
+        storage.out3 ~> maintenanceStage.in
         maintenanceStage.out0 ~> consumptionMerge.in(1)
         maintenanceStage.out1 ~> metricMerge.in(2)
+      else
+        val ignoreValidatedSamples = b.add(Sink.ignore)
+        storage.out3 ~> ignoreValidatedSamples
 
       new FanOutShape3(
         admission.in,
@@ -855,7 +885,8 @@ object DynamoDbTable:
           },
         indexMaintenanceTargets = indexMaintenanceTargetsFor(config, indexRuntimes),
         indexMaintenanceRuntimes = indexRuntimes,
-        gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes)
+        gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
+        itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes

@@ -98,37 +98,15 @@ Recommended test focus:
 - all existing integration and demo tests pass unchanged
 - the timed-event protocol is preserved across the new stage boundary
 
-### 9. LSI Item-Collection Constraints
+### 9. LSI Item-Collection Constraints (complete)
 
-Add support for the LSI-specific table behaviors that arise from item-collection limits.
+LSI item-collection size limit modeled stochastically rather than via per-key state. Implementation summary:
 
-This slice should extend the realism of the single-Region table model without yet moving into cross-Region replication.
-
-The concrete planning target for this slice is the LSI-only item-collection rule that applies to all table and LSI data sharing the same base-table partition-key value.
-
-Implementation guidance:
-
-- stay explicitly single-Region in this slice
-- keep the current public `DynamoDbTable` resource boundary intact
-- prefer item-collection byte accounting keyed by base-table partition-key value over a generic write-validation layer
-- derive collection growth and shrinkage from the same write-maintenance plan that now drives precise index maintenance
-- distinguish item-collection-limit failures from admission-time throughput throttling
-- preserve the current summary-oriented modeling style except where exact byte deltas are needed to decide whether a write crosses the limit
-
-This slice should aim to make the following outcomes true:
-
-- writes that would grow one LSI-backed item collection beyond the modeled limit fail
-- writes for other partition-key values remain unaffected
-- deletes and shrinking updates still succeed
-- LSI projection size affects item-collection growth when it should
-- existing slice-8 index-maintenance fidelity remains the source of truth for write-side index effects
-
-This slice should not quietly become:
-
-- provisioned-mode work
-- global-table groundwork that materially complicates the single-Region model
-- a broad replacement of the current mutable state approach
-- a full per-item exact storage engine beyond what the limit check actually needs
+- `DynamoDbTable.Config.itemCollectionSizeLimitBytes: Option[Long]` (default 10 GiB when LSIs are configured; rule never runs when no LSIs are configured).
+- The "current size" of a write's item collection is sampler-provided per write via `WriteItemSample.currentItemCollectionBytes` / `DeleteItemSample.currentItemCollectionBytes` (defaults `0L`). No per-key state in the simulator.
+- `TableStorageStage` performs a validate-then-mutate split: per write, computes `current + (baseDelta + sum(LSI plan deltas))` and rejects when total delta is positive AND result exceeds the limit. Rejected writes emit a new top-level `ItemCollectionSizeLimitExceededResponse` and a `StorageMetricEvent.ItemCollectionSizeLimitExceeded` metric; no consumption events, no state mutation, no maintenance propagation.
+- Pipeline rewiring: `TableStorageStage` now sits between admission and the index-maintenance graph. Its new `out3` (validated admitted samples) feeds maintenance so rejected writes never propagate index updates.
+- Shrinking writes/deletes (`totalDelta <= 0`) are always allowed even when current state is anomalously over the limit.
 
 ### 10. Global Tables And Cross-Region Replication
 
@@ -177,4 +155,4 @@ That means the following remain secondary or deferred until the on-demand-mode t
 
 Recommended starting point:
 
-- `slice 9: LSI item-collection constraints` — slice 8b is complete (sampling/shaping extracted into `TableSamplingStage`; topology-driven re-shaping in `TableAdmissionStage` handles the cross-stage tick-boundary case)
+- `slice 10: global tables and cross-Region replication` — slices 8b and 9 are complete. Slice 9 modeled the LSI item-collection size rule stochastically: the use-case sampler provides the per-write "current collection size" estimate, and `TableStorageStage` runs a validate-then-mutate split that rejects growing writes that would push the collection past the configured limit (default 10 GiB when LSIs are configured). No per-key state was introduced.

@@ -1,6 +1,6 @@
 package stochastacy.aws.dynamodb.table
 
-import stochastacy.aws.dynamodb.DynamoDbReadTarget
+import stochastacy.aws.dynamodb.{DynamoDbOperationKind, DynamoDbReadTarget}
 import stochastacy.sim.SimTime
 
 sealed trait StorageMetricEvent extends TableMetricEvent
@@ -185,3 +185,14 @@ object StorageMetricEvent:
                                       usecase: Any,
                                       delta: Long
                                     ) extends StorageMetricEvent
+
+  /** A write was rejected because the resulting LSI-backed item collection would exceed the configured limit. */
+  final case class ItemCollectionSizeLimitExceeded(
+                                                    eventTime: SimTime,
+                                                    usecase: Any,
+                                                    operation: DynamoDbOperationKind,
+                                                    target: DynamoDbTarget,
+                                                    logicalPartitionAccess: LogicalPartitionAccess,
+                                                    resultingCollectionBytes: Long,
+                                                    limitBytes: Long
+                                                  ) extends StorageMetricEvent

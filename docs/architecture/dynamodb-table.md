@@ -176,6 +176,16 @@ In phase-3 slice 8b:
 - topology snapshots are owned by the admission stage and made available to the sampling stage so partition resolution uses the correct topology at the current simulated tick
 - this decomposition does not change any observable simulation behavior; it is a structural refactoring to support cleaner addition of future write-path logic
 
+In phase-3 slice 9:
+
+- the table now models the DynamoDB LSI item-collection-size rule (combined base item bytes plus LSI projected entry bytes for one base partition-key value cannot exceed a configured limit, default 10 GiB)
+- the rule is enforced stochastically via summary state, not via per-key data structures: the use-case sampler provides the per-write "current item-collection bytes" estimate as a field on the write/delete sample
+- `TableStorageStage` performs a validate-then-mutate split: per write, computes `current + (baseDelta + sum(LSI plan deltas))` and rejects when total delta is positive AND the result exceeds the limit
+- shrinking writes (negative or zero total delta) are always allowed even when the current state is anomalously over the limit
+- rejected writes emit a new top-level `ItemCollectionSizeLimitExceededResponse` (distinct from `ThrottledResponse`) and a `StorageMetricEvent.ItemCollectionSizeLimitExceeded` metric; no consumption events accrue, no state is mutated, and no index-maintenance is propagated
+- the storage stage now sits between admission and the index-maintenance graph; its new `out3` (validated admitted samples) feeds maintenance so rejected writes never propagate index updates
+- the rule never runs when no LSIs are configured, regardless of the limit field value
+
 ## Layering
 
 In the full `Table` component, requests now flow through several conceptual layers before reaching `TableStorageStage`:

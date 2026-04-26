@@ -172,3 +172,20 @@ case class ThrottledResponse(
                               dimension: DynamoDbThroughputDimension,
                               reason: DynamoDbThrottleReason
                             ) extends DynamoDBResponse
+
+/**
+ * Emitted when an admitted write would push an LSI-backed item collection past the
+ * configured `itemCollectionSizeLimitBytes`. Distinct from `ThrottledResponse`:
+ * this is a storage-rule validation failure, not a throughput-throttling outcome.
+ *
+ * Real DynamoDB raises `ItemCollectionSizeLimitExceededException` separately from
+ * `ProvisionedThroughputExceededException`; the simulator preserves that distinction.
+ */
+case class ItemCollectionSizeLimitExceededResponse(
+                                                    override val eventTime: SimTime,
+                                                    override val usecase: Any,
+                                                    operation: DynamoDbOperationKind,
+                                                    target: stochastacy.aws.dynamodb.table.DynamoDbTarget,
+                                                    resultingCollectionBytes: Long,
+                                                    limitBytes: Long
+                                                  ) extends DynamoDBResponse

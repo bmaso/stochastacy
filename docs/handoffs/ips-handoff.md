@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-04-26 (slice 8b complete)
+Last updated: 2026-04-26 (slice 9 complete)
 
 ## Current Position
 
@@ -105,12 +105,13 @@ The current demo workflow is:
 
 The main remaining work has moved into phase 3:
 
-1. implement `slice 9: LSI item-collection constraints` — next concrete implementation target
-2. implement `slice 10: global tables and cross-Region replication`
-3. keep the runnable phase-2 demo stable while the simulator internals advance
-4. perform any targeted documentation cleanup needed so the public docs stop implying phase 2 is still the simulator frontier
+1. implement `slice 10: global tables and cross-Region replication` — next concrete implementation target
+2. keep the runnable phase-2 demo stable while the simulator internals advance
+3. perform any targeted documentation cleanup needed so the public docs stop implying phase 2 is still the simulator frontier
 
 Slice 8b (`TableAdmissionStage` decomposition) is complete: sampling and shaping have been extracted into the upstream `TableSamplingStage`, and `TableAdmissionStage` re-resolves a shaped request's footprint and index-maintenance plan when topology evolution at a tick boundary invalidates the memorialized values. `IndexMaintenancePlanDerivation` is the single canonical helper for deriving per-index plans, used by both stages.
+
+Slice 9 (LSI item-collection size limit) is complete: `DynamoDbTable.Config.itemCollectionSizeLimitBytes` (default 10 GiB when LSIs are configured) drives a validate-then-mutate split in `TableStorageStage`. The "current size" of an item collection is sampler-provided per write (`WriteItemSample.currentItemCollectionBytes`, `DeleteItemSample.currentItemCollectionBytes`); no per-key state lives in the simulator. Rejected writes emit a new top-level `ItemCollectionSizeLimitExceededResponse` and a `StorageMetricEvent.ItemCollectionSizeLimitExceeded` metric; no consumption is charged, no state is mutated, and no index maintenance is propagated. The graph wiring now puts `TableStorageStage` between admission and the index-maintenance graph (validated samples flow on its new `out3`).
 
 Treat [ips-phase3.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/roadmaps/ips-phase3.md) as the canonical planning anchor for ongoing simulator work, and use [dynamodb-table.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/architecture/dynamodb-table.md) as the design-boundary reference for where new slice logic should live.
 
@@ -124,56 +125,19 @@ One subtlety: in a linear pipeline, `TableSamplingStage` shapes a request *befor
 
 `IndexMaintenancePlanDerivation` is the canonical single source for plan derivation, used by both `TableSamplingStage` (initial shaping) and `TableAdmissionStage` (post-evolution re-shaping). All 143 core and 38 examples tests pass with no test modifications.
 
-### Slice 9: LSI Item-Collection Constraints
+### Slice 9: LSI Item-Collection Constraints (complete)
 
-This should be treated as the next concrete implementation target after slice 8b is stable.
+LSI-aware item-collection size limit modeled stochastically: the use-case sampler provides the assumed current size of the item collection a write lands in via `WriteItemSample.currentItemCollectionBytes` / `DeleteItemSample.currentItemCollectionBytes` (default `0L`). `TableStorageStage` performs a validate-then-mutate split inside `componentOfAdmitted`: for each write it computes `current + (baseDelta + sum(LSI plan deltas))` and compares to the effective limit. Writes whose resulting collection would exceed the limit AND whose total delta is positive are rejected before any state mutation; rejected writes emit the new `ItemCollectionSizeLimitExceededResponse` (a top-level `DynamoDBResponse` variant, distinct from `ThrottledResponse`) and a `StorageMetricEvent.ItemCollectionSizeLimitExceeded` metric, no consumption events, and crucially do **not** propagate index-maintenance — `TableStorageStage` now sits between admission and the index-maintenance graph, with its new `out3` (validated admitted samples) feeding maintenance.
 
-The intended goal is to model the DynamoDB behavior that only shows up when a table has one or more LSIs and a single partition-key value accumulates too much combined table-plus-LSI data. The important realism target is the LSI-specific item-collection ceiling, not a general rewrite of storage accounting.
+The configuration entry point is `DynamoDbTable.Config.itemCollectionSizeLimitBytes: Option[Long]`. When LSIs are configured and the field is `None`, the limit defaults to 10 GiB; when no LSIs are configured the rule never runs regardless of the field value. Shrinking writes (negative or zero `totalDelta`) are always allowed even when current state is anomalously over the limit. No per-key state was added to the simulator — bounded summary-oriented modeling preserved.
 
-Guidance for this slice:
+Code touchpoints:
 
-- keep the project single-Region; do not mix replication work into this slice
-- keep `DynamoDbTable` as the public resource boundary; do not expose LSIs as separate public components
-- preserve the existing split where `TableAdmissionStage` handles admission concerns and `TableStorageStage` handles storage semantics and downstream physical effects
-- model the constraint at the item-collection level keyed by the base-table partition key, because LSIs share the table partition key
-- make the limit depend on the combined size of base-table items plus corresponding LSI entries for that partition-key value
-- prefer deterministic, bytes-oriented accounting over heuristic “risk of exceeding” guesses when the simulator already has enough data to decide
-- allow writes that shrink the affected item collection even if earlier growth would have pushed the collection near or over the limit
-- avoid turning this into a full per-item exact replica of DynamoDB internals; summary-oriented state is still the project norm unless exactness is required for the limit check
-
-Likely implementation shape:
-
-- extend table state so the simulator can track item-collection byte totals per base partition-key value when LSIs exist
-- derive the effect of a write on that item collection from the same memorialized write-maintenance plan that now drives precise index maintenance
-- reject or fail writes whose resulting item collection would exceed the configured LSI-aware limit
-- emit a response and telemetry shape that makes it obvious the failure came from the LSI item-collection rule rather than ordinary throughput throttling
-- ensure deletes and shrinking updates reduce the tracked item-collection footprint correctly
-
-Likely code touchpoints:
-
-- [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala)
-- [TableAdmissionStage.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableAdmissionStage.scala)
-- [TableStorageStage.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStorageStage.scala)
-- [state.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/state.scala)
-- [op_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/op_events.scala)
-- [consumption_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/consumption_events.scala)
-- [table_metric_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/table_metric_events.scala)
-
-The most important wobble-avoidance note is that slice 9 should stay tightly scoped to LSI-specific item-collection realism. It should not quietly become:
-
-- generic write validation for unrelated table limits
-- a new provisioned-throughput slice
-- global-table groundwork unless that groundwork is directly reusable and low-risk
-- a broad redesign of how mutable state is stored
-
-Recommended test focus:
-
-- writes that grow one item collection past the limit fail
-- writes against a different partition-key value still succeed
-- deletes and shrinking updates remain allowed
-- LSI projection width changes the item-collection outcome when it should
-- failures are distinguishable from ordinary throttling in both responses and metric events
-- existing slice-8 write-maintenance and projection-aware behaviors remain intact
+- [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala) — config field, validation, graph rewiring (admission → storage → maintenance)
+- [TableStorageStage.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStorageStage.scala) — `StorageOutcome` / `StorageRejection`, `validateItemCollectionLimit`, new `out3` for validated samples
+- [op_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/op_events.scala) — `ItemCollectionSizeLimitExceededResponse`
+- [metric_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/metric_events.scala) — `StorageMetricEvent.ItemCollectionSizeLimitExceeded`
+- [sample.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/sample.scala) — `currentItemCollectionBytes` on the write/delete sample traits (default `0L`)
 
 ### Slice 10: Global Tables And Cross-Region Replication
 
