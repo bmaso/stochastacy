@@ -1,6 +1,6 @@
 package stochastacy.aws.dynamodb.table
 
-final case class Stage4ConsumptionTotals(
+final case class StorageConsumptionTotals(
                                           readCapacityUnits: BigDecimal = BigDecimal(0),
                                           writeCapacityUnits: BigDecimal = BigDecimal(0),
                                           storageBytesRead: Long = 0L,
@@ -11,11 +11,11 @@ final case class Stage4ConsumptionTotals(
                                           consistencies: Set[ReadConsistency] = Set.empty
                                         )
 
-object Stage4ConsumptionTotals:
+object StorageConsumptionTotals:
   def accumulate(
-                  acc: Stage4ConsumptionTotals,
+                  acc: StorageConsumptionTotals,
                   evt: DynamoDbConsumptionEvent
-                ): Stage4ConsumptionTotals =
+                ): StorageConsumptionTotals =
     evt match
       case DynamoDbConsumptionEvent.ReadCapacityConsumed(_, _, target, units, consistency) =>
         acc.copy(

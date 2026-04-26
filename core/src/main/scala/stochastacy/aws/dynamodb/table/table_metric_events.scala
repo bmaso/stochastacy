@@ -6,9 +6,9 @@ import stochastacy.sim.SimTime
 
 trait TableMetricEvent extends MetricEvent
 
-sealed trait Stage1MetricEvent extends TableMetricEvent
+sealed trait AdmissionMetricEvent extends TableMetricEvent
 
-enum Stage1AdmissionMode:
+enum AdmissionMode:
   case Normal
   case AdaptiveBacked
   case BurstBacked
@@ -23,7 +23,7 @@ enum TopologyChangeReason:
   case ThroughputGrowth
   case SustainedHeat
 
-object Stage1MetricEvent:
+object AdmissionMetricEvent:
 
   final case class RequestAdmitted(
                                     eventTime: SimTime,
@@ -32,7 +32,7 @@ object Stage1MetricEvent:
                                     target: DynamoDbTarget,
                                     dimension: DynamoDbThroughputDimension,
                                     throughputDemand: BigDecimal,
-                                    admissionMode: Stage1AdmissionMode,
+                                    admissionMode: AdmissionMode,
                                     adaptiveConsumedRequestUnits: BigDecimal,
                                     adaptiveAvailableRequestUnits: BigDecimal,
                                     burstConsumedRequestUnits: BigDecimal,
@@ -40,7 +40,7 @@ object Stage1MetricEvent:
                                     topologyPartitionCount: Int,
                                     resolvedPartitionFootprint: ResolvedPartitionFootprint,
                                     indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
-                                  ) extends Stage1MetricEvent
+                                  ) extends AdmissionMetricEvent
 
   final case class RequestThrottled(
                                      eventTime: SimTime,
@@ -55,7 +55,7 @@ object Stage1MetricEvent:
                                      topologyPartitionCount: Int,
                                      resolvedPartitionFootprint: ResolvedPartitionFootprint,
                                      indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
-                                   ) extends Stage1MetricEvent
+                                   ) extends AdmissionMetricEvent
 
   final case class TopologyChanged(
                                     eventTime: SimTime,
@@ -64,4 +64,4 @@ object Stage1MetricEvent:
                                     reason: TopologyChangeReason,
                                     previousPartitionCount: Int,
                                     newPartitionCount: Int
-                                  ) extends Stage1MetricEvent
+                                  ) extends AdmissionMetricEvent

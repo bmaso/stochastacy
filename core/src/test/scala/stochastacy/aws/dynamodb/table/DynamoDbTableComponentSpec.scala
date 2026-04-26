@@ -49,8 +49,8 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       resources.collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.bytes }.sum shouldBe 1536L
       resources.collect { case evt: DynamoDbConsumptionEvent => evt.target }.toSet shouldBe Set(DynamoDbTarget.Table("orders"))
 
-      metrics.collect { case _: Stage4MetricEvent.GetItemObserved => 1 }.size shouldBe 3
-      metrics.collect { case Stage4MetricEvent.GetItemReturned(_, _, bytes) => bytes }.sum shouldBe 1536L
+      metrics.collect { case _: StorageMetricEvent.GetItemObserved => 1 }.size shouldBe 3
+      metrics.collect { case StorageMetricEvent.GetItemReturned(_, _, bytes) => bytes }.sum shouldBe 1536L
     }
 
     "preserve current PutItem behavior for a table-only configuration" in {
@@ -87,8 +87,8 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       resources.collect { case evt: DynamoDbConsumptionEvent.StorageBytesDelta => evt.bytesDelta }.sum shouldBe 1024L
       resources.collect { case evt: DynamoDbConsumptionEvent => evt.target }.toSet shouldBe Set(DynamoDbTarget.Table("orders"))
 
-      metrics.collect { case _: Stage4MetricEvent.PutItemObserved => 1 }.size shouldBe 1
-      metrics.collect { case Stage4MetricEvent.TableBytesChanged(_, _, delta) => delta }.sum shouldBe 1024L
+      metrics.collect { case _: StorageMetricEvent.PutItemObserved => 1 }.size shouldBe 1
+      metrics.collect { case StorageMetricEvent.TableBytesChanged(_, _, delta) => delta }.sum shouldBe 1024L
     }
 
     "propagate successful writes into configured index state and emit index-targeted write consumption" in {
@@ -142,7 +142,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 1024L
       )
 
-      metrics.collect { case _: Stage4MetricEvent.PutItemObserved => 1 }.size shouldBe 1
+      metrics.collect { case _: StorageMetricEvent.PutItemObserved => 1 }.size shouldBe 1
     }
 
     "apply projection-sized downstream index maintenance for inserted entries" in {
@@ -188,7 +188,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 384L,
         DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 128L
       )
-      metrics.collect { case evt: Stage4MetricEvent.IndexEntryInserted => evt.target -> evt.bytes }.toSet shouldBe Set(
+      metrics.collect { case evt: StorageMetricEvent.IndexEntryInserted => evt.target -> evt.bytes }.toSet shouldBe Set(
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 384L,
         DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 128L
       )
@@ -274,7 +274,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       statusIndexState.itemCount shouldBe 1L
       statusIndexState.totalItemBytes shouldBe 128L
       resources.collect { case evt: DynamoDbConsumptionEvent.WriteCapacityConsumed if evt.target == DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") => evt.units } shouldBe empty
-      metrics.collect { case evt: Stage4MetricEvent.IndexEntryUnchanged => evt.target } shouldBe Vector(
+      metrics.collect { case evt: StorageMetricEvent.IndexEntryUnchanged => evt.target } shouldBe Vector(
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
       )
     }
@@ -348,7 +348,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
 
       resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.target -> evt.units } should contain
         (DynamoDbTarget.Table("orders") -> BigDecimal(1))
-      metrics.collect { case evt: Stage4MetricEvent.QueryObserved => evt.target } should contain(DynamoDbReadTarget.Table("orders"))
+      metrics.collect { case evt: StorageMetricEvent.QueryObserved => evt.target } should contain(DynamoDbReadTarget.Table("orders"))
     }
 
     "execute GSI and LSI Query requests against internal index state" in {
@@ -446,7 +446,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       Await.result(gsiResponsesF, 3.seconds).collect { case response: QueryResponse => response.returnedBytes } shouldBe Vector(512L)
       Await.result(gsiResourcesF, 3.seconds).collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.target -> evt.bytes } shouldBe
         Vector(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 4096L)
-      Await.result(gsiMetricsF, 3.seconds).collect { case _: Stage4MetricEvent.QueryUsedIndexOnly => 1 } shouldBe Vector(1)
+      Await.result(gsiMetricsF, 3.seconds).collect { case _: StorageMetricEvent.QueryUsedIndexOnly => 1 } shouldBe Vector(1)
 
       Await.result(lsiResponsesF, 3.seconds).collect { case response: QueryResponse => response.returnedBytes } shouldBe Vector(1536L)
       Await.result(lsiResourcesF, 3.seconds).collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.target -> evt.bytes } shouldBe
@@ -454,7 +454,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
           DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 3072L,
           DynamoDbTarget.Table("orders") -> 1024L
         )
-      Await.result(lsiMetricsF, 3.seconds).collect { case evt: Stage4MetricEvent.QueryFetchedFromBaseTable => evt.bytes } shouldBe Vector(1024L)
+      Await.result(lsiMetricsF, 3.seconds).collect { case evt: StorageMetricEvent.QueryFetchedFromBaseTable => evt.bytes } shouldBe Vector(1024L)
     }
 
     "reject strongly consistent GSI Query requests" in {
@@ -514,7 +514,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
 
       resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.target -> evt.units } should contain
         (DynamoDbTarget.Table("orders") -> BigDecimal(2))
-      metrics.collect { case evt: Stage4MetricEvent.ScanObserved => evt.target } should contain(DynamoDbReadTarget.Table("orders"))
+      metrics.collect { case evt: StorageMetricEvent.ScanObserved => evt.target } should contain(DynamoDbReadTarget.Table("orders"))
     }
 
     "execute GSI and LSI Scan requests against internal index state" in {
@@ -612,7 +612,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       Await.result(gsiResponsesF, 3.seconds).collect { case response: ScanResponse => response.returnedBytes } shouldBe Vector(768L)
       Await.result(gsiResourcesF, 3.seconds).collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.target -> evt.bytes } shouldBe
         Vector(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> 6144L)
-      Await.result(gsiMetricsF, 3.seconds).collect { case _: Stage4MetricEvent.ScanUsedIndexOnly => 1 } shouldBe Vector(1)
+      Await.result(gsiMetricsF, 3.seconds).collect { case _: StorageMetricEvent.ScanUsedIndexOnly => 1 } shouldBe Vector(1)
 
       Await.result(lsiResponsesF, 3.seconds).collect { case response: ScanResponse => response.returnedBytes } shouldBe Vector(3072L)
       Await.result(lsiResourcesF, 3.seconds).collect { case evt: DynamoDbConsumptionEvent.StorageBytesRead => evt.target -> evt.bytes } shouldBe
@@ -620,7 +620,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
           DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index") -> 8192L,
           DynamoDbTarget.Table("orders") -> 2048L
         )
-      Await.result(lsiMetricsF, 3.seconds).collect { case evt: Stage4MetricEvent.ScanFetchedFromBaseTable => evt.bytes } shouldBe Vector(2048L)
+      Await.result(lsiMetricsF, 3.seconds).collect { case evt: StorageMetricEvent.ScanFetchedFromBaseTable => evt.bytes } shouldBe Vector(2048L)
     }
 
     "reject strongly consistent GSI Scan requests" in {
@@ -754,8 +754,8 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
       )
       resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
-      metrics.collect { case _: Stage4MetricEvent => 1 } shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+      metrics.collect { case _: StorageMetricEvent => 1 } shouldBe empty
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.target } shouldBe Vector(
         DynamoDbTarget.Table("orders")
       )
     }
@@ -818,7 +818,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       lsiResponses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
       )
-      lsiMetrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+      lsiMetrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.target } shouldBe Vector(
         DynamoDbTarget.Table("orders")
       )
     }
@@ -849,10 +849,10 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
 
       responses.collect { case response: GetItemResponse => response.itemFound } shouldBe Vector(true)
       resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.units } shouldBe Vector(BigDecimal(2))
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.BurstBacked
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.BurstBacked
       )
-      metrics.collect { case Stage4MetricEvent.GetItemObserved(_, _) => 1 } shouldBe Vector(1)
+      metrics.collect { case StorageMetricEvent.GetItemObserved(_, _) => 1 } shouldBe Vector(1)
     }
 
     "use the selected GSI burst reservoir for GSI read admission" in {
@@ -898,7 +898,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.target -> evt.units } shouldBe Vector(
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index") -> BigDecimal(1)
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
         BigDecimal("0.5")
       )
     }
@@ -944,11 +944,11 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
 
       responses.collect { case _: GetItemResponse => 1 } shouldBe Vector(1, 1)
       resources.collect { case evt: DynamoDbConsumptionEvent.ReadCapacityConsumed => evt.units }.sum shouldBe BigDecimal(3)
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.Normal,
-        Stage1AdmissionMode.AdaptiveBacked
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.Normal,
+        AdmissionMode.AdaptiveBacked
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
         BigDecimal(0),
         BigDecimal(0)
       )
@@ -1001,9 +1001,9 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       val metrics = Await.result(metricsFuture, 3.seconds)
 
       responses.collect { case _: GetItemResponse => 1 } shouldBe Vector(1, 1)
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.Normal,
-        Stage1AdmissionMode.AdaptiveAndBurstBacked
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.Normal,
+        AdmissionMode.AdaptiveAndBurstBacked
       )
     }
 
@@ -1034,11 +1034,11 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       invocationCount.get() shouldBe 1
       responses.collect { case response: PutItemResponse => response.storedItemBytes } shouldBe Vector(1024L)
       resources.collect { case evt: DynamoDbConsumptionEvent.WriteCapacityConsumed => evt.units } shouldBe Vector(BigDecimal(1))
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.throughputDemand } shouldBe Vector(BigDecimal(1))
-      metrics.collect { case Stage4MetricEvent.TableBytesChanged(_, _, delta) => delta } shouldBe Vector(1024L)
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.throughputDemand } shouldBe Vector(BigDecimal(1))
+      metrics.collect { case StorageMetricEvent.TableBytesChanged(_, _, delta) => delta } shouldBe Vector(1024L)
     }
 
-    "merge throttled stage-1 responses with admitted stage-4 responses in one public stream" in {
+    "merge throttled admission responses with admitted storage responses in one public stream" in {
       val config =
         DynamoDbTable.Config(
           tableName = "orders",
@@ -1070,9 +1070,9 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       responses.collect { case _: ThrottledResponse => 1 } shouldBe Vector(1)
       responses.collect { case response: PutItemResponse => response.storedItemBytes } shouldBe Vector(1024L)
       resources.collect { case evt: DynamoDbConsumptionEvent.WriteCapacityConsumed => evt.units } shouldBe Vector(BigDecimal(1))
-      metrics.collect { case _: Stage1MetricEvent.RequestThrottled => 1 } shouldBe Vector(1)
-      metrics.collect { case _: Stage1MetricEvent.RequestAdmitted => 1 } shouldBe Vector(1)
-      metrics.collect { case _: Stage4MetricEvent.PutItemObserved => 1 } shouldBe Vector(1)
+      metrics.collect { case _: AdmissionMetricEvent.RequestThrottled => 1 } shouldBe Vector(1)
+      metrics.collect { case _: AdmissionMetricEvent.RequestAdmitted => 1 } shouldBe Vector(1)
+      metrics.collect { case _: StorageMetricEvent.PutItemObserved => 1 } shouldBe Vector(1)
     }
 
     "throttle a base-table read for a hot partition without emitting storage-side outputs" in {
@@ -1103,8 +1103,8 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
       )
       resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
-      metrics.collect { case _: Stage4MetricEvent => 1 } shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.partitionDemandById.values.sum } shouldBe Vector(BigDecimal(2))
+      metrics.collect { case _: StorageMetricEvent => 1 } shouldBe empty
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.partitionDemandById.values.sum } shouldBe Vector(BigDecimal(2))
     }
 
     "apply configured GSI partition topology and limits to GSI reads" in {
@@ -1147,7 +1147,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         DynamoDbThrottleReason.GlobalSecondaryIndexReadHotPartitionThroughputExceeded
       )
       resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.totalPartitionCount } shouldBe Vector(2)
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.totalPartitionCount } shouldBe Vector(2)
     }
 
     "evolve table topology over time and expose topology-change metrics through the composed table component" in {
@@ -1184,9 +1184,9 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       val metrics = Await.result(metricsFuture, 3.seconds)
 
       resources.collect { case _: DynamoDbConsumptionEvent => 1 } should not be empty
-      metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => (metric.reason, metric.previousPartitionCount, metric.newPartitionCount) } shouldBe
+      metrics.collect { case metric: AdmissionMetricEvent.TopologyChanged => (metric.reason, metric.previousPartitionCount, metric.newPartitionCount) } shouldBe
         Vector((TopologyChangeReason.ThroughputGrowth, 1, 2))
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.topologyPartitionCount } shouldBe Vector(1, 2)
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.topologyPartitionCount } shouldBe Vector(1, 2)
     }
 
     "throttle a base-table write when GSI write back-pressure blocks internal propagation" in {
@@ -1220,7 +1220,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         )
       )
       resources.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.target } shouldBe Vector(
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
       )
     }

@@ -7,7 +7,7 @@ import stochastacy.aws.dynamodb.*
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
 import stochastacy.sim.ticks
 
-object TableStage1:
+object TableAdmissionStage:
 
   final case class IndexMaintenanceTargetConfig(
                                                  target: DynamoDbTarget,
@@ -190,7 +190,7 @@ object TableStage1:
       val initialUnits = initial.getOrElse(maxUnits).min(maxUnits)
       BurstReservoir(initialUnits, maxUnits)
 
-  private sealed trait Stage1Decision extends TimedEvent:
+  private sealed trait AdmissionDecision extends TimedEvent:
     def request: DynamoDBRequest
     override val eventTime: SimTime = request.eventTime
     override val usecase: Any = request.usecase
@@ -198,14 +198,14 @@ object TableStage1:
   private final case class Admitted(
                                     request: DynamoDBRequest,
                                     sample: AdmittedRequestSample,
-                                    metric: Stage1MetricEvent.RequestAdmitted,
+                                    metric: AdmissionMetricEvent.RequestAdmitted,
                                     gsiWriteAdmissions: Vector[GsiWriteAdmission] = Vector.empty
-                                   ) extends Stage1Decision
+                                   ) extends AdmissionDecision
   private final case class Throttled(
                                       request: DynamoDBRequest,
                                       response: ThrottledResponse,
-                                      metric: Stage1MetricEvent.RequestThrottled
-                                    ) extends Stage1Decision
+                                      metric: AdmissionMetricEvent.RequestThrottled
+                                    ) extends AdmissionDecision
 
   private final case class PerTickUsageState(
                                               readUnits: BigDecimal = BigDecimal(0),
@@ -322,63 +322,131 @@ object TableStage1:
       TimedElement[DynamoDBRequest],
       TimedElement[AdmittedRequestSample],
       TimedElement[DynamoDBResponse],
-      TimedElement[Stage1MetricEvent]
+      TimedElement[AdmissionMetricEvent]
     ],
     NotUsed
   ] =
-    def samplerFor(request: DynamoDBRequest): UseCaseSampler[TableState] =
-      config.useCaseBehaviors.getOrElse(
-        request.usecase,
-        throw new IllegalArgumentException(s"No table behavior for '${request.usecase}'")
-      )
+    componentOfComposed(config)
 
-    def metricForAdmission(
-                            request: DynamoDBRequest,
-                            target: DynamoDbTarget,
-                            dimension: DynamoDbThroughputDimension,
-                            throughputDemand: BigDecimal,
-                            admissionMode: Stage1AdmissionMode,
-                            adaptiveConsumedRequestUnits: BigDecimal,
-                            adaptiveAvailableRequestUnits: BigDecimal,
-                            burstConsumedRequestUnits: BigDecimal,
-                            burstRemainingRequestUnits: BigDecimal,
-                            topologyPartitionCount: Int,
-                            resolvedPartitionFootprint: ResolvedPartitionFootprint,
-                            indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
-                          ): Stage1MetricEvent.RequestAdmitted =
-      Stage1MetricEvent.RequestAdmitted(
-        eventTime = request.eventTime,
-        usecase = request.usecase,
-        operation = DynamoDbOperationKind.fromRequest(request),
-        target = target,
-        dimension = dimension,
-        throughputDemand = throughputDemand,
+  /**
+   * A composed component that wires `TableSamplingStage` upstream of the shaped admission stage.
+   * The external shape is identical to `componentOf`: it takes `TimedElement[DynamoDBRequest]` and
+   * produces the same three output streams (admitted samples, throttled responses, metrics).
+   */
+  def componentOfComposed(
+                            config: Config
+                          ): Graph[
+    FanOutShape3[
+      TimedElement[DynamoDBRequest],
+      TimedElement[AdmittedRequestSample],
+      TimedElement[DynamoDBResponse],
+      TimedElement[AdmissionMetricEvent]
+    ],
+    NotUsed
+  ] =
+    val initialBaseTopology = PartitionTopologySnapshot(
+      partitionCount = config.dynamicPartitionTopologyConfig.map(_.initialPartitionCount).getOrElse(config.partitionCount),
+      version = 0L,
+      effectiveFromTick = 0L
+    )
+    val initialGsiTopologies = config.gsiWriteScopes.map { scope =>
+      scope.target.indexName -> PartitionTopologySnapshot(
+        partitionCount = scope.dynamicPartitionTopologyConfig.map(_.initialPartitionCount).getOrElse(config.partitionCount),
+        version = 0L,
+        effectiveFromTick = 0L
+      )
+    }.toMap
+    val topologyRef = new TopologySnapshotRef(initialBaseTopology, initialGsiTopologies)
+
+    val samplingConfig = TableSamplingStage.Config(
+      executionTarget = config.executionTarget,
+      admissionTarget = config.admissionTarget,
+      useCaseBehaviors = config.useCaseBehaviors,
+      stateModel = config.stateModel,
+      readConsistency = config.readConsistency,
+      partitionCount = config.partitionCount,
+      indexMaintenanceTargets = config.indexMaintenanceTargets,
+      gsiWriteScopes = config.gsiWriteScopes,
+      topologyRef = topologyRef
+    )
+
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val samplingStage = b.add(TableSamplingStage.flowOf(samplingConfig))
+      val admissionStage = b.add(componentOfShaped(config, topologyRef))
+
+      samplingStage.out ~> admissionStage.in
+
+      new FanOutShape3(
+        samplingStage.in,
+        admissionStage.out0,
+        admissionStage.out1,
+        admissionStage.out2
+      )
+    }
+
+  /**
+   * An admission-only component that accepts pre-shaped `ShapedRequest` elements
+   * rather than raw `DynamoDBRequest` elements. All sampling, demand calculation,
+   * partition resolution, and index-maintenance-plan derivation have already been
+   * performed by the upstream `TableSamplingStage`.
+   */
+  def componentOfShaped(
+                          config: Config,
+                          topologyRef: TopologySnapshotRef
+                        ): Graph[
+    FanOutShape3[
+      TimedElement[ShapedRequest],
+      TimedElement[AdmittedRequestSample],
+      TimedElement[DynamoDBResponse],
+      TimedElement[AdmissionMetricEvent]
+    ],
+    NotUsed
+  ] =
+    def metricForAdmissionShaped(
+                                  shaped: ShapedRequest,
+                                  admissionMode: AdmissionMode,
+                                  adaptiveConsumedRequestUnits: BigDecimal,
+                                  adaptiveAvailableRequestUnits: BigDecimal,
+                                  burstConsumedRequestUnits: BigDecimal,
+                                  burstRemainingRequestUnits: BigDecimal,
+                                  topologyPartitionCount: Int,
+                                  indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
+                                ): AdmissionMetricEvent.RequestAdmitted =
+      AdmissionMetricEvent.RequestAdmitted(
+        eventTime = shaped.req.eventTime,
+        usecase = shaped.req.usecase,
+        operation = DynamoDbOperationKind.fromRequest(shaped.req),
+        target = shaped.admissionTarget,
+        dimension = shaped.throughputDimension,
+        throughputDemand = shaped.throughputDemand,
         admissionMode = admissionMode,
         adaptiveConsumedRequestUnits = adaptiveConsumedRequestUnits,
         adaptiveAvailableRequestUnits = adaptiveAvailableRequestUnits,
         burstConsumedRequestUnits = burstConsumedRequestUnits,
         burstRemainingRequestUnits = burstRemainingRequestUnits,
         topologyPartitionCount = topologyPartitionCount,
-        resolvedPartitionFootprint = resolvedPartitionFootprint,
+        resolvedPartitionFootprint = shaped.resolvedPartitionFootprint,
         indexMaintenanceSummary = indexMaintenanceSummary
       )
 
-    def metricForThrottle(
-                           request: DynamoDBRequest,
-                           target: DynamoDbTarget,
-                           dimension: DynamoDbThroughputDimension,
-                           throughputDemand: BigDecimal,
-                           reason: DynamoDbThrottleReason,
-                           adaptiveAvailableRequestUnits: BigDecimal,
-                           burstAvailableRequestUnits: BigDecimal,
-                           topologyPartitionCount: Int,
-                           resolvedPartitionFootprint: ResolvedPartitionFootprint,
-                           indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
-                         ): Stage1MetricEvent.RequestThrottled =
-      Stage1MetricEvent.RequestThrottled(
-        eventTime = request.eventTime,
-        usecase = request.usecase,
-        operation = DynamoDbOperationKind.fromRequest(request),
+    def metricForThrottleShaped(
+                                 shaped: ShapedRequest,
+                                 reason: DynamoDbThrottleReason,
+                                 adaptiveAvailableRequestUnits: BigDecimal,
+                                 burstAvailableRequestUnits: BigDecimal,
+                                 topologyPartitionCount: Int,
+                                 target: DynamoDbTarget,
+                                 dimension: DynamoDbThroughputDimension,
+                                 throughputDemand: BigDecimal,
+                                 resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                                 indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
+                               ): AdmissionMetricEvent.RequestThrottled =
+      AdmissionMetricEvent.RequestThrottled(
+        eventTime = shaped.req.eventTime,
+        usecase = shaped.req.usecase,
+        operation = DynamoDbOperationKind.fromRequest(shaped.req),
         target = target,
         dimension = dimension,
         throughputDemand = throughputDemand,
@@ -390,13 +458,13 @@ object TableStage1:
         indexMaintenanceSummary = indexMaintenanceSummary
       )
 
-    def topologyMetricFor(
-                           eventTime: SimTime,
-                           previousPartitionCount: Int,
-                           newPartitionCount: Int,
-                           reason: TopologyChangeReason
-                         ): Stage1MetricEvent.TopologyChanged =
-      Stage1MetricEvent.TopologyChanged(
+    def topologyMetricForShaped(
+                                 eventTime: SimTime,
+                                 previousPartitionCount: Int,
+                                 newPartitionCount: Int,
+                                 reason: TopologyChangeReason
+                               ): AdmissionMetricEvent.TopologyChanged =
+      AdmissionMetricEvent.TopologyChanged(
         eventTime = eventTime,
         usecase = "topology-change",
         scope =
@@ -408,74 +476,40 @@ object TableStage1:
         newPartitionCount = newPartitionCount
       )
 
-    def throttled(
-                   request: DynamoDBRequest,
-                   target: DynamoDbTarget,
-                   dimension: DynamoDbThroughputDimension,
-                   throughputDemand: BigDecimal,
-                   reason: DynamoDbThrottleReason,
-                   adaptiveAvailableRequestUnits: BigDecimal,
-                   burstAvailableRequestUnits: BigDecimal,
-                   topologyPartitionCount: Int,
-                   resolvedPartitionFootprint: ResolvedPartitionFootprint,
-                   indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
-                 ): Throttled =
+    def throttledShaped(
+                         shaped: ShapedRequest,
+                         target: DynamoDbTarget,
+                         dimension: DynamoDbThroughputDimension,
+                         throughputDemand: BigDecimal,
+                         reason: DynamoDbThrottleReason,
+                         adaptiveAvailableRequestUnits: BigDecimal,
+                         burstAvailableRequestUnits: BigDecimal,
+                         topologyPartitionCount: Int,
+                         resolvedPartitionFootprint: ResolvedPartitionFootprint,
+                         indexMaintenanceSummary: Vector[IndexMaintenanceSummary] = Vector.empty
+                       ): Throttled =
       Throttled(
-        request = request,
+        request = shaped.req,
         response = ThrottledResponse(
-          eventTime = request.eventTime,
-          usecase = request.usecase,
-          operation = DynamoDbOperationKind.fromRequest(request),
+          eventTime = shaped.req.eventTime,
+          usecase = shaped.req.usecase,
+          operation = DynamoDbOperationKind.fromRequest(shaped.req),
           target = target,
           dimension = dimension,
           reason = reason
         ),
-        metric = metricForThrottle(
-          request,
-          target,
-          dimension,
-          throughputDemand,
+        metric = metricForThrottleShaped(
+          shaped,
           reason,
           adaptiveAvailableRequestUnits,
           burstAvailableRequestUnits,
           topologyPartitionCount,
+          target,
+          dimension,
+          throughputDemand,
           resolvedPartitionFootprint,
           indexMaintenanceSummary
         )
-      )
-
-    def logicalAccessFor(request: DynamoDBRequest, sample: Any): LogicalPartitionAccess =
-      sample match
-        case getItemSample: GetItemSample =>
-          PartitionAccessResolver.validateOperationAccess(request, getItemSample.logicalPartitionAccess)
-          getItemSample.logicalPartitionAccess
-        case querySample: QuerySample =>
-          PartitionAccessResolver.validateOperationAccess(request, querySample.logicalPartitionAccess)
-          querySample.logicalPartitionAccess
-        case scanSample: ScanSample =>
-          PartitionAccessResolver.validateOperationAccess(request, scanSample.logicalPartitionAccess)
-          scanSample.logicalPartitionAccess
-        case writeSample: WriteItemSample =>
-          PartitionAccessResolver.validateOperationAccess(request, writeSample.logicalPartitionAccess)
-          writeSample.logicalPartitionAccess
-        case deleteSample: DeleteItemSample =>
-          PartitionAccessResolver.validateOperationAccess(request, deleteSample.logicalPartitionAccess)
-          deleteSample.logicalPartitionAccess
-        case other =>
-          throw new IllegalArgumentException(
-            s"Unsupported sampled operation shape '${other.getClass.getSimpleName}' for request '${request.getClass.getSimpleName}'"
-          )
-
-    def resolveFootprint(
-                          request: DynamoDBRequest,
-                          sampledOutcome: Any,
-                          throughputDemand: BigDecimal,
-                          topologySnapshot: PartitionTopologySnapshot
-                        ): ResolvedPartitionFootprint =
-      PartitionAccessResolver.resolve(
-        access = logicalAccessFor(request, sampledOutcome),
-        throughputDemand = throughputDemand,
-        topology = topologySnapshot
       )
 
     def hotPartitionReason(dimension: DynamoDbThroughputDimension): DynamoDbThrottleReason =
@@ -547,15 +581,15 @@ object TableStage1:
     def admissionModeFor(
                          adaptiveConsumedRequestUnits: BigDecimal,
                          burstConsumedRequestUnits: BigDecimal
-                       ): Stage1AdmissionMode =
+                       ): AdmissionMode =
       if adaptiveConsumedRequestUnits > 0 && burstConsumedRequestUnits > 0 then
-        Stage1AdmissionMode.AdaptiveAndBurstBacked
+        AdmissionMode.AdaptiveAndBurstBacked
       else if adaptiveConsumedRequestUnits > 0 then
-        Stage1AdmissionMode.AdaptiveBacked
+        AdmissionMode.AdaptiveBacked
       else if burstConsumedRequestUnits > 0 then
-        Stage1AdmissionMode.BurstBacked
+        AdmissionMode.BurstBacked
       else
-        Stage1AdmissionMode.Normal
+        AdmissionMode.Normal
 
     def adaptiveReliefFor(
                            currentlyUsedByPartition: Map[Int, BigDecimal],
@@ -654,7 +688,7 @@ object TableStage1:
                            usageState: PerTickUsageState,
                            topologyState: DynamicTopologyState,
                            stateModel: TableState
-                         ): (DynamicTopologyState, Vector[Stage1MetricEvent.TopologyChanged]) =
+                         ): (DynamicTopologyState, Vector[AdmissionMetricEvent.TopologyChanged]) =
       config.dynamicPartitionTopologyConfig match
         case None => (topologyState, Vector.empty)
         case Some(dynamicConfig) =>
@@ -724,7 +758,7 @@ object TableStage1:
                         if reason == TopologyChangeReason.SustainedHeat then DynamicTopologyHeatState()
                         else nextHeat
                     ),
-                    Vector(topologyMetricFor(eventTime, currentCount, newCount, reason))
+                    Vector(topologyMetricForShaped(eventTime, currentCount, newCount, reason))
                   )
               case None =>
                 (topologyState.copy(heatState = nextHeat), Vector.empty)
@@ -738,626 +772,282 @@ object TableStage1:
         case Some(threshold) if observedPeakByPartition >= threshold => previousCount + 1
         case _ => 0
 
-    def deriveIndexMaintenancePlan(
-                                    logicalPartitionAccess: LogicalPartitionAccess,
-                                    newBaseItemBytes: Option[Long],
-                                    previousBaseItemBytes: Option[Long],
-                                    baseTopologySnapshot: PartitionTopologySnapshot,
-                                    topologySnapshotsByIndex: Map[String, PartitionTopologySnapshot]
-                                  ): Vector[IndexMaintenancePlan] =
-      val maintenanceTargets =
-        if config.indexMaintenanceTargets.nonEmpty then config.indexMaintenanceTargets
-        else
-          config.gsiWriteScopes.map { scope =>
-            IndexMaintenanceTargetConfig(
-              target = scope.target,
-              projection = DynamoDbTable.IndexProjection.All
-            )
-          }
-
-      maintenanceTargets.map { targetConfig =>
-        val topologySnapshot =
-          targetConfig.target match
-            case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
-              topologySnapshotsByIndex.getOrElse(
-                indexName,
-                PartitionTopologySnapshot(
-                  partitionCount =
-                    config.gsiWriteScopes
-                      .find(_.target.indexName == indexName)
-                      .flatMap(_.dynamicPartitionTopologyConfig.map(_.initialPartitionCount))
-                      .getOrElse(config.partitionCount),
-                  version = 0L,
-                  effectiveFromTick = 0L
-                )
-              )
-            case _: DynamoDbTarget.LocalSecondaryIndex =>
-              baseTopologySnapshot
-            case _: DynamoDbTarget.Table =>
-              baseTopologySnapshot
-
-        IndexMaintenanceMath.derivePlan(
-          target = targetConfig.target,
-          projection = targetConfig.projection,
-          logicalPartitionAccess = logicalPartitionAccess,
-          newBaseItemBytes = newBaseItemBytes,
-          previousBaseItemBytes = previousBaseItemBytes,
-          topology = topologySnapshot
-        )
-      }
-
-    def evaluateReadAdmission(
-                               request: DynamoDBRequest,
-                               throughputDemand: BigDecimal,
-                               resolvedPartitionFootprint: ResolvedPartitionFootprint,
-                               usageState: PerTickUsageState,
-                               burstState: BurstState,
-                               admittedSample: => AdmittedRequestSample
-                             ): Stage1Decision =
+    def evaluateReadAdmissionShaped(
+                                     shaped: ShapedRequest,
+                                     usageState: PerTickUsageState,
+                                     burstState: BurstState,
+                                     admittedSample: => AdmittedRequestSample
+                                   ): AdmissionDecision =
       val adaptiveRelief =
         adaptiveReliefFor(
           currentlyUsedByPartition = usageState.readUnitsByPartition,
-          resolvedPartitionFootprint = resolvedPartitionFootprint,
+          resolvedPartitionFootprint = shaped.resolvedPartitionFootprint,
           baselineLimit = config.maxReadRequestUnitsPerSecondPerPartition,
           adaptiveLimit = config.adaptiveMaxReadRequestUnitsPerSecondPerPartition
         )
-
       val wholeOverage =
         config.maxReadRequestUnitsPerSecond.map { limit =>
-          wholeResourceOverage(usageState.readUnits, throughputDemand, limit)
+          wholeResourceOverage(usageState.readUnits, shaped.throughputDemand, limit)
         }.getOrElse(BigDecimal(0))
-
       val requiredBurst = adaptiveRelief.remainingHotPartitionOverage.max(wholeOverage)
       val burstAvailable = burstState.availableFor(DynamoDbThroughputDimension.Read)
 
       if requiredBurst > 0 && burstAvailable < requiredBurst then
-        throttled(
-          request = request,
+        throttledShaped(
+          shaped = shaped,
           target = config.admissionTarget,
           dimension = DynamoDbThroughputDimension.Read,
-          throughputDemand = throughputDemand,
+          throughputDemand = shaped.throughputDemand,
           reason =
             if adaptiveRelief.remainingHotPartitionOverage > 0 then hotPartitionReason(DynamoDbThroughputDimension.Read)
             else wholeResourceReason(DynamoDbThroughputDimension.Read),
           adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
           burstAvailableRequestUnits = burstAvailable,
-          topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-          resolvedPartitionFootprint = resolvedPartitionFootprint
+          topologyPartitionCount = shaped.resolvedPartitionFootprint.totalPartitionCount,
+          resolvedPartitionFootprint = shaped.resolvedPartitionFootprint
         )
       else
         val remainingBurst = (burstAvailable - requiredBurst).max(BigDecimal(0))
         Admitted(
-          request = request,
+          request = shaped.req,
           sample = admittedSample,
-          metric = metricForAdmission(
-            request = request,
-            target = config.admissionTarget,
-            dimension = DynamoDbThroughputDimension.Read,
-            throughputDemand = throughputDemand,
+          metric = metricForAdmissionShaped(
+            shaped = shaped,
             admissionMode = admissionModeFor(adaptiveRelief.consumedRequestUnits, requiredBurst),
             adaptiveConsumedRequestUnits = adaptiveRelief.consumedRequestUnits,
             adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
             burstConsumedRequestUnits = requiredBurst,
             burstRemainingRequestUnits = remainingBurst,
-            topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-            resolvedPartitionFootprint = resolvedPartitionFootprint
+            topologyPartitionCount = shaped.resolvedPartitionFootprint.totalPartitionCount
           )
         )
 
-    def evaluateWriteAdmission(
-                                request: DynamoDBRequest,
-                                throughputDemand: BigDecimal,
-                                resolvedPartitionFootprint: ResolvedPartitionFootprint,
-                                usageState: PerTickUsageState,
-                                burstState: BurstState,
-                                admittedSample: => AdmittedRequestSample
-                              ): Stage1Decision =
-      val adaptiveRelief =
-        adaptiveReliefFor(
-          currentlyUsedByPartition = usageState.writeUnitsByPartition,
-          resolvedPartitionFootprint = resolvedPartitionFootprint,
-          baselineLimit = config.maxWriteRequestUnitsPerSecondPerPartition,
-          adaptiveLimit = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
-        )
-
-      val wholeOverage =
-        config.maxWriteRequestUnitsPerSecond.map { limit =>
-          wholeResourceOverage(usageState.writeUnits, throughputDemand, limit)
-        }.getOrElse(BigDecimal(0))
-
-      val requiredBurst = adaptiveRelief.remainingHotPartitionOverage.max(wholeOverage)
-      val burstAvailable = burstState.availableFor(DynamoDbThroughputDimension.Write)
-
-      if requiredBurst > 0 && burstAvailable < requiredBurst then
-        throttled(
-          request = request,
+    def evaluateWriteAdmissionShaped(
+                                      shaped: ShapedWriteRequest,
+                                      usageState: PerTickUsageState,
+                                      burstState: BurstState,
+                                      gsiUsageStates: Map[String, PerTickUsageState],
+                                      gsiBurstStates: Map[String, BurstState],
+                                      admittedSample: => AdmittedRequestSample
+                                    ): AdmissionDecision =
+      val indexMaintenanceSummary = shaped.indexMaintenancePlan.map(_.summary)
+      val baseEvaluation =
+        evaluateWriteScope(
           target = config.admissionTarget,
-          dimension = DynamoDbThroughputDimension.Write,
-          throughputDemand = throughputDemand,
-          reason =
-            if adaptiveRelief.remainingHotPartitionOverage > 0 then hotPartitionReason(DynamoDbThroughputDimension.Write)
-            else wholeResourceReason(DynamoDbThroughputDimension.Write),
-          adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
-          burstAvailableRequestUnits = burstAvailable,
-          topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-          resolvedPartitionFootprint = resolvedPartitionFootprint
+          throughputDemand = shaped.throughputDemand,
+          resolvedPartitionFootprint = shaped.resolvedPartitionFootprint,
+          usageState = usageState,
+          burstState = burstState,
+          maxWriteRequestUnitsPerSecond = config.maxWriteRequestUnitsPerSecond,
+          maxWriteRequestUnitsPerSecondPerPartition = config.maxWriteRequestUnitsPerSecondPerPartition,
+          adaptiveMaxWriteRequestUnitsPerSecondPerPartition = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
         )
-      else
-        val remainingBurst = (burstAvailable - requiredBurst).max(BigDecimal(0))
-        Admitted(
-          request = request,
-          sample = admittedSample,
-          metric = metricForAdmission(
-            request = request,
-            target = config.admissionTarget,
+      val gsiEvaluations =
+        config.gsiWriteScopes.map { scope =>
+          val maintenancePlan =
+            shaped.indexMaintenancePlan.collectFirst {
+              case plan: IndexMaintenancePlan if plan.target == scope.target => plan
+            }.getOrElse(
+              throw new IllegalStateException(s"Missing index maintenance plan for GSI '${scope.target.indexName}'")
+            )
+          scope.target.indexName ->
+            evaluateWriteScope(
+              target = scope.target,
+              throughputDemand = maintenancePlan.throughputDemand,
+              resolvedPartitionFootprint = maintenancePlan.resolvedPartitionFootprint,
+              usageState = gsiUsageStates.getOrElse(scope.target.indexName, PerTickUsageState()),
+              burstState = gsiBurstStates.getOrElse(
+                scope.target.indexName,
+                BurstState(
+                  readBurst = BurstReservoir.from(None, None, None),
+                  writeBurst = BurstReservoir.from(
+                    scope.maxWriteRequestUnitsPerSecond,
+                    scope.burstRetentionWindowSeconds,
+                    scope.initialWriteBurstRequestUnits
+                  )
+                )
+              ),
+              maxWriteRequestUnitsPerSecond = scope.maxWriteRequestUnitsPerSecond,
+              maxWriteRequestUnitsPerSecondPerPartition = scope.maxWriteRequestUnitsPerSecondPerPartition,
+              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = scope.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
+            )
+        }.toMap
+      val failingGsi = config.gsiWriteScopes.collectFirst {
+        case scope if gsiEvaluations(scope.target.indexName).blockingReason.nonEmpty =>
+          gsiEvaluations(scope.target.indexName)
+      }
+      failingGsi match
+        case Some(failure) =>
+          throttledShaped(
+            shaped = shaped,
+            target = failure.target,
             dimension = DynamoDbThroughputDimension.Write,
-            throughputDemand = throughputDemand,
-            admissionMode = admissionModeFor(adaptiveRelief.consumedRequestUnits, requiredBurst),
-            adaptiveConsumedRequestUnits = adaptiveRelief.consumedRequestUnits,
-            adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
-            burstConsumedRequestUnits = requiredBurst,
-            burstRemainingRequestUnits = remainingBurst,
-            topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-            resolvedPartitionFootprint = resolvedPartitionFootprint
+            throughputDemand = failure.throughputDemand,
+            reason = failure.blockingReason.get,
+            adaptiveAvailableRequestUnits = failure.adaptiveAvailableRequestUnits,
+            burstAvailableRequestUnits = failure.burstAvailable,
+            topologyPartitionCount = failure.resolvedPartitionFootprint.totalPartitionCount,
+            resolvedPartitionFootprint = failure.resolvedPartitionFootprint,
+            indexMaintenanceSummary = indexMaintenanceSummary
           )
-        )
+        case None if baseEvaluation.blockingReason.nonEmpty =>
+          throttledShaped(
+            shaped = shaped,
+            target = baseEvaluation.target,
+            dimension = DynamoDbThroughputDimension.Write,
+            throughputDemand = baseEvaluation.throughputDemand,
+            reason = baseEvaluation.blockingReason.get,
+            adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
+            burstAvailableRequestUnits = baseEvaluation.burstAvailable,
+            topologyPartitionCount = baseEvaluation.resolvedPartitionFootprint.totalPartitionCount,
+            resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint,
+            indexMaintenanceSummary = indexMaintenanceSummary
+          )
+        case None =>
+          Admitted(
+            request = shaped.req,
+            sample = admittedSample,
+            metric = metricForAdmissionShaped(
+              shaped = shaped,
+              admissionMode = admissionModeFor(baseEvaluation.adaptiveConsumedRequestUnits, baseEvaluation.requiredBurst),
+              adaptiveConsumedRequestUnits = baseEvaluation.adaptiveConsumedRequestUnits,
+              adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
+              burstConsumedRequestUnits = baseEvaluation.requiredBurst,
+              burstRemainingRequestUnits = (baseEvaluation.burstAvailable - baseEvaluation.requiredBurst).max(BigDecimal(0)),
+              topologyPartitionCount = shaped.resolvedPartitionFootprint.totalPartitionCount,
+              indexMaintenanceSummary = indexMaintenanceSummary
+            ),
+            gsiWriteAdmissions =
+              config.gsiWriteScopes.map { scope =>
+                val evaluation = gsiEvaluations(scope.target.indexName)
+                GsiWriteAdmission(
+                  indexName = scope.target.indexName,
+                  throughputDemand = evaluation.throughputDemand,
+                  resolvedPartitionFootprint = evaluation.resolvedPartitionFootprint,
+                  burstConsumedRequestUnits = evaluation.requiredBurst
+                )
+              }
+          )
 
-    def decide(
-                request: DynamoDBRequest,
-                usageState: PerTickUsageState,
-                burstState: BurstState,
-                topologySnapshot: PartitionTopologySnapshot,
-                gsiUsageStates: Map[String, PerTickUsageState],
-                gsiBurstStates: Map[String, BurstState],
-                gsiTopologySnapshots: Map[String, PartitionTopologySnapshot]
-              ): Stage1Decision =
-      request match
-        case r: GetItemRequest =>
-          val sample = samplerFor(r).getItem(r, config.stateModel)
-          val demand = TableThroughputMath.readCapacityUnitsFor(sample.itemBytes, config.readConsistency)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          evaluateReadAdmission(
-            request = r,
-            throughputDemand = demand,
-            resolvedPartitionFootprint = resolvedPartitionFootprint,
+    def decideFromShaped(
+                          shaped: ShapedRequest,
+                          usageState: PerTickUsageState,
+                          burstState: BurstState,
+                          gsiUsageStates: Map[String, PerTickUsageState],
+                          gsiBurstStates: Map[String, BurstState]
+                        ): AdmissionDecision =
+      shaped match
+        case s: ShapedGetItemRequest =>
+          evaluateReadAdmissionShaped(
+            shaped = s,
             usageState = usageState,
             burstState = burstState,
             admittedSample =
               AdmittedGetItemSample(
-                req = r,
-                executionTarget = config.executionTarget,
-                admissionTarget = config.admissionTarget,
-                readConsistency = config.readConsistency,
-                sample = sample,
-                throughputDemand = demand,
-                resolvedPartitionFootprint = resolvedPartitionFootprint
+                req = s.req,
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                readConsistency = s.readConsistency,
+                sample = s.sample,
+                throughputDemand = s.throughputDemand,
+                resolvedPartitionFootprint = s.resolvedPartitionFootprint
               )
           )
 
-        case r: QueryRequest =>
-          val sample = samplerFor(r).query(r, config.stateModel)
-          val demand = TableThroughputMath.readCapacityUnitsFor(Some(sample.evaluatedBytes), r.readConsistency)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          evaluateReadAdmission(
-            request = r,
-            throughputDemand = demand,
-            resolvedPartitionFootprint = resolvedPartitionFootprint,
+        case s: ShapedQueryRequest =>
+          evaluateReadAdmissionShaped(
+            shaped = s,
             usageState = usageState,
             burstState = burstState,
             admittedSample =
               AdmittedQuerySample(
-                req = r,
-                executionTarget = config.executionTarget,
-                admissionTarget = config.admissionTarget,
-                sample = sample,
-                throughputDemand = demand,
-                resolvedPartitionFootprint = resolvedPartitionFootprint
+                req = s.req,
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                sample = s.sample,
+                throughputDemand = s.throughputDemand,
+                resolvedPartitionFootprint = s.resolvedPartitionFootprint
               )
           )
 
-        case r: ScanRequest =>
-          val sample = samplerFor(r).scan(r, config.stateModel)
-          val demand = TableThroughputMath.readCapacityUnitsFor(Some(sample.evaluatedBytes), r.readConsistency)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          evaluateReadAdmission(
-            request = r,
-            throughputDemand = demand,
-            resolvedPartitionFootprint = resolvedPartitionFootprint,
+        case s: ShapedScanRequest =>
+          evaluateReadAdmissionShaped(
+            shaped = s,
             usageState = usageState,
             burstState = burstState,
             admittedSample =
               AdmittedScanSample(
-                req = r,
-                executionTarget = config.executionTarget,
-                admissionTarget = config.admissionTarget,
-                sample = sample,
-                throughputDemand = demand,
-                resolvedPartitionFootprint = resolvedPartitionFootprint
+                req = s.req,
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                sample = s.sample,
+                throughputDemand = s.throughputDemand,
+                resolvedPartitionFootprint = s.resolvedPartitionFootprint
               )
           )
 
-        case r: PutItemRequest =>
-          val sample = samplerFor(r).putItem(r, config.stateModel)
-          val demand = TableThroughputMath.writeCapacityUnitsFor(sample.writtenItemBytes)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          val indexMaintenancePlan =
-            deriveIndexMaintenancePlan(
-              logicalPartitionAccess = sample.logicalPartitionAccess,
-              newBaseItemBytes = Some(sample.writtenItemBytes),
-              previousBaseItemBytes = sample.previousItemBytes,
-              baseTopologySnapshot = topologySnapshot,
-              topologySnapshotsByIndex = gsiTopologySnapshots
-            )
-          val indexMaintenanceSummary = indexMaintenancePlan.map(_.summary)
-          val baseEvaluation =
-            evaluateWriteScope(
-              target = config.admissionTarget,
-              throughputDemand = demand,
-              resolvedPartitionFootprint = resolvedPartitionFootprint,
-              usageState = usageState,
-              burstState = burstState,
-              maxWriteRequestUnitsPerSecond = config.maxWriteRequestUnitsPerSecond,
-              maxWriteRequestUnitsPerSecondPerPartition = config.maxWriteRequestUnitsPerSecondPerPartition,
-              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
-            )
-          val gsiEvaluations =
-            config.gsiWriteScopes.map { scope =>
-              val maintenancePlan =
-                indexMaintenancePlan.collectFirst {
-                  case plan: IndexMaintenancePlan
-                      if plan.target == scope.target =>
-                    plan
-                }.getOrElse(
-                  throw new IllegalStateException(s"Missing index maintenance plan for GSI '${scope.target.indexName}'")
-                )
-              scope.target.indexName ->
-                evaluateWriteScope(
-                  target = scope.target,
-                  throughputDemand = maintenancePlan.throughputDemand,
-                  resolvedPartitionFootprint = maintenancePlan.resolvedPartitionFootprint,
-                  usageState = gsiUsageStates.getOrElse(scope.target.indexName, PerTickUsageState()),
-                  burstState = gsiBurstStates.getOrElse(
-                    scope.target.indexName,
-                    BurstState(
-                      readBurst = BurstReservoir.from(None, None, None),
-                      writeBurst = BurstReservoir.from(
-                        scope.maxWriteRequestUnitsPerSecond,
-                        scope.burstRetentionWindowSeconds,
-                        scope.initialWriteBurstRequestUnits
-                      )
-                    )
-                  ),
-                  maxWriteRequestUnitsPerSecond = scope.maxWriteRequestUnitsPerSecond,
-                  maxWriteRequestUnitsPerSecondPerPartition = scope.maxWriteRequestUnitsPerSecondPerPartition,
-                  adaptiveMaxWriteRequestUnitsPerSecondPerPartition = scope.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
-                )
-            }.toMap
-          val failingGsi = config.gsiWriteScopes.collectFirst {
-            case scope if gsiEvaluations(scope.target.indexName).blockingReason.nonEmpty =>
-              gsiEvaluations(scope.target.indexName)
-          }
-          failingGsi match
-            case Some(failure) =>
-              throttled(
-                request = r,
-                target = failure.target,
-                dimension = DynamoDbThroughputDimension.Write,
-                throughputDemand = failure.throughputDemand,
-                reason = failure.blockingReason.get,
-                adaptiveAvailableRequestUnits = failure.adaptiveAvailableRequestUnits,
-                burstAvailableRequestUnits = failure.burstAvailable,
-                topologyPartitionCount = failure.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = failure.resolvedPartitionFootprint,
-                indexMaintenanceSummary = indexMaintenanceSummary
+        case s: ShapedPutItemRequest =>
+          evaluateWriteAdmissionShaped(
+            shaped = s,
+            usageState = usageState,
+            burstState = burstState,
+            gsiUsageStates = gsiUsageStates,
+            gsiBurstStates = gsiBurstStates,
+            admittedSample =
+              AdmittedPutItemSample(
+                req = s.req,
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                sample = s.sample,
+                throughputDemand = s.throughputDemand,
+                resolvedPartitionFootprint = s.resolvedPartitionFootprint,
+                indexMaintenancePlan = s.indexMaintenancePlan
               )
-            case None if baseEvaluation.blockingReason.nonEmpty =>
-              throttled(
-                request = r,
-                target = baseEvaluation.target,
-                dimension = DynamoDbThroughputDimension.Write,
-                throughputDemand = baseEvaluation.throughputDemand,
-                reason = baseEvaluation.blockingReason.get,
-                adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
-                burstAvailableRequestUnits = baseEvaluation.burstAvailable,
-                topologyPartitionCount = baseEvaluation.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint,
-                indexMaintenanceSummary = indexMaintenanceSummary
-              )
-            case None =>
-              Admitted(
-                request = r,
-                sample =
-                  AdmittedPutItemSample(
-                    req = r,
-                    executionTarget = config.executionTarget,
-                    admissionTarget = config.admissionTarget,
-                    sample = sample,
-                    throughputDemand = demand,
-                    resolvedPartitionFootprint = resolvedPartitionFootprint,
-                    indexMaintenancePlan = indexMaintenancePlan
-                  ),
-                metric = metricForAdmission(
-                  request = r,
-                  target = config.admissionTarget,
-                  dimension = DynamoDbThroughputDimension.Write,
-                  throughputDemand = demand,
-                  admissionMode = admissionModeFor(baseEvaluation.adaptiveConsumedRequestUnits, baseEvaluation.requiredBurst),
-                  adaptiveConsumedRequestUnits = baseEvaluation.adaptiveConsumedRequestUnits,
-                  adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
-                  burstConsumedRequestUnits = baseEvaluation.requiredBurst,
-                  burstRemainingRequestUnits = (baseEvaluation.burstAvailable - baseEvaluation.requiredBurst).max(BigDecimal(0)),
-                  topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-                  resolvedPartitionFootprint = resolvedPartitionFootprint,
-                  indexMaintenanceSummary = indexMaintenanceSummary
-                ),
-                gsiWriteAdmissions =
-                  config.gsiWriteScopes.map { scope =>
-                    val evaluation = gsiEvaluations(scope.target.indexName)
-                    GsiWriteAdmission(
-                      indexName = scope.target.indexName,
-                      throughputDemand = evaluation.throughputDemand,
-                      resolvedPartitionFootprint = evaluation.resolvedPartitionFootprint,
-                      burstConsumedRequestUnits = evaluation.requiredBurst
-                    )
-                  }
-              )
+          )
 
-        case r: UpdateItemRequest =>
-          val sample = samplerFor(r).updateItem(r, config.stateModel)
-          val demand = TableThroughputMath.writeCapacityUnitsFor(sample.writtenItemBytes)
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          val indexMaintenancePlan =
-            deriveIndexMaintenancePlan(
-              logicalPartitionAccess = sample.logicalPartitionAccess,
-              newBaseItemBytes = Some(sample.writtenItemBytes),
-              previousBaseItemBytes = sample.previousItemBytes,
-              baseTopologySnapshot = topologySnapshot,
-              topologySnapshotsByIndex = gsiTopologySnapshots
-            )
-          val indexMaintenanceSummary = indexMaintenancePlan.map(_.summary)
-          val baseEvaluation =
-            evaluateWriteScope(
-              target = config.admissionTarget,
-              throughputDemand = demand,
-              resolvedPartitionFootprint = resolvedPartitionFootprint,
-              usageState = usageState,
-              burstState = burstState,
-              maxWriteRequestUnitsPerSecond = config.maxWriteRequestUnitsPerSecond,
-              maxWriteRequestUnitsPerSecondPerPartition = config.maxWriteRequestUnitsPerSecondPerPartition,
-              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
-            )
-          val gsiEvaluations =
-            config.gsiWriteScopes.map { scope =>
-              val maintenancePlan =
-                indexMaintenancePlan.collectFirst {
-                  case plan: IndexMaintenancePlan if plan.target == scope.target => plan
-                }.getOrElse(
-                  throw new IllegalStateException(s"Missing index maintenance plan for GSI '${scope.target.indexName}'")
-                )
-              scope.target.indexName ->
-                evaluateWriteScope(
-                  target = scope.target,
-                  throughputDemand = maintenancePlan.throughputDemand,
-                  resolvedPartitionFootprint = maintenancePlan.resolvedPartitionFootprint,
-                  usageState = gsiUsageStates.getOrElse(scope.target.indexName, PerTickUsageState()),
-                  burstState = gsiBurstStates.getOrElse(
-                    scope.target.indexName,
-                    BurstState(
-                      readBurst = BurstReservoir.from(None, None, None),
-                      writeBurst = BurstReservoir.from(
-                        scope.maxWriteRequestUnitsPerSecond,
-                        scope.burstRetentionWindowSeconds,
-                        scope.initialWriteBurstRequestUnits
-                      )
-                    )
-                  ),
-                  maxWriteRequestUnitsPerSecond = scope.maxWriteRequestUnitsPerSecond,
-                  maxWriteRequestUnitsPerSecondPerPartition = scope.maxWriteRequestUnitsPerSecondPerPartition,
-                  adaptiveMaxWriteRequestUnitsPerSecondPerPartition = scope.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
-                )
-            }.toMap
-          val failingGsi = config.gsiWriteScopes.collectFirst {
-            case scope if gsiEvaluations(scope.target.indexName).blockingReason.nonEmpty =>
-              gsiEvaluations(scope.target.indexName)
-          }
-          failingGsi match
-            case Some(failure) =>
-              throttled(
-                request = r,
-                target = failure.target,
-                dimension = DynamoDbThroughputDimension.Write,
-                throughputDemand = failure.throughputDemand,
-                reason = failure.blockingReason.get,
-                adaptiveAvailableRequestUnits = failure.adaptiveAvailableRequestUnits,
-                burstAvailableRequestUnits = failure.burstAvailable,
-                topologyPartitionCount = failure.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = failure.resolvedPartitionFootprint,
-                indexMaintenanceSummary = indexMaintenanceSummary
+        case s: ShapedUpdateItemRequest =>
+          evaluateWriteAdmissionShaped(
+            shaped = s,
+            usageState = usageState,
+            burstState = burstState,
+            gsiUsageStates = gsiUsageStates,
+            gsiBurstStates = gsiBurstStates,
+            admittedSample =
+              AdmittedUpdateItemSample(
+                req = s.req,
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                sample = s.sample,
+                throughputDemand = s.throughputDemand,
+                resolvedPartitionFootprint = s.resolvedPartitionFootprint,
+                indexMaintenancePlan = s.indexMaintenancePlan
               )
-            case None if baseEvaluation.blockingReason.nonEmpty =>
-              throttled(
-                request = r,
-                target = baseEvaluation.target,
-                dimension = DynamoDbThroughputDimension.Write,
-                throughputDemand = baseEvaluation.throughputDemand,
-                reason = baseEvaluation.blockingReason.get,
-                adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
-                burstAvailableRequestUnits = baseEvaluation.burstAvailable,
-                topologyPartitionCount = baseEvaluation.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint,
-                indexMaintenanceSummary = indexMaintenanceSummary
-              )
-            case None =>
-              Admitted(
-                request = r,
-                sample =
-                  AdmittedUpdateItemSample(
-                    req = r,
-                    executionTarget = config.executionTarget,
-                    admissionTarget = config.admissionTarget,
-                    sample = sample,
-                    throughputDemand = demand,
-                    resolvedPartitionFootprint = resolvedPartitionFootprint,
-                    indexMaintenancePlan = indexMaintenancePlan
-                  ),
-                metric = metricForAdmission(
-                  request = r,
-                  target = config.admissionTarget,
-                  dimension = DynamoDbThroughputDimension.Write,
-                  throughputDemand = demand,
-                  admissionMode = admissionModeFor(baseEvaluation.adaptiveConsumedRequestUnits, baseEvaluation.requiredBurst),
-                  adaptiveConsumedRequestUnits = baseEvaluation.adaptiveConsumedRequestUnits,
-                  adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
-                  burstConsumedRequestUnits = baseEvaluation.requiredBurst,
-                  burstRemainingRequestUnits = (baseEvaluation.burstAvailable - baseEvaluation.requiredBurst).max(BigDecimal(0)),
-                  topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-                  resolvedPartitionFootprint = resolvedPartitionFootprint,
-                  indexMaintenanceSummary = indexMaintenanceSummary
-                ),
-                gsiWriteAdmissions =
-                  config.gsiWriteScopes.map { scope =>
-                    val evaluation = gsiEvaluations(scope.target.indexName)
-                    GsiWriteAdmission(
-                      indexName = scope.target.indexName,
-                      throughputDemand = evaluation.throughputDemand,
-                      resolvedPartitionFootprint = evaluation.resolvedPartitionFootprint,
-                      burstConsumedRequestUnits = evaluation.requiredBurst
-                    )
-                  }
-              )
+          )
 
-        case r: DeleteItemRequest =>
-          val sample = samplerFor(r).deleteItem(r, config.stateModel)
-          val demand = TableThroughputMath.writeCapacityUnitsFor(sample.deletedItemBytes.getOrElse(0L))
-          val resolvedPartitionFootprint = resolveFootprint(r, sample, demand, topologySnapshot)
-          val indexMaintenancePlan =
-            deriveIndexMaintenancePlan(
-              logicalPartitionAccess = sample.logicalPartitionAccess,
-              newBaseItemBytes = None,
-              previousBaseItemBytes = sample.deletedItemBytes,
-              baseTopologySnapshot = topologySnapshot,
-              topologySnapshotsByIndex = gsiTopologySnapshots
-            )
-          val indexMaintenanceSummary = indexMaintenancePlan.map(_.summary)
-          val baseEvaluation =
-            evaluateWriteScope(
-              target = config.admissionTarget,
-              throughputDemand = demand,
-              resolvedPartitionFootprint = resolvedPartitionFootprint,
-              usageState = usageState,
-              burstState = burstState,
-              maxWriteRequestUnitsPerSecond = config.maxWriteRequestUnitsPerSecond,
-              maxWriteRequestUnitsPerSecondPerPartition = config.maxWriteRequestUnitsPerSecondPerPartition,
-              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
-            )
-          val gsiEvaluations =
-            config.gsiWriteScopes.map { scope =>
-              val maintenancePlan =
-                indexMaintenancePlan.collectFirst {
-                  case plan: IndexMaintenancePlan if plan.target == scope.target => plan
-                }.getOrElse(
-                  throw new IllegalStateException(s"Missing index maintenance plan for GSI '${scope.target.indexName}'")
-                )
-              scope.target.indexName ->
-                evaluateWriteScope(
-                  target = scope.target,
-                  throughputDemand = maintenancePlan.throughputDemand,
-                  resolvedPartitionFootprint = maintenancePlan.resolvedPartitionFootprint,
-                  usageState = gsiUsageStates.getOrElse(scope.target.indexName, PerTickUsageState()),
-                  burstState = gsiBurstStates.getOrElse(
-                    scope.target.indexName,
-                    BurstState(
-                      readBurst = BurstReservoir.from(None, None, None),
-                      writeBurst = BurstReservoir.from(
-                        scope.maxWriteRequestUnitsPerSecond,
-                        scope.burstRetentionWindowSeconds,
-                        scope.initialWriteBurstRequestUnits
-                      )
-                    )
-                  ),
-                  maxWriteRequestUnitsPerSecond = scope.maxWriteRequestUnitsPerSecond,
-                  maxWriteRequestUnitsPerSecondPerPartition = scope.maxWriteRequestUnitsPerSecondPerPartition,
-                  adaptiveMaxWriteRequestUnitsPerSecondPerPartition = scope.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
-                )
-            }.toMap
-          val failingGsi = config.gsiWriteScopes.collectFirst {
-            case scope if gsiEvaluations(scope.target.indexName).blockingReason.nonEmpty =>
-              gsiEvaluations(scope.target.indexName)
-          }
-          failingGsi match
-            case Some(failure) =>
-              throttled(
-                request = r,
-                target = failure.target,
-                dimension = DynamoDbThroughputDimension.Write,
-                throughputDemand = failure.throughputDemand,
-                reason = failure.blockingReason.get,
-                adaptiveAvailableRequestUnits = failure.adaptiveAvailableRequestUnits,
-                burstAvailableRequestUnits = failure.burstAvailable,
-                topologyPartitionCount = failure.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = failure.resolvedPartitionFootprint,
-                indexMaintenanceSummary = indexMaintenanceSummary
+        case s: ShapedDeleteItemRequest =>
+          evaluateWriteAdmissionShaped(
+            shaped = s,
+            usageState = usageState,
+            burstState = burstState,
+            gsiUsageStates = gsiUsageStates,
+            gsiBurstStates = gsiBurstStates,
+            admittedSample =
+              AdmittedDeleteItemSample(
+                req = s.req,
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                sample = s.sample,
+                throughputDemand = s.throughputDemand,
+                resolvedPartitionFootprint = s.resolvedPartitionFootprint,
+                indexMaintenancePlan = s.indexMaintenancePlan
               )
-            case None if baseEvaluation.blockingReason.nonEmpty =>
-              throttled(
-                request = r,
-                target = baseEvaluation.target,
-                dimension = DynamoDbThroughputDimension.Write,
-                throughputDemand = baseEvaluation.throughputDemand,
-                reason = baseEvaluation.blockingReason.get,
-                adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
-                burstAvailableRequestUnits = baseEvaluation.burstAvailable,
-                topologyPartitionCount = baseEvaluation.resolvedPartitionFootprint.totalPartitionCount,
-                resolvedPartitionFootprint = baseEvaluation.resolvedPartitionFootprint,
-                indexMaintenanceSummary = indexMaintenanceSummary
-              )
-            case None =>
-              Admitted(
-                request = r,
-                sample =
-                  AdmittedDeleteItemSample(
-                    req = r,
-                    executionTarget = config.executionTarget,
-                    admissionTarget = config.admissionTarget,
-                    sample = sample,
-                    throughputDemand = demand,
-                    resolvedPartitionFootprint = resolvedPartitionFootprint,
-                    indexMaintenancePlan = indexMaintenancePlan
-                  ),
-                metric = metricForAdmission(
-                  request = r,
-                  target = config.admissionTarget,
-                  dimension = DynamoDbThroughputDimension.Write,
-                  throughputDemand = demand,
-                  admissionMode = admissionModeFor(baseEvaluation.adaptiveConsumedRequestUnits, baseEvaluation.requiredBurst),
-                  adaptiveConsumedRequestUnits = baseEvaluation.adaptiveConsumedRequestUnits,
-                  adaptiveAvailableRequestUnits = baseEvaluation.adaptiveAvailableRequestUnits,
-                  burstConsumedRequestUnits = baseEvaluation.requiredBurst,
-                  burstRemainingRequestUnits = (baseEvaluation.burstAvailable - baseEvaluation.requiredBurst).max(BigDecimal(0)),
-                  topologyPartitionCount = resolvedPartitionFootprint.totalPartitionCount,
-                  resolvedPartitionFootprint = resolvedPartitionFootprint,
-                  indexMaintenanceSummary = indexMaintenanceSummary
-                ),
-                gsiWriteAdmissions =
-                  config.gsiWriteScopes.map { scope =>
-                    val evaluation = gsiEvaluations(scope.target.indexName)
-                    GsiWriteAdmission(
-                      indexName = scope.target.indexName,
-                      throughputDemand = evaluation.throughputDemand,
-                      resolvedPartitionFootprint = evaluation.resolvedPartitionFootprint,
-                      burstConsumedRequestUnits = evaluation.requiredBurst
-                    )
-                  }
-              )
-
-        case _: PartiQLQueryRequest =>
-          throw new UnsupportedOperationException("PartiQL query execution is not yet supported")
+          )
 
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits.*
 
       val decisionFlow = b.add(
-        Flow[TimedElement[DynamoDBRequest]].statefulMapConcat[TimedElement[TimedEvent]] { () =>
+        Flow[TimedElement[ShapedRequest]].statefulMapConcat[TimedElement[TimedEvent]] { () =>
           var currentTick: Option[Long] = None
           var usageState = PerTickUsageState()
           var burstState =
@@ -1410,8 +1100,53 @@ object TableStage1:
                   effectiveFromTick = 0L
                 )
             )
+          var topologyChangedOnLastAdvance = false
 
-          def advanceTo(eventTime: SimTime): Vector[TimedEvent] =
+          def reshapeWithCurrentTopology(shaped: ShapedRequest): ShapedRequest =
+            val newFootprint =
+              PartitionAccessResolver.resolve(
+                access = shaped.logicalPartitionAccess,
+                throughputDemand = shaped.throughputDemand,
+                topology = topologyState.snapshot
+              )
+
+            def newPlanFor(
+                            newBaseItemBytes: Option[Long],
+                            previousBaseItemBytes: Option[Long]
+                          ): Vector[IndexMaintenancePlan] =
+              IndexMaintenancePlanDerivation.derivePlans(
+                indexMaintenanceTargets = config.indexMaintenanceTargets,
+                gsiWriteScopes = config.gsiWriteScopes,
+                fallbackPartitionCount = config.partitionCount,
+                logicalPartitionAccess = shaped.logicalPartitionAccess,
+                newBaseItemBytes = newBaseItemBytes,
+                previousBaseItemBytes = previousBaseItemBytes,
+                baseTopologySnapshot = topologyState.snapshot,
+                gsiTopologySnapshots = gsiTopologyStates.view.mapValues(_.snapshot).toMap
+              )
+
+            shaped match
+              case r: ShapedGetItemRequest => r.copy(resolvedPartitionFootprint = newFootprint)
+              case r: ShapedQueryRequest => r.copy(resolvedPartitionFootprint = newFootprint)
+              case r: ShapedScanRequest => r.copy(resolvedPartitionFootprint = newFootprint)
+              case r: ShapedPutItemRequest =>
+                r.copy(
+                  resolvedPartitionFootprint = newFootprint,
+                  indexMaintenancePlan = newPlanFor(Some(r.sample.writtenItemBytes), r.sample.previousItemBytes)
+                )
+              case r: ShapedUpdateItemRequest =>
+                r.copy(
+                  resolvedPartitionFootprint = newFootprint,
+                  indexMaintenancePlan = newPlanFor(Some(r.sample.writtenItemBytes), r.sample.previousItemBytes)
+                )
+              case r: ShapedDeleteItemRequest =>
+                r.copy(
+                  resolvedPartitionFootprint = newFootprint,
+                  indexMaintenancePlan = newPlanFor(None, r.sample.deletedItemBytes)
+                )
+
+          def advanceToShaped(eventTime: SimTime): Vector[TimedEvent] =
+            topologyChangedOnLastAdvance = false
             val tick = eventTime.ticks
             if currentTick.forall(_ != tick) then
               val topologyEvents =
@@ -1523,7 +1258,7 @@ object TableStage1:
                       (previous, current) match
                         case (Some(p), Some(c)) if c > p =>
                           Some(
-                            Stage1MetricEvent.TopologyChanged(
+                            AdmissionMetricEvent.TopologyChanged(
                               eventTime = eventTime,
                               usecase = "topology-change",
                               scope = TopologyScope.GlobalSecondaryIndex(scope.target.indexName),
@@ -1544,6 +1279,15 @@ object TableStage1:
                   topologyState = nextTopologyState
                   usageState = PerTickUsageState()
                   gsiUsageStates = config.gsiWriteScopes.map(scope => scope.target.indexName -> PerTickUsageState()).toMap
+
+                  // Update the shared topology ref so the upstream sampling stage
+                  // uses the evolved topology for the next tick's requests
+                  topologyRef.baseTopology = topologyState.snapshot
+                  topologyRef.gsiTopologies = gsiTopologyStates.view.mapValues(_.snapshot).toMap
+
+                  if events.nonEmpty || gsiTopologyEvents.nonEmpty then
+                    topologyChangedOnLastAdvance = true
+
                   events ++ gsiTopologyEvents
                 else
                   Vector.empty
@@ -1554,22 +1298,22 @@ object TableStage1:
 
           {
             case t: TimedControlEvent.Tick =>
-              advanceTo(t.eventTime) :+ t
+              advanceToShaped(t.eventTime) :+ t
 
             case t: TimedControlEvent =>
               List(t)
 
-            case request: DynamoDBRequest =>
-              val boundaryEvents = advanceTo(request.eventTime)
+            case shaped: ShapedRequest =>
+              val boundaryEvents = advanceToShaped(shaped.eventTime)
+              val effectiveShaped =
+                if topologyChangedOnLastAdvance then reshapeWithCurrentTopology(shaped) else shaped
               val decision =
-                decide(
-                  request,
+                decideFromShaped(
+                  effectiveShaped,
                   usageState,
                   burstState,
-                  topologyState.snapshot,
                   gsiUsageStates,
-                  gsiBurstStates,
-                  gsiTopologyStates.view.mapValues(_.snapshot).toMap
+                  gsiBurstStates
                 )
               decision match
                 case admitted: Admitted =>
@@ -1616,7 +1360,7 @@ object TableStage1:
       val admittedFlow = b.add(
         Flow[TimedEvent].mapConcat[TimedElement[AdmittedRequestSample]] {
           case t: TimedControlEvent => List(t)
-          case _: Stage1MetricEvent.TopologyChanged => Nil
+          case _: AdmissionMetricEvent.TopologyChanged => Nil
           case Admitted(_, sample, _, _) => List(sample)
           case _: Throttled => Nil
         }
@@ -1625,16 +1369,16 @@ object TableStage1:
       val responseFlow = b.add(
         Flow[TimedEvent].mapConcat[TimedElement[DynamoDBResponse]] {
           case t: TimedControlEvent => List(t)
-          case _: Stage1MetricEvent.TopologyChanged => Nil
+          case _: AdmissionMetricEvent.TopologyChanged => Nil
           case Throttled(_, response, _) => List(response)
           case _: Admitted => Nil
         }
       )
 
       val metricFlow = b.add(
-        Flow[TimedEvent].mapConcat[TimedElement[Stage1MetricEvent]] {
+        Flow[TimedEvent].mapConcat[TimedElement[AdmissionMetricEvent]] {
           case t: TimedControlEvent => List(t)
-          case metric: Stage1MetricEvent.TopologyChanged => List(metric)
+          case metric: AdmissionMetricEvent.TopologyChanged => List(metric)
           case Admitted(_, _, metric, _) => List(metric)
           case Throttled(_, _, metric) => List(metric)
         }

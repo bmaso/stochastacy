@@ -2,7 +2,7 @@ package stochastacy.aws.dynamodb
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.table.{DynamoDbTarget, LogicalPartitionAccess, ReadConsistency, ResolvedPartitionFootprint, Stage1AdmissionMode, Stage1MetricEvent, Stage4MetricEvent, TableMetricEvent, TopologyChangeReason, TopologyScope}
+import stochastacy.aws.dynamodb.table.{DynamoDbTarget, LogicalPartitionAccess, ReadConsistency, ResolvedPartitionFootprint, AdmissionMode, AdmissionMetricEvent, StorageMetricEvent, TableMetricEvent, TopologyChangeReason, TopologyScope}
 import scala.collection.immutable.SortedMap
 import stochastacy.sim.SimTime
 
@@ -108,16 +108,16 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
       throttledResponse.reason shouldBe DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
     }
 
-    "expose a unified table metric surface spanning stage-1 and stage-4 events" in {
+    "expose a unified table metric surface spanning admission and storage events" in {
       val admittedMetric: TableMetricEvent =
-        Stage1MetricEvent.RequestAdmitted(
+        AdmissionMetricEvent.RequestAdmitted(
           eventTime = SimTime.of(9L),
           usecase = "get-hit",
           operation = DynamoDbOperationKind.GetItem,
           target = DynamoDbTarget.Table("orders"),
           dimension = DynamoDbThroughputDimension.Read,
           throughputDemand = BigDecimal(1),
-          admissionMode = Stage1AdmissionMode.Normal,
+          admissionMode = AdmissionMode.Normal,
           adaptiveConsumedRequestUnits = BigDecimal(0),
           adaptiveAvailableRequestUnits = BigDecimal(0),
           burstConsumedRequestUnits = BigDecimal(0),
@@ -129,7 +129,7 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
           )
         )
       val topologyMetric: TableMetricEvent =
-        Stage1MetricEvent.TopologyChanged(
+        AdmissionMetricEvent.TopologyChanged(
           eventTime = SimTime.of(9L),
           usecase = "topology-change",
           scope = TopologyScope.Table,
@@ -138,7 +138,7 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
           newPartitionCount = 2
         )
       val observedMetric: TableMetricEvent =
-        Stage4MetricEvent.GetItemObserved(
+        StorageMetricEvent.GetItemObserved(
           eventTime = SimTime.of(10L),
           usecase = "get-hit"
         )
@@ -146,8 +146,8 @@ class DynamoDbRequestSurfaceSpec extends AnyWordSpec with should.Matchers:
       admittedMetric shouldBe a[TableMetricEvent]
       topologyMetric shouldBe a[TableMetricEvent]
       observedMetric shouldBe a[TableMetricEvent]
-      admittedMetric shouldBe a[Stage1MetricEvent.RequestAdmitted]
-      topologyMetric shouldBe a[Stage1MetricEvent.TopologyChanged]
-      observedMetric shouldBe a[Stage4MetricEvent.GetItemObserved]
+      admittedMetric shouldBe a[AdmissionMetricEvent.RequestAdmitted]
+      topologyMetric shouldBe a[AdmissionMetricEvent.TopologyChanged]
+      observedMetric shouldBe a[StorageMetricEvent.GetItemObserved]
     }
   }

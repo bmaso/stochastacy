@@ -12,7 +12,7 @@ import stochastacy.sim.{SimTime, TimedEvent}
 import stochastacy.test.*
 
 /**
- * "Stage 4" of a Table component graph represents the DDB data-plane. This stage is only reached _after_
+ * TableStorageStage of a Table component graph represents the DDB data-plane. This stage is only reached _after_
  * per-account throttling and provisioned capacity (and burst capacity) throttling. This is the component
  * that consumes RCUs and WCUs, and where many Table metrics are maintained and reported.
  *
@@ -29,12 +29,12 @@ import stochastacy.test.*
  * This test suite verifies the entanglement of the table sampler: table state, responses, consumed resources,
  * and metrics generated during `GetItem` processing.
  */
-class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
+class TableStorageStageGetItemSpec extends AnyWordSpec with should.Matchers:
 
-  given ActorSystem = ActorSystem("table-stage4-test")
+  given ActorSystem = ActorSystem("table-storage-test")
   given Materializer = Materializer.matFromSystem
 
-  "Stage 4 Table component (read-only)" should {
+  "TableStorageStage (read-only)" should {
     "return not-found responses for empty table GetItem requests" in {
       val (responseProbe, resourceProbe, metricsProbe) =
         runTable(
@@ -64,14 +64,14 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
       responseProbe.expectComplete()
 
       val consumptionTotals = drainConsumptionEvents(resourceProbe)
-        .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
+        .foldLeft(StorageConsumptionTotals())(StorageConsumptionTotals.accumulate)
 
       consumptionTotals.readCapacityUnits shouldBe BigDecimal(5.0)
       consumptionTotals.storageBytesRead shouldBe 0L
       consumptionTotals.targets shouldBe Set(DynamoDbTarget.Table("orders"))
       consumptionTotals.consistencies shouldBe Set(ReadConsistency.EventuallyConsistent)
 
-      val totals = drainMetricEvents(metricsProbe).foldLeft(Stage4MetricTotals())(Stage4MetricTotals.accumulate)
+      val totals = drainMetricEvents(metricsProbe).foldLeft(StorageMetricTotals())(StorageMetricTotals.accumulate)
       totals.observedGets shouldBe 10
       totals.returnedItems shouldBe 0
       totals.returnedBytes shouldBe 0
@@ -106,14 +106,14 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
       responseProbe.expectComplete()
 
       val consumptionTotals = drainConsumptionEvents(resourceProbe)
-        .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
+        .foldLeft(StorageConsumptionTotals())(StorageConsumptionTotals.accumulate)
 
       consumptionTotals.readCapacityUnits shouldBe BigDecimal(3.0)
       consumptionTotals.storageBytesRead shouldBe 1536L
       consumptionTotals.targets shouldBe Set(DynamoDbTarget.Table("orders"))
       consumptionTotals.consistencies shouldBe Set(ReadConsistency.StronglyConsistent)
 
-      val totals = drainMetricEvents(metricsProbe).foldLeft(Stage4MetricTotals())(Stage4MetricTotals.accumulate)
+      val totals = drainMetricEvents(metricsProbe).foldLeft(StorageMetricTotals())(StorageMetricTotals.accumulate)
       totals.observedGets shouldBe 3
       totals.returnedItems shouldBe 3
       totals.returnedBytes shouldBe 1536L
@@ -138,7 +138,7 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
         (respSink, consSink, metrSink) =>
           import GraphDSL.Implicits._
 
-          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency))
+          val table = b.add(TableStorageStage.componentOf(tableState, behaviors, tableTarget, readConsistency))
 
           requestSource ~> table.in
           table.out0 ~> respSink
@@ -151,13 +151,13 @@ class TableStage4GetItemSpec extends AnyWordSpec with should.Matchers:
 
   def drainMetricEvents(
                          probe: TestSubscriber.Probe[_]
-                       ): Vector[Stage4MetricEvent] =
-    val buf = Vector.newBuilder[Stage4MetricEvent]
+                       ): Vector[StorageMetricEvent] =
+    val buf = Vector.newBuilder[StorageMetricEvent]
     var done = false
 
     while !done do
       probe.expectNextOrComplete() match
-        case Right(m: Stage4MetricEvent) =>
+        case Right(m: StorageMetricEvent) =>
           buf += m
 
         case Right(_) =>

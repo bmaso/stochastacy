@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-04-24 (slice 8b added)
+Last updated: 2026-04-26 (slice 8b complete)
 
 ## Current Position
 
@@ -12,7 +12,7 @@ The project currently centers on a DynamoDB simulator that supports:
 - a public `DynamoDbTable` table-and-indexes component
 - internal GSI and LSI execution units
 - internal index-state ownership and write propagation
-- a first-class `TableStage1` admission layer in front of `TableStage4`
+- a first-class `TableAdmissionStage` admission layer in front of `TableStorageStage`
 - on-demand hard admission checks for base-table reads and writes plus GSI reads and writes
 - hot-partition enforcement against table and index partition topology
 - burst-capacity admission rescue
@@ -38,11 +38,11 @@ The current runnable demo surface is still the order-tracking phase-2 demo, but 
 
 The implemented design direction is:
 
-- `TableStage4` remains the storage-facing execution core
-- `TableStage1` is the upstream admission, shaping, and throttling layer
+- `TableStorageStage` remains the storage-facing execution core
+- `TableAdmissionStage` is the upstream admission, shaping, and throttling layer
 - `DynamoDbTable` is the public table-and-indexes graph component
 - GSIs and LSIs are represented as internal execution units, not separately wired public graph components
-- admission-time sampled request envelopes carry the information downstream that later stages need, rather than resampling in `TableStage4`
+- admission-time sampled request envelopes carry the information downstream that later stages need, rather than resampling in `TableStorageStage`
 - on-demand behavior is still the primary planning axis; provisioned-mode fidelity is still intentionally secondary
 - additive request-priced usage is folded into `DynamoDbUsageTotals`
 - duration-based storage usage is derived from timed consumption streams into `DynamoDbTimeBasedUsageTotals`
@@ -57,8 +57,8 @@ The implemented design direction is:
 ## Key Code Locations
 
 - [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala)
-- [TableStage1.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage1.scala)
-- [TableStage4.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage4.scala)
+- [TableAdmissionStage.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableAdmissionStage.scala)
+- [TableStorageStage.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStorageStage.scala)
 - [state.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/state.scala)
 - [table_metric_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/table_metric_events.scala)
 - [UseCaseSampler.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/UseCaseSampler.scala)
@@ -77,17 +77,17 @@ The implemented design direction is:
 
 ## Key Proof Tests
 
-- [TableStage4GetItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4GetItemSpec.scala)
-- [TableStage4PutItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4PutItemSpec.scala)
-- [TableStage4UpdateItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4UpdateItemSpec.scala)
-- [TableStage4DeleteItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4DeleteItemSpec.scala)
-- [TableStage4QuerySpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4QuerySpec.scala)
-- [TableStage4ScanSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage4ScanSpec.scala)
-- [TableStage1Spec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStage1Spec.scala)
+- [TableStorageStageGetItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageStageGetItemSpec.scala)
+- [TableStorageStagePutItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageStagePutItemSpec.scala)
+- [TableStorageStageUpdateItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageStageUpdateItemSpec.scala)
+- [TableStorageStageDeleteItemSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageStageDeleteItemSpec.scala)
+- [TableStorageStageQuerySpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageStageQuerySpec.scala)
+- [TableStorageStageScanSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageStageScanSpec.scala)
+- [TableAdmissionStageSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/TableAdmissionStageSpec.scala)
 - [DynamoDbTableComponentSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableComponentSpec.scala)
 - [DynamoDbTableConfigSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableConfigSpec.scala)
 - [DynamoDbRequestSurfaceSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/DynamoDbRequestSurfaceSpec.scala)
-- [TableStage4PricingIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/pricing/TableStage4PricingIntegrationSpec.scala)
+- [TableStorageStagePricingIntegrationSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/test/scala/stochastacy/aws/dynamodb/pricing/TableStorageStagePricingIntegrationSpec.scala)
 - [OrderTrackingPhase2DemoRunnerSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPhase2DemoRunnerSpec.scala)
 - [OrderTrackingPostgresBridgeSpec.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/examples/src/test/scala/stochastacy/examples/ordertracking/OrderTrackingPostgresBridgeSpec.scala)
 
@@ -105,33 +105,24 @@ The current demo workflow is:
 
 The main remaining work has moved into phase 3:
 
-1. implement `slice 8b: TableStage1 decomposition` — extract sampling and shaping into a separate upstream stage
-2. implement `slice 9: LSI item-collection constraints`
-3. implement `slice 10: global tables and cross-Region replication`
-4. keep the runnable phase-2 demo stable while the simulator internals advance
-5. perform any targeted documentation cleanup needed so the public docs stop implying phase 2 is still the simulator frontier
+1. implement `slice 9: LSI item-collection constraints` — next concrete implementation target
+2. implement `slice 10: global tables and cross-Region replication`
+3. keep the runnable phase-2 demo stable while the simulator internals advance
+4. perform any targeted documentation cleanup needed so the public docs stop implying phase 2 is still the simulator frontier
+
+Slice 8b (`TableAdmissionStage` decomposition) is complete: sampling and shaping have been extracted into the upstream `TableSamplingStage`, and `TableAdmissionStage` re-resolves a shaped request's footprint and index-maintenance plan when topology evolution at a tick boundary invalidates the memorialized values. `IndexMaintenancePlanDerivation` is the single canonical helper for deriving per-index plans, used by both stages.
 
 Treat [ips-phase3.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/roadmaps/ips-phase3.md) as the canonical planning anchor for ongoing simulator work, and use [dynamodb-table.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/architecture/dynamodb-table.md) as the design-boundary reference for where new slice logic should live.
 
 ## Upcoming Phase-3 Slices
 
-### Slice 8b: TableStage1 Decomposition
+### Slice 8b: TableAdmissionStage Decomposition (complete)
 
-This should be treated as the immediate next implementation target.
+Sampling, throughput-demand calculation, partition resolution, and index-maintenance-plan derivation now live in the upstream `TableSamplingStage`. `TableAdmissionStage.componentOfShaped` consumes shaped envelopes and applies admission. The `TopologySnapshotRef` is owned by `TableAdmissionStage` and read by `TableSamplingStage`.
 
-The goal is to extract sampling, throughput-demand calculation, partition resolution, and index-maintenance-plan derivation out of `TableStage1` into a separate upstream sampling-and-shaping stage. This is a structural refactoring that does not change observable simulator behavior. It decomposes the `TableStage1` monolith into sequential pipeline stages with narrower responsibilities so that slice 9 and later slices have a clean place to add new write-path logic.
+One subtlety: in a linear pipeline, `TableSamplingStage` shapes a request *before* `TableAdmissionStage` sees it, so the first request of a new tick is shaped against the previous tick's topology. When `TableAdmissionStage` evolves topology at the tick boundary, it sets `topologyChangedOnLastAdvance` and re-resolves the shaped envelope's base-table footprint and (for writes) index-maintenance plan via `IndexMaintenancePlanDerivation.derivePlans` before passing the request into `decideFromShaped`. Subsequent requests in the same tick read the freshly-published topology ref and need no reshape.
 
-The decomposition target is:
-
-- a new upstream sampling-and-shaping stage that takes raw `DynamoDBRequest` elements, invokes the use-case sampler, computes throughput demand, resolves partition footprints, derives the index-maintenance plan for writes, and emits a fully-shaped request envelope
-- a slimmed-down `TableStage1` that receives shaped envelopes and applies the admission sequence without re-invoking the sampler or re-deriving the maintenance plan
-
-Key constraints:
-
-- no observable behavior change
-- all existing tests must remain green
-- timed-event protocol invariants must be preserved across the new stage boundary
-- topology snapshots are owned by the admission stage and made available to the sampling stage
+`IndexMaintenancePlanDerivation` is the canonical single source for plan derivation, used by both `TableSamplingStage` (initial shaping) and `TableAdmissionStage` (post-evolution re-shaping). All 143 core and 38 examples tests pass with no test modifications.
 
 ### Slice 9: LSI Item-Collection Constraints
 
@@ -143,7 +134,7 @@ Guidance for this slice:
 
 - keep the project single-Region; do not mix replication work into this slice
 - keep `DynamoDbTable` as the public resource boundary; do not expose LSIs as separate public components
-- preserve the existing split where `TableStage1` handles admission concerns and `TableStage4` handles storage semantics and downstream physical effects
+- preserve the existing split where `TableAdmissionStage` handles admission concerns and `TableStorageStage` handles storage semantics and downstream physical effects
 - model the constraint at the item-collection level keyed by the base-table partition key, because LSIs share the table partition key
 - make the limit depend on the combined size of base-table items plus corresponding LSI entries for that partition-key value
 - prefer deterministic, bytes-oriented accounting over heuristic “risk of exceeding” guesses when the simulator already has enough data to decide
@@ -161,8 +152,8 @@ Likely implementation shape:
 Likely code touchpoints:
 
 - [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala)
-- [TableStage1.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage1.scala)
-- [TableStage4.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage4.scala)
+- [TableAdmissionStage.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableAdmissionStage.scala)
+- [TableStorageStage.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStorageStage.scala)
 - [state.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/state.scala)
 - [op_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/op_events.scala)
 - [consumption_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/consumption_events.scala)
@@ -212,7 +203,7 @@ Likely implementation shape:
 Likely code touchpoints:
 
 - [DynamoDbTable.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala)
-- [TableStage4.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStage4.scala)
+- [TableStorageStage.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/TableStorageStage.scala)
 - [state.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/state.scala)
 - [op_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/op_events.scala)
 - [consumption_events.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/table/consumption_events.scala)
@@ -220,7 +211,7 @@ Likely code touchpoints:
 - [DynamoDbTimeBasedUsageTotals.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/usage/DynamoDbTimeBasedUsageTotals.scala)
 - [DynamoDbPricing.scala](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/core/src/main/scala/stochastacy/aws/dynamodb/pricing/DynamoDbPricing.scala)
 
-The most important wobble-avoidance note is that slice 10 should introduce a clean replication model, not a second unrelated simulator. The next agent should prefer thin new orchestration around existing per-Region table logic over cloning or bypassing the current `DynamoDbTable -> TableStage1 -> TableStage4` flow.
+The most important wobble-avoidance note is that slice 10 should introduce a clean replication model, not a second unrelated simulator. The next agent should prefer thin new orchestration around existing per-Region table logic over cloning or bypassing the current `DynamoDbTable -> TableAdmissionStage -> TableStorageStage` flow.
 
 Recommended test focus:
 

@@ -501,7 +501,7 @@ object DynamoDbTable:
   private def gsiWriteScopesFor(
                                  config: Config,
                                  indexRuntimes: Vector[InternalIndexRuntime]
-                               ): Vector[TableStage1.GsiWriteScopeConfig] =
+                               ): Vector[TableAdmissionStage.GsiWriteScopeConfig] =
     config.globalSecondaryIndexes.map { definition =>
       val indexRuntime = indexRuntimes.collectFirst {
         case gsi: InternalIndexRuntime.GlobalSecondaryIndex if gsi.indexName == definition.indexName => gsi
@@ -509,7 +509,7 @@ object DynamoDbTable:
         throw new IllegalStateException(s"Missing runtime for global secondary index '${definition.indexName}'")
       )
 
-      TableStage1.GsiWriteScopeConfig(
+      TableAdmissionStage.GsiWriteScopeConfig(
         target = indexRuntime.target,
         stateModel = indexRuntime.stateModel,
         maxWriteRequestUnitsPerSecond =
@@ -523,7 +523,7 @@ object DynamoDbTable:
           config.burstCapacityModel.flatMap(_.initialGlobalSecondaryIndexWriteBurstRequestUnits.get(definition.indexName)),
         dynamicPartitionTopologyConfig =
           config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
-            TableStage1.DynamicPartitionTopologyConfig(
+            TableAdmissionStage.DynamicPartitionTopologyConfig(
               initialPartitionCount =
                 dynamic.globalSecondaryIndexInitialPartitionCounts.getOrElse(definition.indexName, dynamic.tableInitialPartitionCount),
               storageSplitThresholdBytes = dynamic.globalSecondaryIndexStorageSplitThresholdBytes.get(definition.indexName),
@@ -543,7 +543,7 @@ object DynamoDbTable:
   private def indexMaintenanceTargetsFor(
                                           config: Config,
                                           indexRuntimes: Vector[InternalIndexRuntime]
-                                        ): Vector[TableStage1.IndexMaintenanceTargetConfig] =
+                                        ): Vector[TableAdmissionStage.IndexMaintenanceTargetConfig] =
     val globalTargets =
       config.globalSecondaryIndexes.map { definition =>
         val indexRuntime = indexRuntimes.collectFirst {
@@ -552,7 +552,7 @@ object DynamoDbTable:
           throw new IllegalStateException(s"Missing runtime for global secondary index '${definition.indexName}'")
         )
 
-        TableStage1.IndexMaintenanceTargetConfig(
+        TableAdmissionStage.IndexMaintenanceTargetConfig(
           target = indexRuntime.target,
           projection = definition.projection
         )
@@ -566,7 +566,7 @@ object DynamoDbTable:
           throw new IllegalStateException(s"Missing runtime for local secondary index '${definition.indexName}'")
         )
 
-        TableStage1.IndexMaintenanceTargetConfig(
+        TableAdmissionStage.IndexMaintenanceTargetConfig(
           target = indexRuntime.target,
           projection = definition.projection
         )
@@ -580,7 +580,7 @@ object DynamoDbTable:
     FanOutShape2[
       TimedElement[AdmittedRequestSample],
       TimedElement[DynamoDbConsumptionEvent],
-      TimedElement[Stage4MetricEvent]
+      TimedElement[StorageMetricEvent]
     ],
     NotUsed
   ] =
@@ -657,27 +657,27 @@ object DynamoDbTable:
       )
 
       val metricFlow = b.add(
-        Flow[TimedElement[AdmittedRequestSample]].mapConcat[TimedElement[Stage4MetricEvent]] {
+        Flow[TimedElement[AdmittedRequestSample]].mapConcat[TimedElement[StorageMetricEvent]] {
           case t: TimedControlEvent => List(t)
 
           case writeSample: AdmittedWriteRequestSample =>
             writeSample.indexMaintenancePlan.map { plan =>
               plan.action match
                 case IndexMaintenanceAction.NoOp =>
-                  Stage4MetricEvent.IndexEntryUnchanged(
+                  StorageMetricEvent.IndexEntryUnchanged(
                     eventTime = writeSample.eventTime,
                     usecase = writeSample.usecase,
                     target = plan.target
                   )
                 case IndexMaintenanceAction.InsertEntry =>
-                  Stage4MetricEvent.IndexEntryInserted(
+                  StorageMetricEvent.IndexEntryInserted(
                     eventTime = writeSample.eventTime,
                     usecase = writeSample.usecase,
                     target = plan.target,
                     bytes = plan.newIndexEntryBytes.getOrElse(0L)
                   )
                 case IndexMaintenanceAction.ReplaceEntry =>
-                  Stage4MetricEvent.IndexEntryReplaced(
+                  StorageMetricEvent.IndexEntryReplaced(
                     eventTime = writeSample.eventTime,
                     usecase = writeSample.usecase,
                     target = plan.target,
@@ -686,7 +686,7 @@ object DynamoDbTable:
                     bytesDelta = plan.storageBytesDelta
                   )
                 case IndexMaintenanceAction.DeleteEntry =>
-                  Stage4MetricEvent.IndexEntryDeleted(
+                  StorageMetricEvent.IndexEntryDeleted(
                     eventTime = writeSample.eventTime,
                     usecase = writeSample.usecase,
                     target = plan.target,
@@ -726,10 +726,10 @@ object DynamoDbTable:
                            burstRetentionWindowSeconds: Option[Int],
                            initialReadBurstRequestUnits: Option[BigDecimal],
                            initialWriteBurstRequestUnits: Option[BigDecimal],
-                           dynamicPartitionTopologyConfig: Option[TableStage1.DynamicPartitionTopologyConfig],
-                           indexMaintenanceTargets: Vector[TableStage1.IndexMaintenanceTargetConfig] = Vector.empty,
+                           dynamicPartitionTopologyConfig: Option[TableAdmissionStage.DynamicPartitionTopologyConfig],
+                           indexMaintenanceTargets: Vector[TableAdmissionStage.IndexMaintenanceTargetConfig] = Vector.empty,
                            indexMaintenanceRuntimes: Vector[InternalIndexRuntime] = Vector.empty,
-                           gsiWriteScopes: Vector[TableStage1.GsiWriteScopeConfig] = Vector.empty
+                           gsiWriteScopes: Vector[TableAdmissionStage.GsiWriteScopeConfig] = Vector.empty
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -742,9 +742,9 @@ object DynamoDbTable:
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits.*
 
-      val stage1 = b.add(
-        TableStage1.componentOf(
-          TableStage1.Config(
+      val admission = b.add(
+        TableAdmissionStage.componentOf(
+          TableAdmissionStage.Config(
             executionTarget = executionTarget,
             admissionTarget = admissionTarget,
             useCaseBehaviors = useCaseBehaviors,
@@ -766,15 +766,15 @@ object DynamoDbTable:
           )
         )
       )
-      val stage4 = b.add(TableStage4.componentOfAdmitted(stateModel, indexProjection = indexProjection))
+      val storage = b.add(TableStorageStage.componentOfAdmitted(stateModel, indexProjection = indexProjection))
       val throttledResponseFilter = b.add(
         Flow[TimedElement[DynamoDBResponse]].collect[TimedElement[DynamoDBResponse]] {
           case response: DynamoDBResponse => response
         }
       )
-      val stage1MetricFilter = b.add(
-        Flow[TimedElement[Stage1MetricEvent]].collect[TimedElement[TableMetricEvent]] {
-          case metric: Stage1MetricEvent => metric
+      val admissionMetricFilter = b.add(
+        Flow[TimedElement[AdmissionMetricEvent]].collect[TimedElement[TableMetricEvent]] {
+          case metric: AdmissionMetricEvent => metric
         }
       )
       val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
@@ -782,13 +782,13 @@ object DynamoDbTable:
       val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](if indexMaintenanceRuntimes.nonEmpty then 3 else 2))
       val admittedBroadcast = b.add(Broadcast[TimedElement[AdmittedRequestSample]](if indexMaintenanceRuntimes.nonEmpty then 2 else 1))
 
-      stage1.out0 ~> admittedBroadcast.in
-      admittedBroadcast.out(0) ~> stage4.in
-      stage1.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
-      stage4.out0 ~> responseMerge.in(1)
-      stage4.out1 ~> consumptionMerge.in(0)
-      stage1.out2 ~> stage1MetricFilter ~> metricMerge.in(0)
-      stage4.out2 ~> metricMerge.in(1)
+      admission.out0 ~> admittedBroadcast.in
+      admittedBroadcast.out(0) ~> storage.in
+      admission.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
+      storage.out0 ~> responseMerge.in(1)
+      storage.out1 ~> consumptionMerge.in(0)
+      admission.out2 ~> admissionMetricFilter ~> metricMerge.in(0)
+      storage.out2 ~> metricMerge.in(1)
 
       if indexMaintenanceRuntimes.nonEmpty then
         val maintenanceStage = b.add(indexMaintenanceGraph(indexMaintenanceRuntimes))
@@ -797,7 +797,7 @@ object DynamoDbTable:
         maintenanceStage.out1 ~> metricMerge.in(2)
 
       new FanOutShape3(
-        stage1.in,
+        admission.in,
         responseMerge.out,
         consumptionMerge.out,
         metricMerge.out
@@ -838,7 +838,7 @@ object DynamoDbTable:
         initialWriteBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableWriteBurstRequestUnits),
         dynamicPartitionTopologyConfig =
           config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
-            TableStage1.DynamicPartitionTopologyConfig(
+            TableAdmissionStage.DynamicPartitionTopologyConfig(
               initialPartitionCount = dynamic.tableInitialPartitionCount,
               storageSplitThresholdBytes = dynamic.tableStorageSplitThresholdBytes,
               readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
@@ -943,7 +943,7 @@ object DynamoDbTable:
               initialWriteBurstRequestUnits = None,
               dynamicPartitionTopologyConfig =
                 config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
-                  TableStage1.DynamicPartitionTopologyConfig(
+                  TableAdmissionStage.DynamicPartitionTopologyConfig(
                     initialPartitionCount =
                       dynamic.globalSecondaryIndexInitialPartitionCounts.getOrElse(indexDefinition.indexName, dynamic.tableInitialPartitionCount),
                     storageSplitThresholdBytes = dynamic.globalSecondaryIndexStorageSplitThresholdBytes.get(indexDefinition.indexName),
@@ -1005,7 +1005,7 @@ object DynamoDbTable:
               initialWriteBurstRequestUnits = None,
               dynamicPartitionTopologyConfig =
                 config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
-                  TableStage1.DynamicPartitionTopologyConfig(
+                  TableAdmissionStage.DynamicPartitionTopologyConfig(
                     initialPartitionCount = dynamic.tableInitialPartitionCount,
                     storageSplitThresholdBytes = dynamic.tableStorageSplitThresholdBytes,
                     readThroughputGrowthSplitThresholdRequestUnitsPerSecond =

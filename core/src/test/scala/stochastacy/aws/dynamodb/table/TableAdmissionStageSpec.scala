@@ -11,19 +11,19 @@ import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, Future}
 
-class TableStage1Spec extends AnyWordSpec with should.Matchers:
+class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
 
   import LogicalPartitionAccess.*
 
-  given ActorSystem = ActorSystem("table-stage1-test")
+  given ActorSystem = ActorSystem("table-admission-test")
   given Materializer = Materializer.matFromSystem
 
-  "TableStage1" should {
+  "TableAdmissionStage" should {
     "admit a request under the configured hard check" in {
       val (admittedFuture, responseFuture, metricFuture) =
         runStage(
           Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(1024L)),
@@ -39,14 +39,14 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
 
       admitted.collect { case sample: AdmittedGetItemSample => sample.throughputDemand } shouldBe Vector(BigDecimal(1))
       responses shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.throughputDemand } shouldBe Vector(BigDecimal(1))
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.throughputDemand } shouldBe Vector(BigDecimal(1))
     }
 
     "throttle a request over the configured hard check immediately" in {
       val (admittedFuture, responseFuture, metricFuture) =
         runStage(
           Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
@@ -64,7 +64,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.throughputDemand } shouldBe Vector(BigDecimal(2))
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.throughputDemand } shouldBe Vector(BigDecimal(2))
     }
 
     "evaluate read and write hard checks separately" in {
@@ -78,7 +78,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (admittedFuture, responseFuture, metricFuture) =
         runStage(
           requests,
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -99,8 +99,8 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       admitted.collect { case _: AdmittedPutItemSample => 1 } should have size 1
       admitted.collect { case _: AdmittedGetItemSample => 1 } shouldBe empty
       responses.collect { case response: ThrottledResponse => response.dimension } shouldBe Vector(DynamoDbThroughputDimension.Read)
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.dimension } shouldBe Vector(DynamoDbThroughputDimension.Write)
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.dimension } shouldBe Vector(DynamoDbThroughputDimension.Read)
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.dimension } shouldBe Vector(DynamoDbThroughputDimension.Write)
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.dimension } shouldBe Vector(DynamoDbThroughputDimension.Read)
     }
 
     "apply GSI read checks to GSI-targeted reads" in {
@@ -113,7 +113,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
               target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
             )
           ),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
             admissionTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
             useCaseBehaviors = Map("query-usecase" -> FixedQueryBehavior(12288L)),
@@ -128,7 +128,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.target } shouldBe Vector(
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
       )
     }
@@ -144,7 +144,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
               readConsistency = ReadConsistency.StronglyConsistent
             )
           ),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map("scan-usecase" -> FixedScanBehavior(8192L)),
@@ -159,7 +159,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       responses.collect { case response: ThrottledResponse => response.target } shouldBe Vector(
         DynamoDbTarget.Table("orders")
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.reason } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
       )
     }
@@ -176,7 +176,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (admittedFuture, responseFuture, metricFuture) =
         runStage(
           requests,
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(1024L)),
@@ -202,7 +202,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (_, responseFuture, metricFuture) =
         runStage(
           Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey("hot"))),
@@ -220,14 +220,14 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.partitionDemandById.values.sum } shouldBe Vector(BigDecimal(2))
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.resolvedPartitionFootprint.partitionDemandById.values.sum } shouldBe Vector(BigDecimal(2))
     }
 
     "throttle base-table writes for a hot write partition" in {
       val (_, responseFuture, metricFuture) =
         runStage(
           Source.single(PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-new", itemBytes = 2048L)),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -246,7 +246,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableWriteHotPartitionThroughputExceeded
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.dimension } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.dimension } shouldBe Vector(
         DynamoDbThroughputDimension.Write
       )
     }
@@ -261,7 +261,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
               target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index")
             )
           ),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
             admissionTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
             useCaseBehaviors = Map(
@@ -279,7 +279,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.GlobalSecondaryIndexReadHotPartitionThroughputExceeded
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.target } shouldBe Vector(
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
       )
     }
@@ -295,7 +295,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
               readConsistency = ReadConsistency.StronglyConsistent
             )
           ),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -313,7 +313,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       responses.collect { case response: ThrottledResponse => response.target } shouldBe Vector(
         DynamoDbTarget.Table("orders")
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.reason } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
       )
     }
@@ -333,7 +333,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
                 readConsistency = ReadConsistency.StronglyConsistent
               )
             ),
-            TableStage1.Config(
+            TableAdmissionStage.Config(
               executionTarget = DynamoDbTarget.Table("orders"),
               admissionTarget = DynamoDbTarget.Table("orders"),
               useCaseBehaviors = Map(
@@ -362,7 +362,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
                 readConsistency = ReadConsistency.StronglyConsistent
               )
             ),
-            TableStage1.Config(
+            TableAdmissionStage.Config(
               executionTarget = DynamoDbTarget.Table("orders"),
               admissionTarget = DynamoDbTarget.Table("orders"),
               useCaseBehaviors = Map(
@@ -398,7 +398,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (_, responseFuture, metricFuture) =
         runStage(
           requests,
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -417,11 +417,11 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val metrics = Await.result(metricFuture, 3.seconds)
 
       responses shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.Normal,
-        Stage1AdmissionMode.AdaptiveBacked
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.Normal,
+        AdmissionMode.AdaptiveBacked
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.adaptiveConsumedRequestUnits } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.adaptiveConsumedRequestUnits } shouldBe Vector(
         BigDecimal(0),
         BigDecimal(1)
       )
@@ -439,7 +439,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (_, responseFuture, metricFuture) =
         runStage(
           requests,
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -457,9 +457,9 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val metrics = Await.result(metricFuture, 3.seconds)
 
       responses shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.Normal,
-        Stage1AdmissionMode.AdaptiveBacked
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.Normal,
+        AdmissionMode.AdaptiveBacked
       )
     }
 
@@ -481,7 +481,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
               )
             )
           ),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
             admissionTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
             useCaseBehaviors = Map(
@@ -513,7 +513,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
               )
             )
           ),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -535,8 +535,8 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
 
       gsiResponses shouldBe empty
       lsiResponses shouldBe empty
-      gsiMetrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode }.last shouldBe Stage1AdmissionMode.AdaptiveBacked
-      lsiMetrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode }.last shouldBe Stage1AdmissionMode.AdaptiveBacked
+      gsiMetrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode }.last shouldBe AdmissionMode.AdaptiveBacked
+      lsiMetrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode }.last shouldBe AdmissionMode.AdaptiveBacked
     }
 
     "not use adaptive capacity for pure whole-resource overage and combine adaptive relief with burst when needed" in {
@@ -545,7 +545,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
         Await.result(
           runStage(
             Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "whole-only")),
-            TableStage1.Config(
+            TableAdmissionStage.Config(
               executionTarget = DynamoDbTarget.Table("orders"),
               admissionTarget = DynamoDbTarget.Table("orders"),
               useCaseBehaviors = Map("whole-only" -> FixedHitGetItemBehavior(8192L)),
@@ -569,7 +569,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
                 GetItemRequest(eventTime = SimTime.of(1L), usecase = "combo-hot")
               )
             ),
-            TableStage1.Config(
+            TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -592,9 +592,9 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       pureWholeResourceResponses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
       )
-      comboMetrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.Normal,
-        Stage1AdmissionMode.AdaptiveAndBurstBacked
+      comboMetrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.Normal,
+        AdmissionMode.AdaptiveAndBurstBacked
       )
     }
 
@@ -602,7 +602,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (admittedFuture, responseFuture, metricFuture) =
         runStage(
           Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
@@ -620,13 +620,13 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
 
       admitted.collect { case _: AdmittedGetItemSample => 1 } shouldBe Vector(1)
       responses shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.BurstBacked
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.BurstBacked
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
         BigDecimal(1)
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstRemainingRequestUnits } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.burstRemainingRequestUnits } shouldBe Vector(
         BigDecimal(1)
       )
     }
@@ -635,7 +635,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (_, responseFuture, metricFuture) =
         runStage(
           Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
@@ -653,7 +653,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       responses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.burstAvailableRequestUnits } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.burstAvailableRequestUnits } shouldBe Vector(
         BigDecimal("0.5")
       )
     }
@@ -663,7 +663,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
         Await.result(
           runStage(
             Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "burst-hot")),
-            TableStage1.Config(
+            TableAdmissionStage.Config(
               executionTarget = DynamoDbTarget.Table("orders"),
               admissionTarget = DynamoDbTarget.Table("orders"),
               useCaseBehaviors = Map(
@@ -685,7 +685,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
         Await.result(
           runStage(
             Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "throttle-hot")),
-            TableStage1.Config(
+            TableAdmissionStage.Config(
               executionTarget = DynamoDbTarget.Table("orders"),
               admissionTarget = DynamoDbTarget.Table("orders"),
               useCaseBehaviors = Map(
@@ -703,8 +703,8 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
           3.seconds
         )
 
-      rescuedMetrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.BurstBacked
+      rescuedMetrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.BurstBacked
       )
       throttledResponses.collect { case response: ThrottledResponse => response.reason } shouldBe Vector(
         DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
@@ -722,7 +722,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (admittedFuture, responseFuture, metricFuture) =
         runStage(
           requests,
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -743,11 +743,11 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
 
       admitted.collect { case _: AdmittedGetItemSample => 1 } shouldBe Vector(1, 1)
       responses shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
-        Stage1AdmissionMode.Normal,
-        Stage1AdmissionMode.BurstBacked
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.admissionMode } shouldBe Vector(
+        AdmissionMode.Normal,
+        AdmissionMode.BurstBacked
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.burstConsumedRequestUnits } shouldBe Vector(
         BigDecimal(0),
         BigDecimal(1)
       )
@@ -764,7 +764,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
               GetItemRequest(eventTime = SimTime.of(2L), usecase = "moving-read")
             )
           ),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -773,7 +773,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
             stateModel = FixedTableState(1L, 8192L),
             readConsistency = ReadConsistency.StronglyConsistent,
             dynamicPartitionTopologyConfig = Some(
-              TableStage1.DynamicPartitionTopologyConfig(
+              TableAdmissionStage.DynamicPartitionTopologyConfig(
                 initialPartitionCount = 1,
                 readThroughputGrowthSplitThresholdRequestUnitsPerSecond = Some(BigDecimal(1)),
                 maxPartitionCount = Some(2)
@@ -786,10 +786,10 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val metrics = Await.result(metricFuture, 3.seconds)
 
       responses shouldBe empty
-      metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => (metric.reason, metric.previousPartitionCount, metric.newPartitionCount) } shouldBe
+      metrics.collect { case metric: AdmissionMetricEvent.TopologyChanged => (metric.reason, metric.previousPartitionCount, metric.newPartitionCount) } shouldBe
         Vector((TopologyChangeReason.ThroughputGrowth, 1, 2))
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.topologyPartitionCount } shouldBe Vector(1, 2)
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.resolvedPartitionFootprint.partitionDemandById.head._1 } shouldBe Vector(0, 1)
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.topologyPartitionCount } shouldBe Vector(1, 2)
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.resolvedPartitionFootprint.partitionDemandById.head._1 } shouldBe Vector(0, 1)
     }
 
     "grow topology from sustained heat only after the full sustain window" in {
@@ -804,14 +804,14 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
               GetItemRequest(eventTime = SimTime.of(3L), usecase = "hot-read")
             )
           ),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map("hot-read" -> FixedHitGetItemBehavior(8192L, hotKey)),
             stateModel = FixedTableState(1L, 8192L),
             readConsistency = ReadConsistency.StronglyConsistent,
             dynamicPartitionTopologyConfig = Some(
-              TableStage1.DynamicPartitionTopologyConfig(
+              TableAdmissionStage.DynamicPartitionTopologyConfig(
                 initialPartitionCount = 1,
                 heatSplitSustainWindowSeconds = 2,
                 readHeatSplitTriggerRequestUnitsPerSecondPerPartition = Some(BigDecimal(2)),
@@ -823,17 +823,17 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
 
       val metrics = Await.result(metricFuture, 3.seconds)
 
-      metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => metric.reason } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.TopologyChanged => metric.reason } shouldBe Vector(
         TopologyChangeReason.SustainedHeat
       )
-      metrics.collect { case metric: Stage1MetricEvent.TopologyChanged => metric.eventTime } shouldBe Vector(SimTime.of(3L))
+      metrics.collect { case metric: AdmissionMetricEvent.TopologyChanged => metric.eventTime } shouldBe Vector(SimTime.of(3L))
     }
 
     "throttle a base-table write when an internal GSI write scope is over its max throughput" in {
       val (_, responseFuture, metricFuture) =
         runStage(
           Source.single(PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -842,7 +842,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
             stateModel = FixedTableState(0L, 0L),
             maxWriteRequestUnitsPerSecond = Some(BigDecimal(10)),
             gsiWriteScopes = Vector(
-              TableStage1.GsiWriteScopeConfig(
+              TableAdmissionStage.GsiWriteScopeConfig(
                 target = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
                 stateModel = FixedTableState(0L, 0L),
                 maxWriteRequestUnitsPerSecond = Some(BigDecimal("0.5"))
@@ -861,7 +861,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
           DynamoDbThroughputDimension.Write
         )
       )
-      metrics.collect { case metric: Stage1MetricEvent.RequestThrottled => metric.target } shouldBe Vector(
+      metrics.collect { case metric: AdmissionMetricEvent.RequestThrottled => metric.target } shouldBe Vector(
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
       )
     }
@@ -870,7 +870,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       val (admittedFuture, responseFuture, metricFuture) =
         runStage(
           Source.single(UpdateItemRequest(eventTime = SimTime.of(1L), usecase = "update-existing", itemBytes = 2048L)),
-          TableStage1.Config(
+          TableAdmissionStage.Config(
             executionTarget = DynamoDbTarget.Table("orders"),
             admissionTarget = DynamoDbTarget.Table("orders"),
             useCaseBehaviors = Map(
@@ -879,17 +879,17 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
             stateModel = FixedTableState(1L, 1024L),
             maxWriteRequestUnitsPerSecond = Some(BigDecimal(10)),
             indexMaintenanceTargets = Vector(
-              TableStage1.IndexMaintenanceTargetConfig(
+              TableAdmissionStage.IndexMaintenanceTargetConfig(
                 target = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
                 projection = DynamoDbTable.IndexProjection.KeysOnly
               ),
-              TableStage1.IndexMaintenanceTargetConfig(
+              TableAdmissionStage.IndexMaintenanceTargetConfig(
                 target = DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index"),
                 projection = DynamoDbTable.IndexProjection.All
               )
             ),
             gsiWriteScopes = Vector(
-              TableStage1.GsiWriteScopeConfig(
+              TableAdmissionStage.GsiWriteScopeConfig(
                 target = DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index"),
                 stateModel = FixedTableState(1L, 128L),
                 maxWriteRequestUnitsPerSecond = Some(BigDecimal("0.5"))
@@ -912,13 +912,13 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
       planByTarget(DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")).throughputDemand shouldBe BigDecimal(0)
       planByTarget(DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index")).action shouldBe IndexMaintenanceAction.ReplaceEntry
       planByTarget(DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index")).newIndexEntryBytes shouldBe Some(2048L)
-      metrics.collect { case metric: Stage1MetricEvent.RequestAdmitted => metric.indexMaintenanceSummary.size } shouldBe Vector(2)
+      metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.indexMaintenanceSummary.size } shouldBe Vector(2)
     }
   }
 
   private def runStage(
                         requestSource: Source[TimedElement[DynamoDBRequest], ?],
-                        config: TableStage1.Config
+                        config: TableAdmissionStage.Config
                       ): (Future[Seq[TimedEvent]], Future[Seq[TimedEvent]], Future[Seq[TimedEvent]]) =
     val admittedSink = Sink.seq[TimedEvent]
     val responseSink = Sink.seq[TimedEvent]
@@ -929,7 +929,7 @@ class TableStage1Spec extends AnyWordSpec with should.Matchers:
         (admSink, respSink, metrSink) =>
           import GraphDSL.Implicits.*
 
-          val stage = b.add(TableStage1.componentOf(config))
+          val stage = b.add(TableAdmissionStage.componentOf(config))
 
           requestSource ~> stage.in
           stage.out0 ~> admSink

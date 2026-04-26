@@ -9,15 +9,15 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.{DynamoDBRequest, GetItemRequest, PutItemRequest}
 import stochastacy.aws.dynamodb.table.*
-import stochastacy.sim.{SimTime, TimedEvent}
+import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
 
-class TableStage4UsageAggregationIntegrationSpec extends AnyWordSpec with should.Matchers:
+class TableStorageStageTimeBasedUsageIntegrationSpec extends AnyWordSpec with should.Matchers:
 
-  given ActorSystem = ActorSystem("table-stage4-usage-test")
+  given ActorSystem = ActorSystem("table-storage-time-usage-test")
   given Materializer = Materializer.matFromSystem
 
-  "TableStage4 consumption output" should {
-    "fold into stable DynamoDB usage totals" in {
+  "TableStorageStage consumption output" should {
+    "support time-based storage usage rollups from timed storage delta events" in {
       val tableState = SummaryTableState(
         initialItemCount = 0L,
         initialTotalItemBytes = 0L
@@ -25,18 +25,26 @@ class TableStage4UsageAggregationIntegrationSpec extends AnyWordSpec with should
 
       val (responseProbe, resourceProbe, metricsProbe) =
         runTable(
-          requestSource = Source(
-            (Seq(512L, 1024L).zipWithIndex.map { case (itemBytes, idx) =>
-              PutItemRequest(
-                eventTime = SimTime.of(idx.toLong + 1L),
-                usecase = "stateful-table",
-                itemBytes = itemBytes
-              ): DynamoDBRequest
-            }) :+ GetItemRequest(
+          requestSource = Source(List[TimedElement[DynamoDBRequest]](
+            TimedControlEvent.Tick(SimTime.of(1L)),
+            PutItemRequest(
+              eventTime = SimTime.of(1L),
+              usecase = "stateful-table",
+              itemBytes = 512L
+            ),
+            TimedControlEvent.Tick(SimTime.of(2L)),
+            PutItemRequest(
+              eventTime = SimTime.of(2L),
+              usecase = "stateful-table",
+              itemBytes = 1024L
+            ),
+            TimedControlEvent.Tick(SimTime.of(3L)),
+            GetItemRequest(
               eventTime = SimTime.of(3L),
               usecase = "stateful-table"
-            )
-          ),
+            ),
+            TimedControlEvent.Tick(SimTime.of(4L))
+          )),
           tableState = tableState,
           behaviors = Map("stateful-table" -> StatefulTableBehavior),
           tableTarget = DynamoDbTarget.Table("orders"),
@@ -47,31 +55,25 @@ class TableStage4UsageAggregationIntegrationSpec extends AnyWordSpec with should
       resourceProbe.request(100)
       metricsProbe.request(100)
 
-      val usageTotals = drainConsumptionEvents(resourceProbe)
-        .foldLeft(DynamoDbUsageTotals())(DynamoDbUsageTotals.accumulate)
+      val timedConsumption = drainTimedConsumptionEvents(resourceProbe)
+      val totals = DynamoDbTimeBasedUsageTotals.fromTimedEvents(timedConsumption)
 
-      usageTotals.overall shouldBe DynamoDbTargetUsageTotals(
-        readCapacityUnits = BigDecimal(1.0),
-        writeCapacityUnits = BigDecimal(2.0),
-        storageBytesRead = 1024L,
-        storageBytesWritten = 1536L,
-        storageBytesDelta = 1024L
-      )
-
-      usageTotals.byTarget shouldBe Map(
-        DynamoDbTarget.Table("orders") -> DynamoDbTargetUsageTotals(
-          readCapacityUnits = BigDecimal(1.0),
-          writeCapacityUnits = BigDecimal(2.0),
-          storageBytesRead = 1024L,
-          storageBytesWritten = 1536L,
-          storageBytesDelta = 1024L
+      totals shouldBe DynamoDbTimeBasedUsageTotals(
+        overallStorageByteTicks = BigInt(2560),
+        endingOverallStorageBytes = 1024L,
+        byTarget = Map(
+          DynamoDbTarget.Table("orders") ->
+            DynamoDbTargetTimeBasedUsageTotals(
+              storageByteTicks = BigInt(2560),
+              endingStorageBytes = 1024L
+            )
         )
       )
     }
   }
 
   private def runTable(
-                        requestSource: Source[DynamoDBRequest, ?],
+                        requestSource: Source[TimedElement[DynamoDBRequest], ?],
                         tableState: TableState,
                         behaviors: Map[Any, UseCaseSampler[TableState]],
                         tableTarget: DynamoDbTarget,
@@ -88,7 +90,7 @@ class TableStage4UsageAggregationIntegrationSpec extends AnyWordSpec with should
         (respSink, consSink, metrSink) =>
           import GraphDSL.Implicits._
 
-          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency))
+          val table = b.add(TableStorageStage.componentOf(tableState, behaviors, tableTarget, readConsistency))
 
           requestSource ~> table.in
           table.out0 ~> respSink
@@ -99,16 +101,19 @@ class TableStage4UsageAggregationIntegrationSpec extends AnyWordSpec with should
       }
     ).run()
 
-  private def drainConsumptionEvents(
-                                      probe: TestSubscriber.Probe[_]
-                                    ): Vector[DynamoDbConsumptionEvent] =
-    val buf = Vector.newBuilder[DynamoDbConsumptionEvent]
+  private def drainTimedConsumptionEvents(
+                                           probe: TestSubscriber.Probe[_]
+                                         ): Vector[TimedElement[DynamoDbConsumptionEvent]] =
+    val buf = Vector.newBuilder[TimedElement[DynamoDbConsumptionEvent]]
     var done = false
 
     while !done do
       probe.expectNextOrComplete() match
         case Right(evt: DynamoDbConsumptionEvent) =>
           buf += evt
+
+        case Right(tick: TimedControlEvent) =>
+          buf += tick
 
         case Right(_) =>
           done = true

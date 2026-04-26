@@ -10,12 +10,12 @@ import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.{DeleteItemRequest, DeleteItemResponse, DynamoDBRequest, GetItemRequest, GetItemResponse}
 import stochastacy.sim.{SimTime, TimedEvent}
 
-class TableStage4DeleteItemSpec extends AnyWordSpec with should.Matchers:
+class TableStorageStageDeleteItemSpec extends AnyWordSpec with should.Matchers:
 
-  given ActorSystem = ActorSystem("table-stage4-delete-test")
+  given ActorSystem = ActorSystem("table-storage-delete-test")
   given Materializer = Materializer.matFromSystem
 
-  "Stage 4 Table component (delete path)" should {
+  "TableStorageStage (delete path)" should {
     "mutate summary state so later responses, consumption totals, and metric totals reflect prior deletes" in {
       val tableState = SummaryTableState(
         initialItemCount = 1L,
@@ -62,7 +62,7 @@ class TableStage4DeleteItemSpec extends AnyWordSpec with should.Matchers:
       responseProbe.expectComplete()
 
       val consumptionTotals = drainConsumptionEvents(resourceProbe)
-        .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
+        .foldLeft(StorageConsumptionTotals())(StorageConsumptionTotals.accumulate)
 
       consumptionTotals.readCapacityUnits shouldBe BigDecimal(1)
       consumptionTotals.writeCapacityUnits shouldBe BigDecimal(1)
@@ -74,7 +74,7 @@ class TableStage4DeleteItemSpec extends AnyWordSpec with should.Matchers:
       consumptionTotals.consistencies shouldBe Set(ReadConsistency.StronglyConsistent)
 
       val metricTotals = drainMetricEvents(metricsProbe)
-        .foldLeft(Stage4MetricTotals())(Stage4MetricTotals.accumulate)
+        .foldLeft(StorageMetricTotals())(StorageMetricTotals.accumulate)
 
       metricTotals.observedDeletes shouldBe 1
       metricTotals.deletedItems shouldBe 1
@@ -109,7 +109,7 @@ class TableStage4DeleteItemSpec extends AnyWordSpec with should.Matchers:
         (respSink, consSink, metrSink) =>
           import GraphDSL.Implicits._
 
-          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency))
+          val table = b.add(TableStorageStage.componentOf(tableState, behaviors, tableTarget, readConsistency))
 
           requestSource ~> table.in
           table.out0 ~> respSink
@@ -122,13 +122,13 @@ class TableStage4DeleteItemSpec extends AnyWordSpec with should.Matchers:
 
   private def drainMetricEvents(
                                  probe: TestSubscriber.Probe[_]
-                               ): Vector[Stage4MetricEvent] =
-    val buf = Vector.newBuilder[Stage4MetricEvent]
+                               ): Vector[StorageMetricEvent] =
+    val buf = Vector.newBuilder[StorageMetricEvent]
     var done = false
 
     while !done do
       probe.expectNextOrComplete() match
-        case Right(evt: Stage4MetricEvent) =>
+        case Right(evt: StorageMetricEvent) =>
           buf += evt
 
         case Right(_) =>

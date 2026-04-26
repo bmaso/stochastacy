@@ -1,12 +1,12 @@
-# TableStage4
+# TableStorageStage
 
 ## Purpose
 
-`TableStage4` models DynamoDB table data-plane execution after higher-level throttling and admission decisions have already been made.
+`TableStorageStage` models DynamoDB table data-plane execution after higher-level throttling and admission decisions have already been made.
 
 ## Graph Contract
 
-`TableStage4` is a Pekko graph component with:
+`TableStorageStage` is a Pekko graph component with:
 
 - 1 primary input stream: timed admitted-request elements produced upstream after sampling and admission
 - 3 output streams:
@@ -20,19 +20,19 @@ All streams use the simulator's timed-event protocol.
 
 In the composed DynamoDB `Table` graph:
 
-- `TableStage1` samples incoming requests, applies on-demand hard checks, and either throttles or admits them
-- `TableStage1` may now admit requests normally, with adaptive backing, with burst backing, or with both adaptive and burst backing before forwarding them
-- `TableStage1` also owns the current partition-topology snapshot and may evolve that topology at tick boundaries before later requests are admitted
-- `TableStage1` may now also reject a base-table write because a derived internal GSI write scope cannot be admitted
-- `TableStage4` decides what storage-level effect an already admitted request has
-- `TableStage4` now also enforces projection-aware GSI-vs-LSI read behavior for admitted `Query` and `Scan` requests
+- `TableAdmissionStage` samples incoming requests, applies on-demand hard checks, and either throttles or admits them
+- `TableAdmissionStage` may now admit requests normally, with adaptive backing, with burst backing, or with both adaptive and burst backing before forwarding them
+- `TableAdmissionStage` also owns the current partition-topology snapshot and may evolve that topology at tick boundaries before later requests are admitted
+- `TableAdmissionStage` may now also reject a base-table write because a derived internal GSI write scope cannot be admitted
+- `TableStorageStage` decides what storage-level effect an already admitted request has
+- `TableStorageStage` now also enforces projection-aware GSI-vs-LSI read behavior for admitted `Query` and `Scan` requests
 - downstream consumers aggregate responses, costs, and metrics across the whole simulation
 
-If an upstream stage throttles or rejects a request, that response should be produced before `TableStage4`, and the request should not be forwarded into `TableStage4`.
+If an upstream stage throttles or rejects a request, that response should be produced before `TableStorageStage`, and the request should not be forwarded into `TableStorageStage`.
 
 ## Responsibility Boundary
 
-`TableStage4` is responsible for:
+`TableStorageStage` is responsible for:
 
 - consuming the sampled operation outcome supplied by upstream admission stages
 - mutating table state for write-like operations
@@ -41,7 +41,7 @@ If an upstream stage throttles or rejects a request, that response should be pro
 - emitting data-plane metric events
 - enforcing whether an admitted index read remains index-only or requires additional base-table fetch work
 
-`TableStage4` is not responsible for:
+`TableStorageStage` is not responsible for:
 
 - account-wide quotas
 - provisioned throughput admission checks
@@ -63,7 +63,7 @@ In particular:
 - request events are logically ordered
 - all request events in a given window belong to the currently active logical time
 
-`TableStage4` may rely on upstream stages to provide a valid timed stream and an already-memorialized sampled outcome for each admitted request.
+`TableStorageStage` may rely on upstream stages to provide a valid timed stream and an already-memorialized sampled outcome for each admitted request.
 
 ## Output Guarantees
 
@@ -79,7 +79,7 @@ Control timing events must be propagated so each output remains a valid timed ev
 
 Each supported operation kind is interpreted through a use-case-specific sampler or behavior definition at table ingress.
 
-For each admitted request, `TableStage4` performs these conceptual steps:
+For each admitted request, `TableStorageStage` performs these conceptual steps:
 
 1. Read the current logical table state.
 2. Read the already-sampled operation outcome carried with the admitted request.
@@ -94,14 +94,14 @@ The important phase-3 rule is:
 
 - the sampler is consulted when a request first enters the table graph
 - the sampled demand and sampled outcome are memorialized
-- `TableStage4` does not independently resample admitted requests
+- `TableStorageStage` does not independently resample admitted requests
 - any resolved partition footprint used for admission also travels with the admitted request envelope
 - any memorialized index-maintenance plan for an admitted base-table write also travels with the admitted request envelope
 - any projection-aware query or scan summary also travels with the admitted request envelope
 
 ## State Model
 
-`TableStage4` owns the storage-oriented state of the table at this layer. The model should eventually cover facts such as:
+`TableStorageStage` owns the storage-oriented state of the table at this layer. The model should eventually cover facts such as:
 
 - item count
 - total item bytes
@@ -117,7 +117,7 @@ The state representation should support both:
 
 ## GetItem Semantics
 
-For `GetItem`, `TableStage4` must support at least these outcomes:
+For `GetItem`, `TableStorageStage` must support at least these outcomes:
 
 - hit: an item exists and is returned
 - miss: no item is returned
@@ -132,7 +132,7 @@ Behavioral requirements:
 
 ## Write Semantics
 
-`TableStage4` currently supports:
+`TableStorageStage` currently supports:
 
 - `GetItem`
 - `PutItem`
@@ -151,7 +151,7 @@ Current implementation notes:
 - `PutItem` produces exactly one `PutItemResponse`
 - `UpdateItem` produces exactly one `UpdateItemResponse`
 - `DeleteItem` produces exactly one `DeleteItemResponse`
-- successful writes update the mutable summary state owned by `TableStage4`
+- successful writes update the mutable summary state owned by `TableStorageStage`
 - current state mutation is stochastic-summary-oriented rather than key-accurate
 - successful writes emit write-side consumption and metric events
 
@@ -166,20 +166,20 @@ The resource-consumption output is the accounting-facing stream. It should event
 - bytes deleted
 - storage occupancy changes
 
-`TableStage4` should emit raw facts, not final billing totals.
+`TableStorageStage` should emit raw facts, not final billing totals.
 
 Current implementation notes:
 
-- `TableStage4` has a primary admitted-request execution path used by `DynamoDbTable`
+- `TableStorageStage` has a primary admitted-request execution path used by `DynamoDbTable`
 - a raw-request adapter path remains available for direct storage-level tests
-- `TableStage4` currently carries the resolved partition footprint forward unchanged but does not yet act on it directly
+- `TableStorageStage` currently carries the resolved partition footprint forward unchanged but does not yet act on it directly
 - adaptive-backed requests use the same admitted-request path as normal requests
 - burst-backed requests use the same admitted-request path as normal requests
 - `GetItem` emits read-capacity and byte-read facts
 - `Query` and `Scan` now emit projection-aware read facts:
   - GSI reads stay index-only
   - LSI reads may emit additional base-table read-capacity and byte-read facts when fetches are needed
-- precise downstream index maintenance now lives beside `TableStage4` in the composed table graph:
+- precise downstream index maintenance now lives beside `TableStorageStage` in the composed table graph:
   - GSI and LSI write effects are driven from a memorialized maintenance plan
   - `NoOp` entries emit no index write consumption
   - insert/replace/delete entries emit index-targeted write and storage facts
@@ -187,7 +187,7 @@ Current implementation notes:
 - `DeleteItem` emits write-capacity, bytes-deleted, and storage-delta facts
 - a downstream usage aggregation layer folds those raw facts into stable totals
 - time-based storage usage is derived downstream from timed consumption streams
-- downstream pricing remains outside `TableStage4`
+- downstream pricing remains outside `TableStorageStage`
 
 ## Metric Stream
 
@@ -214,7 +214,7 @@ Current write-side index metric notes:
 
 ## Timing Semantics
 
-By default, `TableStage4` should preserve the input request timestamp for outputs generated directly by the request unless a future latency model explicitly shifts the response into a later time window.
+By default, `TableStorageStage` should preserve the input request timestamp for outputs generated directly by the request unless a future latency model explicitly shifts the response into a later time window.
 
 The contract should allow future enhancement where:
 
@@ -226,7 +226,7 @@ The stage contract must therefore not assume request time and response time are 
 
 ## Error Handling
 
-`TableStage4` should fail fast when:
+`TableStorageStage` should fail fast when:
 
 - it receives a request type it does not support
 - it receives a request whose use-case has no registered behavior
@@ -236,7 +236,7 @@ It should not silently drop admitted requests.
 
 ## Non-Goals For The Initial Implementation
 
-The first complete `TableStage4` implementation does not need to model:
+The first complete `TableStorageStage` implementation does not need to model:
 
 - every DynamoDB operation
 - every CloudWatch metric
@@ -248,7 +248,7 @@ It only needs a coherent, extensible contract that correctly handles a narrow se
 
 ## Definition Of Done For The First Vertical Slice
 
-The initial `TableStage4` milestone should be considered complete when:
+The initial `TableStorageStage` milestone should be considered complete when:
 
 - `GetItem` requests produce exactly one response per request
 - hit and miss outcomes are representable
@@ -279,13 +279,13 @@ The public request surface has also now been expanded to include:
 Current phase-2 step-1 note:
 
 - those request types now exist in the public simulator surface
-- `TableStage4` still rejects them explicitly
+- `TableStorageStage` still rejects them explicitly
 - real read-path execution for those operations remains a later phase-2 step
 
 Current phase-2 step-2 note:
 
 - `DynamoDbTable` is now the public table-and-indexes mono-component
-- `TableStage4` remains the storage-facing base-table core inside that public graph
+- `TableStorageStage` remains the storage-facing base-table core inside that public graph
 - GSIs and LSIs now exist as internal placeholder execution units in that graph
 - real index state and write propagation are still deferred to the next phase-2 step
 
@@ -327,7 +327,7 @@ Phase-2 composition note:
 
 ## Still Deferred
 
-The current implementation still leaves these outside `TableStage4`'s required executable surface area:
+The current implementation still leaves these outside `TableStorageStage`'s required executable surface area:
 
 - PartiQL query execution
 - item-oriented query payload modeling

@@ -8,12 +8,12 @@ import stochastacy.sim.*
 import stochastacy.aws.dynamodb.table.LogicalPartitionAccess.SingleLogicalPartitionKey
 
 /**
- * A table is implemented as a multi-stage Pekko component graph. Stage 4 of this model
+ * A table is implemented as a multi-stage Pekko component graph. the TableStorageStage of this model
  * is the "data-plane". This stage represents the physical storage of a DDB table. This is
  * the stage that consumes RCUs and WCUs, and maintains the table state with respect to
  * the count and size of table items within the table, etc.
  */
-object TableStage4:
+object TableStorageStage:
 
   private final case class EffectiveReadSample(
                                                 returnedBytes: Long,
@@ -77,7 +77,7 @@ object TableStage4:
       TimedElement[AdmittedRequestSample],
       TimedElement[DynamoDBResponse],
       TimedElement[DynamoDbConsumptionEvent],
-      TimedElement[Stage4MetricEvent]
+      TimedElement[StorageMetricEvent]
     ],
     NotUsed
   ] =
@@ -188,16 +188,16 @@ object TableStage4:
       )
 
       val metricFlow = b.add(
-        Flow[TimedElement[AdmittedRequestSample]].mapConcat[TimedElement[Stage4MetricEvent]] {
+        Flow[TimedElement[AdmittedRequestSample]].mapConcat[TimedElement[StorageMetricEvent]] {
           case t: TimedControlEvent => List(t)
 
           case AdmittedGetItemSample(r, _, _, _, s, _, _) =>
             val returnedEvents =
               s.itemBytes.toList.map { itemBytes =>
-                Stage4MetricEvent.GetItemReturned(r.eventTime, r.usecase, itemBytes)
+                StorageMetricEvent.GetItemReturned(r.eventTime, r.usecase, itemBytes)
               }
             List(
-              Stage4MetricEvent.GetItemObserved(r.eventTime, r.usecase)
+              StorageMetricEvent.GetItemObserved(r.eventTime, r.usecase)
             ) ++ returnedEvents
 
           case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
@@ -214,17 +214,17 @@ object TableStage4:
             val returnedEvents =
               if s.returnedItemCount > 0L || effectiveSample.returnedBytes > 0L then
                 List(
-                  Stage4MetricEvent.QueryReturned(r.eventTime, r.usecase, r.target, s.returnedItemCount, effectiveSample.returnedBytes)
+                  StorageMetricEvent.QueryReturned(r.eventTime, r.usecase, r.target, s.returnedItemCount, effectiveSample.returnedBytes)
                 )
               else Nil
             val projectionEvents =
               executionTarget match
                 case _: DynamoDbTarget.GlobalSecondaryIndex | _: DynamoDbTarget.LocalSecondaryIndex =>
                   if effectiveSample.usedIndexOnly then
-                    List(Stage4MetricEvent.QueryUsedIndexOnly(r.eventTime, r.usecase, r.target))
+                    List(StorageMetricEvent.QueryUsedIndexOnly(r.eventTime, r.usecase, r.target))
                   else if effectiveSample.baseTableFetchBytes > 0L || effectiveSample.baseTableFetchItemCount > 0L then
                     List(
-                      Stage4MetricEvent.QueryFetchedFromBaseTable(
+                      StorageMetricEvent.QueryFetchedFromBaseTable(
                         r.eventTime,
                         r.usecase,
                         r.target,
@@ -235,8 +235,8 @@ object TableStage4:
                   else Nil
                 case _: DynamoDbTarget.Table => Nil
             List(
-              Stage4MetricEvent.QueryObserved(r.eventTime, r.usecase, r.target),
-              Stage4MetricEvent.QueryEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
+              StorageMetricEvent.QueryObserved(r.eventTime, r.usecase, r.target),
+              StorageMetricEvent.QueryEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
             ) ++ returnedEvents ++ projectionEvents
 
           case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
@@ -253,17 +253,17 @@ object TableStage4:
             val returnedEvents =
               if s.returnedItemCount > 0L || effectiveSample.returnedBytes > 0L then
                 List(
-                  Stage4MetricEvent.ScanReturned(r.eventTime, r.usecase, r.target, s.returnedItemCount, effectiveSample.returnedBytes)
+                  StorageMetricEvent.ScanReturned(r.eventTime, r.usecase, r.target, s.returnedItemCount, effectiveSample.returnedBytes)
                 )
               else Nil
             val projectionEvents =
               executionTarget match
                 case _: DynamoDbTarget.GlobalSecondaryIndex | _: DynamoDbTarget.LocalSecondaryIndex =>
                   if effectiveSample.usedIndexOnly then
-                    List(Stage4MetricEvent.ScanUsedIndexOnly(r.eventTime, r.usecase, r.target))
+                    List(StorageMetricEvent.ScanUsedIndexOnly(r.eventTime, r.usecase, r.target))
                   else if effectiveSample.baseTableFetchBytes > 0L || effectiveSample.baseTableFetchItemCount > 0L then
                     List(
-                      Stage4MetricEvent.ScanFetchedFromBaseTable(
+                      StorageMetricEvent.ScanFetchedFromBaseTable(
                         r.eventTime,
                         r.usecase,
                         r.target,
@@ -274,36 +274,36 @@ object TableStage4:
                   else Nil
                 case _: DynamoDbTarget.Table => Nil
             List(
-              Stage4MetricEvent.ScanObserved(r.eventTime, r.usecase, r.target),
-              Stage4MetricEvent.ScanEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
+              StorageMetricEvent.ScanObserved(r.eventTime, r.usecase, r.target),
+              StorageMetricEvent.ScanEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
             ) ++ returnedEvents ++ projectionEvents
 
           case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
             List(
-              Stage4MetricEvent.PutItemObserved(r.eventTime, r.usecase),
-              Stage4MetricEvent.PutItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
-              Stage4MetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-              Stage4MetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+              StorageMetricEvent.PutItemObserved(r.eventTime, r.usecase),
+              StorageMetricEvent.PutItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
+              StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
+              StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
             )
 
           case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
             List(
-              Stage4MetricEvent.UpdateItemObserved(r.eventTime, r.usecase),
-              Stage4MetricEvent.UpdateItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
-              Stage4MetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-              Stage4MetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+              StorageMetricEvent.UpdateItemObserved(r.eventTime, r.usecase),
+              StorageMetricEvent.UpdateItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
+              StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
+              StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
             )
 
           case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
             val deleteEvents =
               s.deletedItemBytes.toList.map { bytes =>
-                Stage4MetricEvent.DeleteItemDeleted(r.eventTime, r.usecase, bytes)
+                StorageMetricEvent.DeleteItemDeleted(r.eventTime, r.usecase, bytes)
               }
             List(
-              Stage4MetricEvent.DeleteItemObserved(r.eventTime, r.usecase)
+              StorageMetricEvent.DeleteItemObserved(r.eventTime, r.usecase)
             ) ++ deleteEvents ++ List(
-              Stage4MetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-              Stage4MetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+              StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
+              StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
             )
         }
       )
@@ -501,7 +501,7 @@ object TableStage4:
       TimedElement[DynamoDBRequest],
       TimedElement[DynamoDBResponse],
       TimedElement[DynamoDbConsumptionEvent],
-      TimedElement[Stage4MetricEvent]
+      TimedElement[StorageMetricEvent]
     ],
     NotUsed
   ] =

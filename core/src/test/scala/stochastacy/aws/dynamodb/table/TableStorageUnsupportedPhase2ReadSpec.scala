@@ -11,12 +11,12 @@ import stochastacy.sim.{SimTime, TimedEvent}
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, Future}
 
-class TableStage4UnsupportedPhase2ReadSpec extends AnyWordSpec with should.Matchers:
+class TableStorageStageUnsupportedPhase2ReadSpec extends AnyWordSpec with should.Matchers:
 
-  given ActorSystem = ActorSystem("table-stage4-unsupported-phase2-read-test")
+  given ActorSystem = ActorSystem("table-storage-unsupported-phase2-read-test")
   given Materializer = Materializer.matFromSystem
 
-  "Stage 4 Table component" should {
+  "TableStorageStage" should {
     "fail fast for PartiQL query requests without emitting synthetic outputs" in {
       val (responseFuture, resourceFuture, metricsFuture) =
         runTable(
@@ -50,7 +50,7 @@ class TableStage4UnsupportedPhase2ReadSpec extends AnyWordSpec with should.Match
           import GraphDSL.Implicits.*
 
           val table = b.add(
-            TableStage4.componentOf(
+            TableStorageStage.componentOf(
               stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
               useCaseBehaviors = Map.empty,
               tableTarget = DynamoDbTarget.Table("orders"),

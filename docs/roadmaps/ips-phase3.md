@@ -63,16 +63,16 @@ Refine write-side table and index maintenance so index creation, replacement, de
 
 This slice should improve the fidelity of write amplification and index-related billing outcomes.
 
-### 8b. TableStage1 Decomposition: Extract Sampling And Shaping
+### 8b. TableAdmissionStage Decomposition: Extract Sampling And Shaping
 
-Extract the sampling, throughput-demand calculation, partition-resolution, and index-maintenance-plan derivation responsibilities out of `TableStage1` into a separate upstream graph stage.
+Extract the sampling, throughput-demand calculation, partition-resolution, and index-maintenance-plan derivation responsibilities out of `TableAdmissionStage` into a separate upstream graph stage.
 
-This slice is a structural refactoring that does not change observable simulator behavior. Its purpose is to decompose the growing `TableStage1` monolith into sequential pipeline stages with narrower responsibilities, so that slice 9 and later slices have a clean place to add new write-path logic without further bloating a single stage.
+This slice is a structural refactoring that does not change observable simulator behavior. Its purpose is to decompose the growing `TableAdmissionStage` monolith into sequential pipeline stages with narrower responsibilities, so that slice 9 and later slices have a clean place to add new write-path logic without further bloating a single stage.
 
 The concrete decomposition target is:
 
 - a new upstream **sampling and shaping** stage that takes raw `DynamoDBRequest` elements, invokes the use-case sampler, computes throughput demand, resolves logical partition access into concrete partition footprints, derives the index-maintenance plan for writes, and emits a fully-shaped request envelope carrying all sampled and derived facts
-- a slimmed-down **admission and throttling** stage (the remaining `TableStage1`) that receives shaped envelopes and applies the admission sequence: whole-resource checks, hot-partition checks, adaptive relief, burst rescue, GSI write back-pressure, tick-boundary housekeeping, and topology evolution
+- a slimmed-down **admission and throttling** stage (the remaining `TableAdmissionStage`) that receives shaped envelopes and applies the admission sequence: whole-resource checks, hot-partition checks, adaptive relief, burst rescue, GSI write back-pressure, tick-boundary housekeeping, and topology evolution
 
 Implementation guidance:
 
@@ -93,7 +93,7 @@ This slice should not:
 
 Recommended test focus:
 
-- all existing `TableStage1Spec` tests pass unchanged or with minimal fixture adaptation
+- all existing `TableAdmissionStageSpec` tests pass unchanged or with minimal fixture adaptation
 - all existing `DynamoDbTableComponentSpec` tests pass unchanged
 - all existing integration and demo tests pass unchanged
 - the timed-event protocol is preserved across the new stage boundary
@@ -177,4 +177,4 @@ That means the following remain secondary or deferred until the on-demand-mode t
 
 Recommended starting point:
 
-- `slice 8b: TableStage1 decomposition` — extract sampling and shaping into a separate upstream stage, then proceed to slice 9
+- `slice 9: LSI item-collection constraints` — slice 8b is complete (sampling/shaping extracted into `TableSamplingStage`; topology-driven re-shaping in `TableAdmissionStage` handles the cross-stage tick-boundary case)

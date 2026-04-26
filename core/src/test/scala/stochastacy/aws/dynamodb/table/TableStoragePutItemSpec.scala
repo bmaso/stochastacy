@@ -7,34 +7,33 @@ import org.apache.pekko.stream.testkit.TestSubscriber
 import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.{DynamoDBRequest, GetItemRequest, GetItemResponse, UpdateItemRequest, UpdateItemResponse}
+import stochastacy.aws.dynamodb.{DynamoDBRequest, GetItemRequest, GetItemResponse, PutItemRequest, PutItemResponse}
 import stochastacy.sim.{SimTime, TimedEvent}
 
-class TableStage4UpdateItemSpec extends AnyWordSpec with should.Matchers:
+class TableStorageStagePutItemSpec extends AnyWordSpec with should.Matchers:
 
-  given ActorSystem = ActorSystem("table-stage4-update-test")
+  given ActorSystem = ActorSystem("table-storage-put-test")
   given Materializer = Materializer.matFromSystem
 
-  "Stage 4 Table component (update path)" should {
-    "mutate summary state so later responses, consumption totals, and metric totals reflect prior updates" in {
+  "TableStorageStage (write path)" should {
+    "mutate summary state so later responses, consumption totals, and metric totals reflect prior puts" in {
       val tableState = SummaryTableState(
-        initialItemCount = 1L,
-        initialTotalItemBytes = 512L
+        initialItemCount = 0L,
+        initialTotalItemBytes = 0L
       )
 
       val (responseProbe, resourceProbe, metricsProbe) =
         runTable(
           requestSource = Source(
-            Seq[DynamoDBRequest](
-              UpdateItemRequest(
-                eventTime = SimTime.of(1L),
+            (Seq(512L, 1024L).zipWithIndex.map { case (itemBytes, idx) =>
+              PutItemRequest(
+                eventTime = SimTime.of(idx.toLong + 1L),
                 usecase = "stateful-table",
-                itemBytes = 768L
-              ),
-              GetItemRequest(
-                eventTime = SimTime.of(2L),
-                usecase = "stateful-table"
-              )
+                itemBytes = itemBytes
+              ): DynamoDBRequest
+            }) :+ GetItemRequest(
+              eventTime = SimTime.of(3L),
+              usecase = "stateful-table"
             )
           ),
           tableState = tableState,
@@ -46,52 +45,55 @@ class TableStage4UpdateItemSpec extends AnyWordSpec with should.Matchers:
       resourceProbe.request(100)
       metricsProbe.request(100)
 
-      val responses = responseProbe.request(2).expectNextN(2)
-      responses shouldBe Seq(
-        UpdateItemResponse(
-          eventTime = SimTime.of(1L),
-          usecase = "stateful-table",
-          storedItemBytes = 768L,
-          createdNewItem = false,
-          previousItemBytes = Some(512L)
-        ),
-        GetItemResponse(
-          eventTime = SimTime.of(2L),
+      val responses = responseProbe.request(3).expectNextN(3)
+      responses shouldBe (
+        Seq(
+          (512L, true, None),
+          (1024L, false, Some(512L))
+        ).zipWithIndex.map { case ((storedItemBytes, createdNewItem, previousItemBytes), idx) =>
+          PutItemResponse(
+            eventTime = SimTime.of(idx.toLong + 1L),
+            usecase = "stateful-table",
+            storedItemBytes = storedItemBytes,
+            createdNewItem = createdNewItem,
+            previousItemBytes = previousItemBytes
+          )
+        } :+ GetItemResponse(
+          eventTime = SimTime.of(3L),
           usecase = "stateful-table",
           itemFound = true,
-          itemBytes = Some(768L)
+          itemBytes = Some(1024L)
         )
       )
       responseProbe.expectComplete()
 
       val consumptionTotals = drainConsumptionEvents(resourceProbe)
-        .foldLeft(Stage4ConsumptionTotals())(Stage4ConsumptionTotals.accumulate)
+        .foldLeft(StorageConsumptionTotals())(StorageConsumptionTotals.accumulate)
 
-      consumptionTotals.readCapacityUnits shouldBe BigDecimal(1)
-      consumptionTotals.writeCapacityUnits shouldBe BigDecimal(1)
-      consumptionTotals.storageBytesRead shouldBe 768L
-      consumptionTotals.storageBytesWritten shouldBe 768L
-      consumptionTotals.storageBytesDeleted shouldBe 0L
-      consumptionTotals.storageBytesDelta shouldBe 256L
+      consumptionTotals.readCapacityUnits shouldBe BigDecimal(1.0)
+      consumptionTotals.writeCapacityUnits shouldBe BigDecimal(2.0)
+      consumptionTotals.storageBytesRead shouldBe 1024L
+      consumptionTotals.storageBytesWritten shouldBe 1536L
+      consumptionTotals.storageBytesDelta shouldBe 1024L
       consumptionTotals.targets shouldBe Set(DynamoDbTarget.Table("orders"))
       consumptionTotals.consistencies shouldBe Set(ReadConsistency.StronglyConsistent)
 
       val metricTotals = drainMetricEvents(metricsProbe)
-        .foldLeft(Stage4MetricTotals())(Stage4MetricTotals.accumulate)
+        .foldLeft(StorageMetricTotals())(StorageMetricTotals.accumulate)
 
-      metricTotals.observedUpdates shouldBe 1
-      metricTotals.storedUpdates shouldBe 1
-      metricTotals.updatedBytes shouldBe 768L
-      metricTotals.createdItems shouldBe 0L
-      metricTotals.itemCountDelta shouldBe 0L
-      metricTotals.tableBytesDelta shouldBe 256L
+      metricTotals.observedPuts shouldBe 2
+      metricTotals.storedPuts shouldBe 2
+      metricTotals.storedBytes shouldBe 1536L
+      metricTotals.createdItems shouldBe 1
+      metricTotals.itemCountDelta shouldBe 1L
+      metricTotals.tableBytesDelta shouldBe 1024L
       metricTotals.observedGets shouldBe 1
       metricTotals.returnedItems shouldBe 1
-      metricTotals.returnedBytes shouldBe 768L
+      metricTotals.returnedBytes shouldBe 1024L
 
       tableState.itemCount shouldBe 1L
-      tableState.totalItemBytes shouldBe 768L
-      tableState.averageItemBytes shouldBe Some(768L)
+      tableState.totalItemBytes shouldBe 1024L
+      tableState.averageItemBytes shouldBe Some(1024L)
     }
   }
 
@@ -113,7 +115,7 @@ class TableStage4UpdateItemSpec extends AnyWordSpec with should.Matchers:
         (respSink, consSink, metrSink) =>
           import GraphDSL.Implicits._
 
-          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency))
+          val table = b.add(TableStorageStage.componentOf(tableState, behaviors, tableTarget, readConsistency))
 
           requestSource ~> table.in
           table.out0 ~> respSink
@@ -126,13 +128,13 @@ class TableStage4UpdateItemSpec extends AnyWordSpec with should.Matchers:
 
   private def drainMetricEvents(
                                  probe: TestSubscriber.Probe[_]
-                               ): Vector[Stage4MetricEvent] =
-    val buf = Vector.newBuilder[Stage4MetricEvent]
+                               ): Vector[StorageMetricEvent] =
+    val buf = Vector.newBuilder[StorageMetricEvent]
     var done = false
 
     while !done do
       probe.expectNextOrComplete() match
-        case Right(evt: Stage4MetricEvent) =>
+        case Right(evt: StorageMetricEvent) =>
           buf += evt
 
         case Right(_) =>
@@ -166,13 +168,13 @@ class TableStage4UpdateItemSpec extends AnyWordSpec with should.Matchers:
     override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
       GetItemSample(itemBytes = state.averageItemBytes)
 
-    override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
-      FixedUpdateItemSample(
+    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+      FixedPutItemSample(
         writtenItemBytes = request.itemBytes,
         previousItemBytes = state.averageItemBytes
       )
 
-  private case class FixedUpdateItemSample(
-                                            override val writtenItemBytes: Long,
-                                            override val previousItemBytes: Option[Long]
-                                          ) extends UpdateItemSample
+  private case class FixedPutItemSample(
+                                         override val writtenItemBytes: Long,
+                                         override val previousItemBytes: Option[Long]
+                                       ) extends PutItemSample

@@ -1,6 +1,6 @@
 package stochastacy.aws.dynamodb.table
 
-final case class Stage4MetricTotals(
+final case class StorageMetricTotals(
                                      observedGets: Long = 0,
                                      returnedItems: Long = 0,
                                      returnedBytes: Long = 0,
@@ -18,94 +18,94 @@ final case class Stage4MetricTotals(
                                      tableBytesDelta: Long = 0
                                    )
 
-object Stage4MetricTotals:
+object StorageMetricTotals:
   def accumulate(
-                  acc: Stage4MetricTotals,
-                  evt: Stage4MetricEvent
-                ): Stage4MetricTotals =
+                  acc: StorageMetricTotals,
+                  evt: StorageMetricEvent
+                ): StorageMetricTotals =
     evt match
-      case Stage4MetricEvent.GetItemObserved(_, _) =>
+      case StorageMetricEvent.GetItemObserved(_, _) =>
         acc.copy(observedGets = acc.observedGets + 1)
 
-      case Stage4MetricEvent.GetItemReturned(_, _, bytes) =>
+      case StorageMetricEvent.GetItemReturned(_, _, bytes) =>
         acc.copy(
           returnedItems = acc.returnedItems + 1,
           returnedBytes = acc.returnedBytes + bytes
         )
 
-      case Stage4MetricEvent.PutItemObserved(_, _) =>
+      case StorageMetricEvent.PutItemObserved(_, _) =>
         acc.copy(observedPuts = acc.observedPuts + 1)
 
-      case Stage4MetricEvent.PutItemStored(_, _, bytes, createdNewItem) =>
+      case StorageMetricEvent.PutItemStored(_, _, bytes, createdNewItem) =>
         acc.copy(
           storedPuts = acc.storedPuts + 1,
           storedBytes = acc.storedBytes + bytes,
           createdItems = acc.createdItems + (if createdNewItem then 1L else 0L)
         )
 
-      case Stage4MetricEvent.UpdateItemObserved(_, _) =>
+      case StorageMetricEvent.UpdateItemObserved(_, _) =>
         acc.copy(observedUpdates = acc.observedUpdates + 1)
 
-      case Stage4MetricEvent.UpdateItemStored(_, _, bytes, createdNewItem) =>
+      case StorageMetricEvent.UpdateItemStored(_, _, bytes, createdNewItem) =>
         acc.copy(
           storedUpdates = acc.storedUpdates + 1,
           updatedBytes = acc.updatedBytes + bytes,
           createdItems = acc.createdItems + (if createdNewItem then 1L else 0L)
         )
 
-      case Stage4MetricEvent.DeleteItemObserved(_, _) =>
+      case StorageMetricEvent.DeleteItemObserved(_, _) =>
         acc.copy(observedDeletes = acc.observedDeletes + 1)
 
-      case Stage4MetricEvent.DeleteItemDeleted(_, _, bytes) =>
+      case StorageMetricEvent.DeleteItemDeleted(_, _, bytes) =>
         acc.copy(
           deletedItems = acc.deletedItems + 1,
           deletedBytes = acc.deletedBytes + bytes
         )
 
-      case Stage4MetricEvent.TableItemCountChanged(_, _, delta) =>
+      case StorageMetricEvent.TableItemCountChanged(_, _, delta) =>
         acc.copy(itemCountDelta = acc.itemCountDelta + delta)
 
-      case Stage4MetricEvent.TableBytesChanged(_, _, delta) =>
+      case StorageMetricEvent.TableBytesChanged(_, _, delta) =>
         acc.copy(tableBytesDelta = acc.tableBytesDelta + delta)
 
-      case _: Stage4MetricEvent.QueryObserved =>
+      case _: StorageMetricEvent.QueryObserved =>
         acc
 
-      case _: Stage4MetricEvent.QueryEvaluated =>
+      case _: StorageMetricEvent.QueryEvaluated =>
         acc
 
-      case _: Stage4MetricEvent.QueryReturned =>
+      case _: StorageMetricEvent.QueryReturned =>
         acc
 
-      case _: Stage4MetricEvent.QueryUsedIndexOnly =>
+      case _: StorageMetricEvent.QueryUsedIndexOnly =>
         acc
 
-      case _: Stage4MetricEvent.QueryFetchedFromBaseTable =>
+      case _: StorageMetricEvent.QueryFetchedFromBaseTable =>
         acc
 
-      case _: Stage4MetricEvent.IndexEntryInserted =>
+      case _: StorageMetricEvent.IndexEntryInserted =>
         acc
 
-      case _: Stage4MetricEvent.IndexEntryReplaced =>
+      case _: StorageMetricEvent.IndexEntryReplaced =>
         acc
 
-      case _: Stage4MetricEvent.IndexEntryDeleted =>
+      case _: StorageMetricEvent.IndexEntryDeleted =>
         acc
 
-      case _: Stage4MetricEvent.IndexEntryUnchanged =>
+      case _: StorageMetricEvent.IndexEntryUnchanged =>
         acc
 
-      case _: Stage4MetricEvent.ScanObserved =>
+      case _: StorageMetricEvent.ScanObserved =>
         acc
 
-      case _: Stage4MetricEvent.ScanEvaluated =>
+      case _: StorageMetricEvent.ScanEvaluated =>
         acc
 
-      case _: Stage4MetricEvent.ScanReturned =>
+      case _: StorageMetricEvent.ScanReturned =>
         acc
 
-      case _: Stage4MetricEvent.ScanUsedIndexOnly =>
+      case _: StorageMetricEvent.ScanUsedIndexOnly =>
         acc
 
-      case _: Stage4MetricEvent.ScanFetchedFromBaseTable =>
+      case _: StorageMetricEvent.ScanFetchedFromBaseTable =>
         acc

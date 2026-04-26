@@ -12,12 +12,12 @@ import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.dynamodb.usage.{DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
 
-class TableStage4PricingIntegrationSpec extends AnyWordSpec with should.Matchers:
+class TableStorageStagePricingIntegrationSpec extends AnyWordSpec with should.Matchers:
 
-  given ActorSystem = ActorSystem("table-stage4-pricing-test")
+  given ActorSystem = ActorSystem("table-storage-pricing-test")
   given Materializer = Materializer.matFromSystem
 
-  "TableStage4 output" should {
+  "TableStorageStage output" should {
     "support pricing from countable usage totals and time-based storage usage" in {
       val tableState = SummaryTableState(
         initialItemCount = 0L,
@@ -101,7 +101,7 @@ class TableStage4PricingIntegrationSpec extends AnyWordSpec with should.Matchers
         (respSink, consSink, metrSink) =>
           import GraphDSL.Implicits._
 
-          val table = b.add(TableStage4.componentOf(tableState, behaviors, tableTarget, readConsistency))
+          val table = b.add(TableStorageStage.componentOf(tableState, behaviors, tableTarget, readConsistency))
 
           requestSource ~> table.in
           table.out0 ~> respSink
