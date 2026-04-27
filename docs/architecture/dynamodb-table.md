@@ -186,6 +186,19 @@ In phase-3 slice 9:
 - the storage stage now sits between admission and the index-maintenance graph; its new `out3` (validated admitted samples) feeds maintenance so rejected writes never propagate index updates
 - the rule never runs when no LSIs are configured, regardless of the limit field value
 
+In phase-3 slice 10:
+
+- DynamoDB Global Tables are now modeled. A new public component `DynamoDbGlobalTable.componentOf(config)` wraps N independent regional `DynamoDbTable` instances (each via the new `componentOfReplicated` factory) plus a `ReplicationCoordinator` stage that propagates writes between regions
+- replication is stochastic and per directional link: each `(sourceRegion, destinationRegion)` pair has its own `ContinuousDistribution` for replication lag (using Apache Commons Statistics); samples are floored to non-negative tick counts
+- replicated writes bypass the destination region's admission stage (per decision 3) and apply directly to storage as already-admitted samples; they accrue normal destination-region WCU consumption (rWCU as a distinct capacity bucket is a deferred follow-on)
+- per-region cost accounting flows through unchanged single-region pipelines: `DynamoDbUsageTotals` and `DynamoDbPricing` know nothing about regions; aggregation across regions for grand-total cost is the caller's concern (per decision 4)
+- cross-region data transfer cost is modeled as a generic, AWS-service-agnostic component in `stochastacy.aws.transfer` (separate from DDB-specific code) — `CrossRegionTransferEvent`, `CrossRegionTransferUsageTotals`, `CrossRegionTransferPricing`. The DDB replication coordinator emits events tagged `sourceService = "DynamoDB"`; future producers (S3 CRR, RDS, Lambda) emit the same type and feed the same pipeline
+- replication loop prevention: `componentOfReplicated`'s outbound replication output forks from `admission.out0` (real client writes) NOT from `storage.out3` (which would also include applied-replicated writes); replicated writes bypass admission and never appear on outbound
+- replicated writes are restamped with the destination region's apply-tick `eventTime` (since they apply at the destination's local clock, not the origin's)
+- conflict resolution is explicitly out of scope; the simulator assumes workloads do not issue genuinely conflicting cross-region writes
+- tick alignment across N regions uses chained `MergeTimedEventGraph` instances (newly exposed via a public `graphOf` factory) to combine outbound replication streams while preserving the timed-event protocol
+- slice 10 supports base-table-only configurations per region; combining global tables with GSIs/LSIs is a deferred follow-on
+
 ## Layering
 
 In the full `Table` component, requests now flow through several conceptual layers before reaching `TableStorageStage`:

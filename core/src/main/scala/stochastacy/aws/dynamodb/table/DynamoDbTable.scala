@@ -5,6 +5,7 @@ import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL, Merge, Sink}
 import org.apache.pekko.stream.{FanOutShape2, FanOutShape3, Graph}
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.*
+import stochastacy.sim.stream.MergeTimedEventGraph
 
 object DynamoDbTable:
 
@@ -1067,3 +1068,174 @@ object DynamoDbTable:
           metricMerge.out
         )
       }
+
+  /**
+   * Replication-aware factory variant. Produces a graph with the same response/consumption/metric
+   * outputs as `componentOf`, plus an inbound port for replicated writes (which bypass admission)
+   * and an outbound port emitting validated admitted samples for the replication coordinator.
+   *
+   * Slice 10 supports base-table-only configurations. Tables configured with GSIs or LSIs in
+   * combination with `componentOfReplicated` are tracked under deferred follow-on work; for now
+   * this factory throws `IllegalArgumentException` on such configs.
+   */
+  def componentOfReplicated(config: Config): Graph[DynamoDbTableReplicatedShape, NotUsed] =
+    require(
+      config.globalSecondaryIndexes.isEmpty && config.localSecondaryIndexes.isEmpty,
+      s"componentOfReplicated for table '${config.tableName}' does not yet support GSIs/LSIs " +
+        "in slice 10. Combining global tables with secondary indexes is tracked as a deferred " +
+        "follow-on item."
+    )
+
+    val executionTarget: DynamoDbTarget = DynamoDbTarget.Table(config.tableName)
+    val admissionTarget: DynamoDbTarget = DynamoDbTarget.Table(config.tableName)
+
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val admission = b.add(
+        TableAdmissionStage.componentOf(
+          TableAdmissionStage.Config(
+            executionTarget = executionTarget,
+            admissionTarget = admissionTarget,
+            useCaseBehaviors = config.useCaseBehaviors,
+            stateModel = config.stateModel,
+            readConsistency = config.readConsistency,
+            maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
+            maxWriteRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond,
+            partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
+            maxReadRequestUnitsPerSecondPerPartition =
+              config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
+            maxWriteRequestUnitsPerSecondPerPartition =
+              config.hotPartitionModel.flatMap(_.tablePerPartitionMaxWriteRequestUnitsPerSecond),
+            adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+              config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond),
+            adaptiveMaxWriteRequestUnitsPerSecondPerPartition =
+              config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond),
+            burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+            initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
+            initialWriteBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableWriteBurstRequestUnits),
+            dynamicPartitionTopologyConfig =
+              config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+                TableAdmissionStage.DynamicPartitionTopologyConfig(
+                  initialPartitionCount = dynamic.tableInitialPartitionCount,
+                  storageSplitThresholdBytes = dynamic.tableStorageSplitThresholdBytes,
+                  readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                    dynamic.tableThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+                  writeThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                    dynamic.tableWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+                  heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+                  readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                    dynamic.tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                  writeHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                    dynamic.tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                  maxPartitionCount = dynamic.maxTablePartitionCount
+                )
+              },
+            indexMaintenanceTargets = Vector.empty,
+            gsiWriteScopes = Vector.empty
+          )
+        )
+      )
+
+      val storage = b.add(
+        TableStorageStage.componentOfAdmitted(
+          stateModel = config.stateModel,
+          indexProjection = None,
+          itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes
+        )
+      )
+
+      // The outbound replication output forks from admission.out0 (admitted client requests)
+      // BEFORE the writes are merged with replicated-input. This is critical: it prevents an
+      // infinite replication loop. If we forked from storage.out3 instead, then replicated
+      // writes applied at this region would be re-emitted on the outbound, sent back to the
+      // coordinator, and fanned out again — endlessly. Forking from admission.out0 captures
+      // only writes that originated as client requests at this region; replicated writes
+      // bypass admission and never appear here.
+      //
+      // Note: this means a write that's admitted but later rejected by storage's item-collection
+      // check would still be replicated. Slice 10 sidesteps this by forbidding LSIs in
+      // componentOfReplicated configs (item-collection check requires LSIs to apply), so storage
+      // never rejects in slice 10.
+      val admissionFork = b.add(Broadcast[TimedElement[AdmittedRequestSample]](2))
+
+      // Combine admission's admitted samples with the inbound replicated-writes port.
+      // Both streams are tick-aligned (the global-table factory ensures this); MergeTimedEventGraph
+      // pairs ticks across the two streams and produces a single TimedEvent stream feeding storage.
+      val replicatedInletMerge = b.add(MergeTimedEventGraph.graphOf(bufferSize = 16))
+
+      // Upcast admission's admitted samples to TimedEvent for the merger.
+      val upcastAdmission = b.add(Flow[TimedElement[AdmittedRequestSample]].map[TimedEvent](e => e))
+
+      // Coerce TimedEvent back to TimedElement[AdmittedRequestSample] for storage's input shape.
+      val coerceToAdmitted = b.add(
+        Flow[TimedEvent].collect[TimedElement[AdmittedRequestSample]] {
+          case s: AdmittedRequestSample => s
+          case t: TimedControlEvent => t
+        }
+      )
+
+      val throttledResponseFilter = b.add(
+        Flow[TimedElement[DynamoDBResponse]].collect[TimedElement[DynamoDBResponse]] {
+          case response: DynamoDBResponse => response
+        }
+      )
+      val admissionMetricFilter = b.add(
+        Flow[TimedElement[AdmissionMetricEvent]].collect[TimedElement[TableMetricEvent]] {
+          case metric: AdmissionMetricEvent => metric
+        }
+      )
+
+      // Outbound write filter: only writes (Put/Update/Delete) appear on the outbound
+      // replication output. Reads passed through admission but are not replicated.
+      val outboundWriteFilter = b.add(
+        Flow[TimedElement[AdmittedRequestSample]].collect[TimedElement[AdmittedRequestSample]] {
+          case t: TimedControlEvent => t
+          case s: AdmittedPutItemSample => s
+          case s: AdmittedUpdateItemSample => s
+          case s: AdmittedDeleteItemSample => s
+        }
+      )
+
+      val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+
+      // Storage's validated-sample output is unused by componentOfReplicated (no maintenance,
+      // no outbound replication from this port). Sink it.
+      val ignoreValidatedSamples = b.add(Sink.ignore)
+
+      // Wire the graph.
+      // admission.out0 → fork(2): one path to storage (via merge with replicatedIn), one to outbound
+      admission.out0 ~> admissionFork.in
+      admissionFork.out(0) ~> upcastAdmission.in
+      upcastAdmission.out ~> replicatedInletMerge.in0
+      admissionFork.out(1) ~> outboundWriteFilter.in
+
+      // Replicated-write port → merge → storage
+      val replicatedInProxy = b.add(
+        Flow[TimedElement[AdmittedRequestSample]].map[TimedEvent](e => e)
+      )
+      replicatedInProxy.out ~> replicatedInletMerge.in1
+      replicatedInletMerge.out ~> coerceToAdmitted.in
+      coerceToAdmitted.out ~> storage.in
+
+      // Outbound: admission throttled responses + storage normal responses → responseMerge
+      admission.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
+      storage.out0 ~> responseMerge.in(1)
+
+      // Storage's validated-sample output (slice-9 out3): unused in slice 10 componentOfReplicated.
+      storage.out3 ~> ignoreValidatedSamples
+
+      // Admission and storage metrics merge directly into a single metric stream.
+      val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](2))
+      admission.out2 ~> admissionMetricFilter ~> metricMerge.in(0)
+      storage.out2 ~> metricMerge.in(1)
+
+      new DynamoDbTableReplicatedShape(
+        requestIn = admission.in,
+        replicatedIn = replicatedInProxy.in,
+        responseOut = responseMerge.out,
+        consumptionOut = storage.out1,
+        metricOut = metricMerge.out,
+        outboundReplicationOut = outboundWriteFilter.out
+      )
+    }

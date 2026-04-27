@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-04-26 (slice 9 complete)
+Last updated: 2026-04-26 (phase 3 complete — slice 10 shipped)
 
 ## Current Position
 
@@ -103,15 +103,19 @@ The current demo workflow is:
 
 ## Recommended Next Work
 
-The main remaining work has moved into phase 3:
+Phase 3 is complete. Recommended next-phase work (phase 4):
 
-1. implement `slice 10: global tables and cross-Region replication` — next concrete implementation target
-2. keep the runnable phase-2 demo stable while the simulator internals advance
-3. perform any targeted documentation cleanup needed so the public docs stop implying phase 2 is still the simulator frontier
+1. **Multi-region runnable demo** — extend the order-tracking demo to materialize a multi-region scenario. Touches the JSONL/Postgres/Grafana stack with per-region cost panels, a Postgres schema migration adding region columns, and demo-runner CLI extensions. This is "slice 10b" or its own phase-4 deliverable.
+2. **rWCU as a distinct capacity bucket** — replicated writes at a destination region currently bill against normal WCU; AWS bills them as rWCU with separate pricing. Adding this is required before claiming "on-demand simulation is fully accurate."
+3. **Tiered cross-region transfer pricing** — slice 10 uses flat per-source-region rates. Real AWS uses tiered rates ("first 10 TB at rate X, next 40 TB at rate Y"). Requires the pricing component to track a billing-period bucket.
+4. **GSI/LSI support inside replicated tables** — slice 10's `componentOfReplicated` rejects configs with secondary indexes. Real AWS Global Tables support GSIs/LSIs on replicas; adding this is its own slice.
+5. Continue keeping the runnable phase-2 demo stable.
 
 Slice 8b (`TableAdmissionStage` decomposition) is complete: sampling and shaping have been extracted into the upstream `TableSamplingStage`, and `TableAdmissionStage` re-resolves a shaped request's footprint and index-maintenance plan when topology evolution at a tick boundary invalidates the memorialized values. `IndexMaintenancePlanDerivation` is the single canonical helper for deriving per-index plans, used by both stages.
 
 Slice 9 (LSI item-collection size limit) is complete: `DynamoDbTable.Config.itemCollectionSizeLimitBytes` (default 10 GiB when LSIs are configured) drives a validate-then-mutate split in `TableStorageStage`. The "current size" of an item collection is sampler-provided per write (`WriteItemSample.currentItemCollectionBytes`, `DeleteItemSample.currentItemCollectionBytes`); no per-key state lives in the simulator. Rejected writes emit a new top-level `ItemCollectionSizeLimitExceededResponse` and a `StorageMetricEvent.ItemCollectionSizeLimitExceeded` metric; no consumption is charged, no state is mutated, and no index maintenance is propagated. The graph wiring now puts `TableStorageStage` between admission and the index-maintenance graph (validated samples flow on its new `out3`).
+
+Slice 10 (Global Tables) is complete. New public components: `DynamoDbGlobalTable.componentOf(config)` and `DynamoDbTable.componentOfReplicated(config)`. Replication is modeled with stochastic per-link lag (sampled from `ContinuousDistribution`s configured per directional region pair), per-region cost accounting (no region-awareness in regional pipelines, per decision 4), and a generic `stochastacy.aws.transfer` package for cross-region data transfer cost (parallel pipeline, AWS-service-agnostic with `sourceService` tag). Replication coordinator restamps replicated writes to destination apply-tick eventTime; loop prevention forks outbound replication from `admission.out0` rather than `storage.out3`. See `docs/specs/global-tables-design.md` for the 10 design decisions.
 
 Treat [ips-phase3.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/roadmaps/ips-phase3.md) as the canonical planning anchor for ongoing simulator work, and use [dynamodb-table.md](/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/stochastacy/docs/architecture/dynamodb-table.md) as the design-boundary reference for where new slice logic should live.
 

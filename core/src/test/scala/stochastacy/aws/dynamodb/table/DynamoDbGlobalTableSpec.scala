@@ -1,0 +1,247 @@
+package stochastacy.aws.dynamodb.table
+
+import org.apache.commons.rng.simple.RandomSource
+import org.apache.commons.statistics.distribution.ContinuousDistribution
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.stream.{ClosedShape, Materializer}
+import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
+import org.scalatest.matchers.should
+import org.scalatest.wordspec.AnyWordSpec
+import stochastacy.aws.dynamodb.*
+import stochastacy.aws.dynamodb.table.LogicalPartitionAccess.SingleLogicalPartitionKey
+import stochastacy.aws.transfer.CrossRegionTransferEvent
+import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent, ticks}
+
+import scala.concurrent.duration.*
+import scala.concurrent.{Await, Future}
+
+class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
+
+  given ActorSystem = ActorSystem("dynamodb-global-table-test")
+  given Materializer = Materializer.matFromSystem
+
+  private case class FixedPutItemSample(
+                                         override val writtenItemBytes: Long,
+                                         override val previousItemBytes: Option[Long] = None,
+                                         override val logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("pk")
+                                       ) extends PutItemSample
+
+  private case class FixedPutItemBehavior(writtenItemBytes: Long) extends UseCaseSampler[TableState]:
+    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+      FixedPutItemSample(writtenItemBytes)
+
+  /** Constant-zero distribution: every sample returns 0 (immediate replication). */
+  private def zeroLagDistribution: ContinuousDistribution =
+    new ContinuousDistribution:
+      override def density(x: Double): Double = if x == 0.0 then Double.PositiveInfinity else 0.0
+      override def probability(x0: Double, x1: Double): Double = if x0 <= 0.0 && x1 >= 0.0 then 1.0 else 0.0
+      override def cumulativeProbability(x: Double): Double = if x >= 0.0 then 1.0 else 0.0
+      override def inverseCumulativeProbability(p: Double): Double = 0.0
+      override def getMean: Double = 0.0
+      override def getVariance: Double = 0.0
+      override def getSupportLowerBound: Double = 0.0
+      override def getSupportUpperBound: Double = 0.0
+      override def createSampler(rng: org.apache.commons.rng.UniformRandomProvider): ContinuousDistribution.Sampler =
+        () => 0.0
+
+  private def regionConfig(tableName: String = "orders"): DynamoDbTable.Config =
+    DynamoDbTable.Config(
+      tableName = tableName,
+      stateModel = FixedTableState(0L, 0L),
+      useCaseBehaviors = Map(
+        "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L)
+      ),
+      readConsistency = ReadConsistency.StronglyConsistent
+    )
+
+  private def globalConfig(
+                            regions: Seq[String],
+                            replicationModel: ReplicationModel
+                          ): DynamoDbGlobalTable.Config =
+    DynamoDbGlobalTable.Config(
+      regions = regions.map(r => r -> regionConfig()).toMap,
+      replicationModel = replicationModel
+    )
+
+  "DynamoDbGlobalTable" should {
+
+    "fan a write from one region to all peers with zero-lag replication" in {
+      val rng = RandomSource.XO_RO_SHI_RO_128_PP.create(1L)
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(zeroLagDistribution),
+        rng = rng
+      )
+      val regions = Seq("ap-southeast-2", "eu-west-1", "us-east-1")  // alphabetical sort order
+      val config = globalConfig(regions, model)
+
+      // 3 regions × 1 response sink each + 1 transfer = 4 sinks. Capture responses + transfer.
+      val sinkAp = Sink.seq[TimedEvent]
+      val sinkEu = Sink.seq[TimedEvent]
+      val sinkUs = Sink.seq[TimedEvent]
+      val sinkTransfer = Sink.seq[TimedEvent]
+
+      val (apF, euF, usF, transferF) = RunnableGraph.fromGraph(
+        GraphDSL.createGraph(sinkAp, sinkEu, sinkUs, sinkTransfer)((a, e, u, t) => (a, e, u, t)) {
+          implicit builder => (apS, euS, usS, tS) =>
+            import GraphDSL.Implicits.*
+            val table = builder.add(DynamoDbGlobalTable.componentOf(config))
+
+            Source.single[TimedElement[DynamoDBRequest]](
+              PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)
+            ) ~> table.regionRequestInlets("us-east-1")
+            Source.empty[TimedElement[DynamoDBRequest]] ~> table.regionRequestInlets("eu-west-1")
+            Source.empty[TimedElement[DynamoDBRequest]] ~> table.regionRequestInlets("ap-southeast-2")
+
+            table.regionResponseOutlets("ap-southeast-2") ~> apS
+            table.regionResponseOutlets("eu-west-1") ~> euS
+            table.regionResponseOutlets("us-east-1") ~> usS
+            // Drop consumption + metric from each region; we don't assert on them in this test.
+            table.regionConsumptionOutlets("ap-southeast-2") ~> builder.add(Sink.ignore)
+            table.regionConsumptionOutlets("eu-west-1") ~> builder.add(Sink.ignore)
+            table.regionConsumptionOutlets("us-east-1") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("ap-southeast-2") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("eu-west-1") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("us-east-1") ~> builder.add(Sink.ignore)
+
+            table.transferEventsOutlet ~> tS
+
+            ClosedShape
+        }
+      ).run()
+
+      val apResponses = Await.result(apF, 5.seconds)
+      val euResponses = Await.result(euF, 5.seconds)
+      val usResponses = Await.result(usF, 5.seconds)
+      val transferEvents = Await.result(transferF, 5.seconds)
+
+      // Origin region applied the local write.
+      usResponses.collect { case _: PutItemResponse => 1 }.size shouldBe 1
+
+      // Both peer regions also applied the replicated write (zero lag → same tick).
+      euResponses.collect { case _: PutItemResponse => 1 }.size shouldBe 1
+      apResponses.collect { case _: PutItemResponse => 1 }.size shouldBe 1
+
+      // Transfer events: 2 (us-east-1 → eu-west-1, us-east-1 → ap-southeast-2). All from
+      // sourceService = "DynamoDB", carrying 1024 bytes each.
+      val transfers = transferEvents.collect { case e: CrossRegionTransferEvent => e }
+      transfers should have size 2
+      transfers.map(_.sourceRegion).toSet shouldBe Set("us-east-1")
+      transfers.map(_.destinationRegion).toSet shouldBe Set("eu-west-1", "ap-southeast-2")
+      transfers.foreach { e =>
+        e.sourceService shouldBe "DynamoDB"
+        e.bytes shouldBe 1024L
+      }
+    }
+
+    "produce no replication when only one region is configured (degenerate single-region 'global' table)" in {
+      val rng = RandomSource.XO_RO_SHI_RO_128_PP.create(2L)
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(zeroLagDistribution),
+        rng = rng
+      )
+      val config = globalConfig(Seq("us-east-1"), model)
+
+      val sinkResp = Sink.seq[TimedEvent]
+      val sinkTransfer = Sink.seq[TimedEvent]
+
+      val (respF, transferF) = RunnableGraph.fromGraph(
+        GraphDSL.createGraph(sinkResp, sinkTransfer)((r, t) => (r, t)) {
+          implicit builder => (rS, tS) =>
+            import GraphDSL.Implicits.*
+            val table = builder.add(DynamoDbGlobalTable.componentOf(config))
+            Source.single[TimedElement[DynamoDBRequest]](
+              PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)
+            ) ~> table.regionRequestInlets("us-east-1")
+            table.regionResponseOutlets("us-east-1") ~> rS
+            table.regionConsumptionOutlets("us-east-1") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("us-east-1") ~> builder.add(Sink.ignore)
+            table.transferEventsOutlet ~> tS
+            ClosedShape
+        }
+      ).run()
+
+      val responses = Await.result(respF, 5.seconds)
+      val transferEvents = Await.result(transferF, 5.seconds)
+
+      responses.collect { case _: PutItemResponse => 1 }.size shouldBe 1
+      transferEvents.collect { case _: CrossRegionTransferEvent => 1 } shouldBe empty
+    }
+
+    "produce a single transfer event per replicated write in a 2-region setup" in {
+      val rng = RandomSource.XO_RO_SHI_RO_128_PP.create(3L)
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(zeroLagDistribution),
+        rng = rng
+      )
+      val config = globalConfig(Seq("a", "b"), model)
+
+      val sinkA = Sink.seq[TimedEvent]
+      val sinkB = Sink.seq[TimedEvent]
+      val sinkTransfer = Sink.seq[TimedEvent]
+
+      val (aF, bF, transferF) = RunnableGraph.fromGraph(
+        GraphDSL.createGraph(sinkA, sinkB, sinkTransfer)((a, b, t) => (a, b, t)) {
+          implicit builder => (aS, bS, tS) =>
+            import GraphDSL.Implicits.*
+            val table = builder.add(DynamoDbGlobalTable.componentOf(config))
+            Source.single[TimedElement[DynamoDBRequest]](
+              PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 256L)
+            ) ~> table.regionRequestInlets("a")
+            Source.empty[TimedElement[DynamoDBRequest]] ~> table.regionRequestInlets("b")
+            table.regionResponseOutlets("a") ~> aS
+            table.regionResponseOutlets("b") ~> bS
+            table.regionConsumptionOutlets("a") ~> builder.add(Sink.ignore)
+            table.regionConsumptionOutlets("b") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("a") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("b") ~> builder.add(Sink.ignore)
+            table.transferEventsOutlet ~> tS
+            ClosedShape
+        }
+      ).run()
+
+      val aResp = Await.result(aF, 5.seconds)
+      val bResp = Await.result(bF, 5.seconds)
+      val transferEvents = Await.result(transferF, 5.seconds)
+
+      aResp.collect { case _: PutItemResponse => 1 }.size shouldBe 1
+      bResp.collect { case _: PutItemResponse => 1 }.size shouldBe 1
+      val transfers = transferEvents.collect { case e: CrossRegionTransferEvent => e }
+      transfers should have size 1
+      transfers.head.sourceRegion shouldBe "a"
+      transfers.head.destinationRegion shouldBe "b"
+      // Bytes come from the sampler (FixedPutItemBehavior.writtenItemBytes = 1024),
+      // not from the request's itemBytes field.
+      transfers.head.bytes shouldBe 1024L
+    }
+
+    "reject a config whose per-region table has GSIs/LSIs" in {
+      val rng = RandomSource.XO_RO_SHI_RO_128_PP.create(99L)
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(zeroLagDistribution),
+        rng = rng
+      )
+      val configWithGsi = regionConfig().copy(
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition("status-index"))
+      )
+      an[IllegalArgumentException] should be thrownBy {
+        DynamoDbGlobalTable.Config(
+          regions = Map("us-east-1" -> configWithGsi, "eu-west-1" -> regionConfig()),
+          replicationModel = model
+        )
+      }
+    }
+
+    "reject an empty regions map" in {
+      val rng = RandomSource.XO_RO_SHI_RO_128_PP.create(101L)
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(zeroLagDistribution),
+        rng = rng
+      )
+      an[IllegalArgumentException] should be thrownBy {
+        DynamoDbGlobalTable.Config(
+          regions = Map.empty,
+          replicationModel = model
+        )
+      }
+    }
+  }

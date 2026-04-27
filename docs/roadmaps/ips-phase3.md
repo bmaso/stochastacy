@@ -151,8 +151,22 @@ That means the following remain secondary or deferred until the on-demand-mode t
 - provisioned auto scaling behavior
 - provisioned-only throttling categories as the main organizing focus
 
+### 11. Thermostat Fleet Demo
+
+Deliver a runnable IoT thermostat fleet demo that exercises the full phase-3 simulator feature set in both single-region and multi-region (global table) modes.
+
+The demo simulates a connected thermostat company operating across up to three AWS regions, with time-varying workloads (morning/evening HVAC spikes, stochastic alert storms), three GSIs, one LSI, and asymmetric regional traffic distribution.
+
+The detailed implementation plan is in `docs/roadmaps/ips-phase3-slice11.md`. The application concept and table design are in `docs/specs/thermostat-fleet-demo.md`.
+
 ## Current Next Step
 
-Recommended starting point:
+- `slice 11: thermostat fleet demo` — the phase-3 capstone demo
 
-- `slice 10: global tables and cross-Region replication` — slices 8b and 9 are complete. Slice 9 modeled the LSI item-collection size rule stochastically: the use-case sampler provides the per-write "current collection size" estimate, and `TableStorageStage` runs a validate-then-mutate split that rejects growing writes that would push the collection past the configured limit (default 10 GiB when LSIs are configured). No per-key state was introduced.
+Slice 10 strategic decisions are recorded in `docs/specs/global-tables-design.md`.
+
+Phase-4 follow-on items (after slice 11):
+
+- **rWCU as a distinct capacity bucket and pricing dimension**: required before claiming full on-demand-mode fidelity for global tables.
+- **Tiered cross-region transfer pricing**: real AWS uses tiered rates; slice 10 ships with flat rates.
+- **GSI/LSI support inside `componentOfReplicated`**: real AWS Global Tables support secondary indexes on replicas.
