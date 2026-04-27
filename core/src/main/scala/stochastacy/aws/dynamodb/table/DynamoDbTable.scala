@@ -613,6 +613,13 @@ object DynamoDbTable:
           case t: TimedControlEvent => List(t)
 
           case writeSample: AdmittedWriteRequestSample =>
+            val isReplicated = writeSample.isInstanceOf[Replicated[?]]
+            def writeCapEvent(target: DynamoDbTarget, units: BigDecimal): DynamoDbConsumptionEvent =
+              if isReplicated then
+                DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed(writeSample.eventTime, writeSample.usecase, target, units)
+              else
+                DynamoDbConsumptionEvent.WriteCapacityConsumed(writeSample.eventTime, writeSample.usecase, target, units)
+
             writeSample.indexMaintenancePlan.flatMap { plan =>
               val runtime =
                 indexRuntimes.find(_.target == plan.target).getOrElse(
@@ -626,12 +633,7 @@ object DynamoDbTable:
                   val newBytes = plan.newIndexEntryBytes.getOrElse(0L)
                   runtime.stateModel.recordSuccessfulWrite(newBytes, plan.previousIndexEntryBytes)
                   List(
-                    DynamoDbConsumptionEvent.WriteCapacityConsumed(
-                      eventTime = writeSample.eventTime,
-                      usecase = writeSample.usecase,
-                      target = runtime.target,
-                      units = plan.throughputDemand
-                    ),
+                    writeCapEvent(runtime.target, plan.throughputDemand),
                     DynamoDbConsumptionEvent.StorageBytesWritten(
                       eventTime = writeSample.eventTime,
                       usecase = writeSample.usecase,
@@ -649,12 +651,7 @@ object DynamoDbTable:
                   val previousBytes = plan.previousIndexEntryBytes.getOrElse(0L)
                   runtime.stateModel.recordSuccessfulDelete(plan.previousIndexEntryBytes)
                   List(
-                    DynamoDbConsumptionEvent.WriteCapacityConsumed(
-                      eventTime = writeSample.eventTime,
-                      usecase = writeSample.usecase,
-                      target = runtime.target,
-                      units = plan.throughputDemand
-                    ),
+                    writeCapEvent(runtime.target, plan.throughputDemand),
                     DynamoDbConsumptionEvent.StorageBytesDeleted(
                       eventTime = writeSample.eventTime,
                       usecase = writeSample.usecase,

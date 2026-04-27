@@ -113,7 +113,7 @@ private[table] object ReplicationCoordinator:
             while queue.nonEmpty && queue.head.applyTick <= currentT do
               val pending = queue.dequeue()
               val restamped = restampSample(pending.originSample, applyEventTime)
-              drained += ReplicatedWriteForRegion(pending.destinationRegion, restamped)
+              drained += ReplicatedWriteForRegion(pending.destinationRegion, Replicated(restamped.asInstanceOf[AdmittedWriteRequestSample]))
               drained += TransferEventOutput(
                 CrossRegionTransferEvent(
                   eventTime = applyEventTime,
@@ -151,7 +151,7 @@ private[table] object ReplicationCoordinator:
               if applyTick <= tickNow then
                 // Zero-lag: apply immediately at the current tick's eventTime.
                 val restamped = restampSample(sample, tickNowEventTime)
-                immediates += ReplicatedWriteForRegion(destRegion, restamped)
+                immediates += ReplicatedWriteForRegion(destRegion, Replicated(restamped.asInstanceOf[AdmittedWriteRequestSample]))
                 immediates += TransferEventOutput(
                   CrossRegionTransferEvent(
                     eventTime = tickNowEventTime,

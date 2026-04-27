@@ -1,33 +1,64 @@
 package stochastacy.aws.transfer
 
 /**
- * Pricing rates for cross-region data transfer. AWS bills inter-region transfer at the
- * source region's outbound per-GB rate (real rates differ ~3x between low-rate regions like
- * `us-east-1` and high-rate regions like `ap-southeast-2`). Slice 10 uses flat per-source-region
- * rates; tiered pricing is a deferred follow-on.
+ * One band in a tiered transfer-pricing schedule.
  *
- * The `defaultPricePerGiB` is applied when an event's source region is not present in the
- * explicit map. Set it to `BigDecimal(0)` to silently price unknown regions at zero, or omit
- * it (set to `None`) to fail fast.
+ * @param tierBytes   Bytes absorbed by this tier before the next tier applies.
+ *                    `None` means this tier is unbounded and covers all remaining bytes.
+ * @param pricePerGiB Per-GiB price charged for bytes that fall within this tier.
+ */
+final case class TransferPricingTier(tierBytes: Option[Long], pricePerGiB: BigDecimal):
+  require(tierBytes.forall(_ > 0), "tierBytes must be positive when defined")
+  require(pricePerGiB >= 0, "pricePerGiB must be non-negative")
+
+/**
+ * Pricing rates for cross-region data transfer. Supports tiered pricing (e.g. "first 10 TB at
+ * $X/GiB, next 40 TB at $Y/GiB, rest at $Z/GiB") via `tiersBySourceRegion`. Real AWS rates
+ * differ ~3x between low-rate regions like `us-east-1` and high-rate regions like
+ * `ap-southeast-2`.
+ *
+ * The `defaultTiers` schedule applies when a source region is absent from the explicit map. If
+ * no default is configured and a source region is missing, `price` throws `IllegalArgumentException`.
+ *
+ * For simple flat-rate configs, use `CrossRegionTransferPricingRates.flat(...)`.
+ *
+ * Validation: every tier schedule must end with an unbounded tier (`tierBytes = None`) so that
+ * all bytes are priced regardless of volume.
  */
 final case class CrossRegionTransferPricingRates(
-                                                  pricePerGiBBySourceRegion: Map[String, BigDecimal] = Map.empty,
-                                                  defaultPricePerGiB: Option[BigDecimal] = None
+                                                  tiersBySourceRegion: Map[String, Vector[TransferPricingTier]] = Map.empty,
+                                                  defaultTiers: Option[Vector[TransferPricingTier]] = None
                                                 ):
   require(
-    pricePerGiBBySourceRegion.values.forall(_ >= 0),
-    "pricePerGiBBySourceRegion values must be non-negative"
+    tiersBySourceRegion.values.forall(validSchedule),
+    "every tier schedule in tiersBySourceRegion must be non-empty and end with an unbounded tier (tierBytes = None)"
   )
   require(
-    defaultPricePerGiB.forall(_ >= 0),
-    "defaultPricePerGiB must be non-negative when defined"
+    defaultTiers.forall(validSchedule),
+    "defaultTiers must be non-empty and end with an unbounded tier (tierBytes = None)"
   )
 
-  private[transfer] def rateFor(sourceRegion: String): BigDecimal =
-    pricePerGiBBySourceRegion.get(sourceRegion).orElse(defaultPricePerGiB).getOrElse(
+  private def validSchedule(tiers: Vector[TransferPricingTier]): Boolean =
+    tiers.nonEmpty && tiers.last.tierBytes.isEmpty
+
+  private[transfer] def tiersFor(sourceRegion: String): Vector[TransferPricingTier] =
+    tiersBySourceRegion.get(sourceRegion).orElse(defaultTiers).getOrElse(
       throw new IllegalArgumentException(
-        s"No transfer rate configured for source region '$sourceRegion' and no defaultPricePerGiB set"
+        s"No transfer rate configured for source region '$sourceRegion' and no defaultTiers set"
       )
+    )
+
+object CrossRegionTransferPricingRates:
+  /** Builds a flat (single-tier) pricing config from a simple per-source-region $/GiB map. */
+  def flat(
+    pricePerGiBBySourceRegion: Map[String, BigDecimal] = Map.empty,
+    defaultPricePerGiB: Option[BigDecimal] = None
+  ): CrossRegionTransferPricingRates =
+    CrossRegionTransferPricingRates(
+      tiersBySourceRegion =
+        pricePerGiBBySourceRegion.map { case (r, p) => r -> Vector(TransferPricingTier(None, p)) },
+      defaultTiers =
+        defaultPricePerGiB.map(p => Vector(TransferPricingTier(None, p)))
     )
 
 final case class CrossRegionTransferCostBreakdown(
@@ -38,15 +69,25 @@ final case class CrossRegionTransferCostBreakdown(
 object CrossRegionTransferCostBreakdown:
   private val BytesPerGiB = BigDecimal(1024).pow(3)
 
+  private def priceBytes(bytes: Long, tiers: Vector[TransferPricingTier]): BigDecimal =
+    var remaining = bytes
+    var cost = BigDecimal(0)
+    for tier <- tiers if remaining > 0 do
+      val tierBytes = tier.tierBytes match
+        case Some(cap) => math.min(remaining, cap)
+        case None      => remaining
+      cost += BigDecimal(tierBytes) / BytesPerGiB * tier.pricePerGiB
+      remaining -= tierBytes
+    cost
+
   def price(
              totals: CrossRegionTransferUsageTotals,
              rates: CrossRegionTransferPricingRates
            ): CrossRegionTransferCostBreakdown =
     val costByPair: Map[(String, String), BigDecimal] =
       totals.byDirectionalPair.map { case (pair @ (sourceRegion, _), pairTotals) =>
-        val giB = BigDecimal(pairTotals.totalBytes) / BytesPerGiB
-        val cost = giB * rates.rateFor(sourceRegion)
-        pair -> cost
+        val tiers = rates.tiersFor(sourceRegion)
+        pair -> priceBytes(pairTotals.totalBytes, tiers)
       }
 
     val totalCost = costByPair.values.foldLeft(BigDecimal(0))(_ + _)

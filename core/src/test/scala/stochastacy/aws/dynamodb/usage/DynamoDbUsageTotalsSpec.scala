@@ -79,4 +79,21 @@ class DynamoDbUsageTotalsSpec extends AnyWordSpec with should.Matchers:
         storageBytesDelta = 1024L
       )
     }
+
+    "accumulate ReplicatedWriteCapacityConsumed separately from WriteCapacityConsumed" in {
+      val t = DynamoDbTarget.Table("orders")
+
+      val events = Seq(
+        DynamoDbConsumptionEvent.WriteCapacityConsumed(SimTime.of(1L), "client", t, BigDecimal(2.0)),
+        DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed(SimTime.of(1L), "replica", t, BigDecimal(3.0)),
+        DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed(SimTime.of(2L), "replica", t, BigDecimal(1.5))
+      )
+
+      val totals = events.foldLeft(DynamoDbUsageTotals())(DynamoDbUsageTotals.accumulate)
+
+      totals.overall.writeCapacityUnits shouldBe BigDecimal(2.0)
+      totals.overall.replicatedWriteCapacityUnits shouldBe BigDecimal(4.5)
+      totals.byTarget(t).writeCapacityUnits shouldBe BigDecimal(2.0)
+      totals.byTarget(t).replicatedWriteCapacityUnits shouldBe BigDecimal(4.5)
+    }
   }

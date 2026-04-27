@@ -9,6 +9,7 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
   private val rates = DynamoDbPricingRates(
     readCapacityUnitPrice = BigDecimal(2.0),
     writeCapacityUnitPrice = BigDecimal(5.0),
+    replicatedWriteCapacityUnitPrice = BigDecimal(3.0),
     storagePricePerGiBSecond = BigDecimal(4.0)
   )
 
@@ -104,6 +105,24 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
         storageCost = BigDecimal(8.0),
         totalCost = BigDecimal(24.0)
       )
+    }
+
+    "price replicated-write-only usage separately from WCU" in {
+      val breakdown = DynamoDbCostBreakdown.price(
+        inputs = DynamoDbPricingInputs(
+          usage = DynamoDbUsageTotals(
+            overall = DynamoDbTargetUsageTotals(
+              replicatedWriteCapacityUnits = BigDecimal(4.0)
+            )
+          ),
+          timeBasedUsage = DynamoDbTimeBasedUsageTotals()
+        ),
+        rates = rates
+      )
+
+      breakdown.writeCapacityCost shouldBe BigDecimal(0)
+      breakdown.replicatedWriteCapacityCost shouldBe BigDecimal(12.0)
+      breakdown.totalCost shouldBe BigDecimal(12.0)
     }
 
     "return zero cost for zero usage" in {

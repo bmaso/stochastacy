@@ -46,12 +46,12 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
       readConsistency = ReadConsistency.StronglyConsistent
     )
 
-  private def admittedReplicatedPut(
-                                     eventTime: SimTime,
-                                     itemBytes: Long,
-                                     usecase: Any = "replicated-put"
-                                   ): AdmittedPutItemSample =
-    AdmittedPutItemSample(
+  private def replicatedPut(
+                             eventTime: SimTime,
+                             itemBytes: Long,
+                             usecase: Any = "replicated-put"
+                           ): Replicated[AdmittedPutItemSample] =
+    Replicated(AdmittedPutItemSample(
       req = PutItemRequest(eventTime = eventTime, usecase = usecase, itemBytes = itemBytes),
       executionTarget = DynamoDbTarget.Table("orders"),
       admissionTarget = DynamoDbTarget.Table("orders"),
@@ -62,7 +62,7 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
         partitionDemandById = SortedMap(0 -> BigDecimal(1))
       ),
       indexMaintenancePlan = Vector.empty
-    )
+    ))
 
   private def runReplicated(
                              config: DynamoDbTable.Config,
@@ -124,17 +124,18 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
       outboundWrites.head.sample.writtenItemBytes shouldBe 1024L
     }
 
-    "apply replicated writes through storage WITHOUT going through admission, accruing destination consumption" in {
-      val replicated = admittedReplicatedPut(SimTime.of(1L), 2048L)
+    "apply replicated writes through storage WITHOUT going through admission, accruing rWCU (not WCU)" in {
+      val replicated = replicatedPut(SimTime.of(1L), 2048L)
       val (responses, consumption, metrics, outbound) = runReplicated(
         baseConfig,
         requestSource = Source.empty[TimedElement[DynamoDBRequest]],
         replicatedSource = Source.single(replicated)
       )
 
-      // Replicated write produced a PutItemResponse and accrued WCU consumption.
+      // Replicated write produced a PutItemResponse and accrued rWCU (not ordinary WCU).
       responses.collect { case r: PutItemResponse => r.storedItemBytes } shouldBe Vector(2048L)
-      consumption.collect { case _: DynamoDbConsumptionEvent.WriteCapacityConsumed => 1 } should not be empty
+      consumption.collect { case _: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed => 1 } should not be empty
+      consumption.collect { case _: DynamoDbConsumptionEvent.WriteCapacityConsumed => 1 } shouldBe empty
 
       // Metric stream includes a PutItemStored from storage. Note: admission stage was bypassed,
       // so no AdmissionMetricEvent.RequestAdmitted should appear for the replicated write.
@@ -146,11 +147,11 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
       // The replicated write does NOT re-emit on the outbound replication output. The outbound
       // port forks from admission.out0, which the replicated write bypasses. This loop-
       // prevention is critical: otherwise replicated writes would be re-replicated infinitely.
-      outbound.collect { case _: AdmittedPutItemSample => 1 } shouldBe empty
+      outbound.collect { case _: AdmittedWriteRequestSample => 1 } shouldBe empty
     }
 
     "process both client requests and replicated writes in the same materialization, only forwarding client writes outbound" in {
-      val replicated = admittedReplicatedPut(SimTime.of(1L), 4096L, usecase = "replicated-put")
+      val replicated = replicatedPut(SimTime.of(1L), 4096L, usecase = "replicated-put")
       val (responses, _, metrics, outbound) = runReplicated(
         baseConfig,
         requestSource = Source.single(PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)),
@@ -161,8 +162,8 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
       responses.collect { case _: PutItemResponse => 1 }.size shouldBe 2
       metrics.collect { case _: StorageMetricEvent.PutItemStored => 1 }.size shouldBe 2
 
-      // Outbound forwards ONLY the local-origin write (1024 bytes). The replicated-write's
-      // applied effect (4096 bytes) is suppressed to prevent the replication loop.
+      // Outbound forwards ONLY the local-origin write (1024 bytes). The replicated write is
+      // suppressed (Replicated[?] bypasses admission and never appears on the outbound port).
       val outboundBytes = outbound.collect { case s: AdmittedPutItemSample => s.sample.writtenItemBytes }.toSet
       outboundBytes shouldBe Set(1024L)
     }

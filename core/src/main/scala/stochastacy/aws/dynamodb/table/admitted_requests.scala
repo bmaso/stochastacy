@@ -79,3 +79,20 @@ private[table] final case class AdmittedDeleteItemSample(
                                                           indexMaintenancePlan: Vector[IndexMaintenancePlan] = Vector.empty
                                                         ) extends AdmittedWriteRequestSample:
   override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Write
+
+/**
+ * Envelope marking an admitted write sample as originating from cross-region replication rather
+ * than from a local client request. Extends `AdmittedWriteRequestSample` by pure delegation so
+ * it flows transparently through the existing `TimedElement[AdmittedRequestSample]` streams.
+ * Storage and index-maintenance stages pattern-match on `Replicated[?]` to emit
+ * `ReplicatedWriteCapacityConsumed` instead of `WriteCapacityConsumed`.
+ */
+private[table] final case class Replicated[+X <: AdmittedWriteRequestSample](sample: X)
+    extends AdmittedWriteRequestSample:
+  override def req: DynamoDBRequest                              = sample.req
+  override def executionTarget: DynamoDbTarget                   = sample.executionTarget
+  override def admissionTarget: DynamoDbTarget                   = sample.admissionTarget
+  override def throughputDimension: DynamoDbThroughputDimension  = sample.throughputDimension
+  override def throughputDemand: BigDecimal                      = sample.throughputDemand
+  override def resolvedPartitionFootprint: ResolvedPartitionFootprint = sample.resolvedPartitionFootprint
+  override def indexMaintenancePlan: Vector[IndexMaintenancePlan] = sample.indexMaintenancePlan

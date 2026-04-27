@@ -97,6 +97,7 @@ object TableStorageStage:
                                      sample: AdmittedRequestSample
                                    ): Option[(Long, Long, LogicalPartitionAccess, Vector[IndexMaintenancePlan])] =
     sample match
+      case r: Replicated[?] => itemCollectionContext(r.sample)
       case s: AdmittedPutItemSample =>
         Some((s.sample.currentItemCollectionBytes, s.sample.storageBytesDelta, s.sample.logicalPartitionAccess, s.indexMaintenancePlan))
       case s: AdmittedUpdateItemSample =>
@@ -165,6 +166,14 @@ object TableStorageStage:
               case Left(rejection) => rejection
               case Right(admitted) =>
                 admitted match
+                  case r: Replicated[?] => r.sample match
+                    case s: AdmittedPutItemSample =>
+                      stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                    case s: AdmittedUpdateItemSample =>
+                      stateModel.recordSuccessfulUpdate(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                    case s: AdmittedDeleteItemSample =>
+                      stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
+                    case _ => ()
                   case s: AdmittedPutItemSample =>
                     stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
                   case s: AdmittedUpdateItemSample =>
@@ -177,6 +186,7 @@ object TableStorageStage:
       )
 
       def responseForSample(sample: AdmittedRequestSample): DynamoDBResponse = sample match
+        case r: Replicated[?] => responseForSample(r.sample)
         case AdmittedGetItemSample(r, _, _, _, s, _, _) =>
           GetItemResponse(
             eventTime = r.eventTime,
@@ -271,6 +281,7 @@ object TableStorageStage:
       )
 
       def metricsForSample(sample: AdmittedRequestSample): List[StorageMetricEvent] = sample match
+        case r: Replicated[?] => metricsForSample(r.sample)
         case AdmittedGetItemSample(r, _, _, _, s, _, _) =>
           val returnedEvents =
             s.itemBytes.toList.map { itemBytes =>
@@ -406,6 +417,38 @@ object TableStorageStage:
       )
 
       def consumptionForSample(sample: AdmittedRequestSample): List[DynamoDbConsumptionEvent] = sample match
+        case r: Replicated[?] => r.sample match
+          case s: AdmittedPutItemSample =>
+            List(
+              DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed(
+                eventTime = r.eventTime, usecase = r.usecase, target = r.executionTarget,
+                units = TableThroughputMath.writeCapacityUnitsFor(s.sample.writtenItemBytes)
+              ),
+              DynamoDbConsumptionEvent.StorageBytesWritten(r.eventTime, r.usecase, r.executionTarget, s.sample.writtenItemBytes),
+              DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, r.executionTarget, s.sample.storageBytesDelta)
+            )
+          case s: AdmittedUpdateItemSample =>
+            List(
+              DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed(
+                eventTime = r.eventTime, usecase = r.usecase, target = r.executionTarget,
+                units = TableThroughputMath.writeCapacityUnitsFor(s.sample.writtenItemBytes)
+              ),
+              DynamoDbConsumptionEvent.StorageBytesWritten(r.eventTime, r.usecase, r.executionTarget, s.sample.writtenItemBytes),
+              DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, r.executionTarget, s.sample.storageBytesDelta)
+            )
+          case s: AdmittedDeleteItemSample =>
+            val deletedBytesEvents = s.sample.deletedItemBytes.toList.map { bytes =>
+              DynamoDbConsumptionEvent.StorageBytesDeleted(r.eventTime, r.usecase, r.executionTarget, bytes)
+            }
+            List(
+              DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed(
+                eventTime = r.eventTime, usecase = r.usecase, target = r.executionTarget,
+                units = TableThroughputMath.writeCapacityUnitsFor(s.sample.deletedItemBytes.getOrElse(0L))
+              )
+            ) ++ deletedBytesEvents ++ List(
+              DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, r.executionTarget, s.sample.storageBytesDelta)
+            )
+          case _ => Nil
         case AdmittedGetItemSample(r, executionTarget, _, readConsistency, s, _, _) =>
           val bytesReadEvents =
             s.itemBytes.toList.map { itemBytes =>

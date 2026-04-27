@@ -41,6 +41,14 @@ object DynamoDbConsumptionEvent:
                                           units: BigDecimal
                                         ) extends DynamoDbConsumptionEvent
 
+  /** Replicated write capacity consumed at a destination region (distinct from WCU for billing). */
+  final case class ReplicatedWriteCapacityConsumed(
+                                                    eventTime: SimTime,
+                                                    usecase: Any,
+                                                    target: DynamoDbTarget,
+                                                    units: BigDecimal
+                                                  ) extends DynamoDbConsumptionEvent
+
   final case class StorageBytesWritten(
                                         eventTime: SimTime,
                                         usecase: Any,

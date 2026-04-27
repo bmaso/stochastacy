@@ -10,6 +10,7 @@ final case class DynamoDbPricingInputs(
 final case class DynamoDbPricingRates(
                                         readCapacityUnitPrice: BigDecimal,
                                         writeCapacityUnitPrice: BigDecimal,
+                                        replicatedWriteCapacityUnitPrice: BigDecimal = BigDecimal("0.00000125"),
                                         storagePricePerGiBSecond: BigDecimal
                                       )
 
@@ -34,6 +35,7 @@ object DynamoDbPricingRates:
 final case class DynamoDbCostBreakdown(
                                         readCapacityCost: BigDecimal,
                                         writeCapacityCost: BigDecimal,
+                                        replicatedWriteCapacityCost: BigDecimal = BigDecimal(0),
                                         storageCost: BigDecimal,
                                         totalCost: BigDecimal
                                       )
@@ -51,6 +53,9 @@ object DynamoDbCostBreakdown:
     val writeCapacityCost =
       inputs.usage.overall.writeCapacityUnits * rates.writeCapacityUnitPrice
 
+    val replicatedWriteCapacityCost =
+      inputs.usage.overall.replicatedWriteCapacityUnits * rates.replicatedWriteCapacityUnitPrice
+
     val storageCost =
       BigDecimal(inputs.timeBasedUsage.overallStorageByteTicks) *
         rates.storagePricePerGiBSecond / BytesPerGiB
@@ -58,6 +63,7 @@ object DynamoDbCostBreakdown:
     DynamoDbCostBreakdown(
       readCapacityCost = readCapacityCost,
       writeCapacityCost = writeCapacityCost,
+      replicatedWriteCapacityCost = replicatedWriteCapacityCost,
       storageCost = storageCost,
-      totalCost = readCapacityCost + writeCapacityCost + storageCost
+      totalCost = readCapacityCost + writeCapacityCost + replicatedWriteCapacityCost + storageCost
     )
