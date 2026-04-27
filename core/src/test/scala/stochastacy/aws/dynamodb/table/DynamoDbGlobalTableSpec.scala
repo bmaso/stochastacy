@@ -257,21 +257,124 @@ class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
       consB.collect { case _: DynamoDbConsumptionEvent.WriteCapacityConsumed => 1 } shouldBe empty
     }
 
-    "reject a config whose per-region table has GSIs/LSIs" in {
+    "global table with a GSI: peer region accrues rWCU for GSI target on replicated write" in {
       val rng = RandomSource.XO_RO_SHI_RO_128_PP.create(99L)
       val model = ReplicationModel(
         defaultLagDistribution = Some(zeroLagDistribution),
         rng = rng
       )
-      val configWithGsi = regionConfig().copy(
-        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition("status-index"))
-      )
-      an[IllegalArgumentException] should be thrownBy {
-        DynamoDbGlobalTable.Config(
-          regions = Map("us-east-1" -> configWithGsi, "eu-west-1" -> regionConfig()),
-          replicationModel = model
+      val gsiName = "status-index"
+      val gsiConfig = regionConfig().copy(
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
+        useCaseBehaviors = Map(
+          "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L)
         )
-      }
+      )
+      val config = DynamoDbGlobalTable.Config(
+        regions = Map("a" -> gsiConfig, "b" -> gsiConfig),
+        replicationModel = model
+      )
+
+      val sinkConsA = Sink.seq[TimedEvent]
+      val sinkConsB = Sink.seq[TimedEvent]
+
+      val (consAF, consBF) = RunnableGraph.fromGraph(
+        GraphDSL.createGraph(sinkConsA, sinkConsB)((a, b) => (a, b)) {
+          implicit builder => (consAS, consBs) =>
+            import GraphDSL.Implicits.*
+            val table = builder.add(DynamoDbGlobalTable.componentOf(config))
+            Source.single[TimedElement[DynamoDBRequest]](
+              PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)
+            ) ~> table.regionRequestInlets("a")
+            Source.empty[TimedElement[DynamoDBRequest]] ~> table.regionRequestInlets("b")
+            table.regionResponseOutlets("a") ~> builder.add(Sink.ignore)
+            table.regionResponseOutlets("b") ~> builder.add(Sink.ignore)
+            table.regionConsumptionOutlets("a") ~> consAS
+            table.regionConsumptionOutlets("b") ~> consBs
+            table.regionMetricOutlets("a") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("b") ~> builder.add(Sink.ignore)
+            table.transferEventsOutlet ~> builder.add(Sink.ignore)
+            ClosedShape
+        }
+      ).run()
+
+      val consA = Await.result(consAF, 5.seconds)
+      val consB = Await.result(consBF, 5.seconds)
+
+      val gsiTarget = DynamoDbTarget.GlobalSecondaryIndex(gsiConfig.tableName, gsiName)
+
+      // Origin region (a): GSI maintenance emits WCU for the GSI target (client write).
+      consA.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed if e.target == gsiTarget => 1
+      } should not be empty
+
+      // Peer region (b): replicated write triggers GSI maintenance emitting rWCU, not WCU.
+      consB.collect {
+        case e: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed if e.target == gsiTarget => 1
+      } should not be empty
+      consB.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed if e.target == gsiTarget => 1
+      } shouldBe empty
+    }
+
+    "global table with an LSI: peer region accrues rWCU for LSI target on replicated write" in {
+      val rng = RandomSource.XO_RO_SHI_RO_128_PP.create(100L)
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(zeroLagDistribution),
+        rng = rng
+      )
+      val lsiName = "created-index"
+      val lsiConfig = regionConfig().copy(
+        localSecondaryIndexes = Vector(DynamoDbTable.LocalSecondaryIndexDefinition(lsiName)),
+        useCaseBehaviors = Map(
+          "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L)
+        )
+      )
+      val config = DynamoDbGlobalTable.Config(
+        regions = Map("a" -> lsiConfig, "b" -> lsiConfig),
+        replicationModel = model
+      )
+
+      val sinkConsA = Sink.seq[TimedEvent]
+      val sinkConsB = Sink.seq[TimedEvent]
+
+      val (consAF, consBF) = RunnableGraph.fromGraph(
+        GraphDSL.createGraph(sinkConsA, sinkConsB)((a, b) => (a, b)) {
+          implicit builder => (consAS, consBs) =>
+            import GraphDSL.Implicits.*
+            val table = builder.add(DynamoDbGlobalTable.componentOf(config))
+            Source.single[TimedElement[DynamoDBRequest]](
+              PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)
+            ) ~> table.regionRequestInlets("a")
+            Source.empty[TimedElement[DynamoDBRequest]] ~> table.regionRequestInlets("b")
+            table.regionResponseOutlets("a") ~> builder.add(Sink.ignore)
+            table.regionResponseOutlets("b") ~> builder.add(Sink.ignore)
+            table.regionConsumptionOutlets("a") ~> consAS
+            table.regionConsumptionOutlets("b") ~> consBs
+            table.regionMetricOutlets("a") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("b") ~> builder.add(Sink.ignore)
+            table.transferEventsOutlet ~> builder.add(Sink.ignore)
+            ClosedShape
+        }
+      ).run()
+
+      val consA = Await.result(consAF, 5.seconds)
+      val consB = Await.result(consBF, 5.seconds)
+
+      val lsiTarget = DynamoDbTarget.LocalSecondaryIndex(lsiConfig.tableName, lsiName)
+
+      // Origin region (a): LSI maintenance emits WCU for the LSI target (client write).
+      consA.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed if e.target == lsiTarget => 1
+      } should not be empty
+
+      // Peer region (b): replicated write triggers LSI maintenance emitting rWCU, not WCU.
+      consB.collect {
+        case e: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed if e.target == lsiTarget => 1
+      } should not be empty
+      consB.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed if e.target == lsiTarget => 1
+      } shouldBe empty
     }
 
     "reject an empty regions map" in {

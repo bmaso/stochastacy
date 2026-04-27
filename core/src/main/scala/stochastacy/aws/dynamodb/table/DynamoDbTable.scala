@@ -1071,18 +1071,14 @@ object DynamoDbTable:
    * outputs as `componentOf`, plus an inbound port for replicated writes (which bypass admission)
    * and an outbound port emitting validated admitted samples for the replication coordinator.
    *
-   * Slice 10 supports base-table-only configurations. Tables configured with GSIs or LSIs in
-   * combination with `componentOfReplicated` are tracked under deferred follow-on work; for now
-   * this factory throws `IllegalArgumentException` on such configs.
+   * Supports full GSI/LSI configurations. GSI/LSI read branches (Query/Scan) are wired exactly
+   * as in `componentOf`. Index maintenance (write amplification, rWCU accounting) runs from
+   * `storage.out3`, so replicated writes also trigger index maintenance at the destination region.
    */
   def componentOfReplicated(config: Config): Graph[DynamoDbTableReplicatedShape, NotUsed] =
-    require(
-      config.globalSecondaryIndexes.isEmpty && config.localSecondaryIndexes.isEmpty,
-      s"componentOfReplicated for table '${config.tableName}' does not yet support GSIs/LSIs " +
-        "in slice 10. Combining global tables with secondary indexes is tracked as a deferred " +
-        "follow-on item."
-    )
-
+    val indexRuntimes = indexRuntimesFor(config)
+    val hasIndexes = config.globalSecondaryIndexes.nonEmpty || config.localSecondaryIndexes.nonEmpty
+    val numIndexBranches = config.globalSecondaryIndexes.size + config.localSecondaryIndexes.size
     val executionTarget: DynamoDbTarget = DynamoDbTarget.Table(config.tableName)
     val admissionTarget: DynamoDbTarget = DynamoDbTarget.Table(config.tableName)
 
@@ -1128,8 +1124,8 @@ object DynamoDbTable:
                   maxPartitionCount = dynamic.maxTablePartitionCount
                 )
               },
-            indexMaintenanceTargets = Vector.empty,
-            gsiWriteScopes = Vector.empty
+            indexMaintenanceTargets = indexMaintenanceTargetsFor(config, indexRuntimes),
+            gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes)
           )
         )
       )
@@ -1150,10 +1146,8 @@ object DynamoDbTable:
       // only writes that originated as client requests at this region; replicated writes
       // bypass admission and never appear here.
       //
-      // Note: this means a write that's admitted but later rejected by storage's item-collection
-      // check would still be replicated. Slice 10 sidesteps this by forbidding LSIs in
-      // componentOfReplicated configs (item-collection check requires LSIs to apply), so storage
-      // never rejects in slice 10.
+      // Note: a write that's admitted but later rejected by storage's item-collection check
+      // would still be replicated outbound. This is an accepted approximation.
       val admissionFork = b.add(Broadcast[TimedElement[AdmittedRequestSample]](2))
 
       // Combine admission's admitted samples with the inbound replicated-writes port.
@@ -1194,45 +1188,210 @@ object DynamoDbTable:
         }
       )
 
-      val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+      val replicatedInProxy = b.add(
+        Flow[TimedElement[AdmittedRequestSample]].map[TimedEvent](e => e)
+      )
 
-      // Storage's validated-sample output is unused by componentOfReplicated (no maintenance,
-      // no outbound replication from this port). Sink it.
-      val ignoreValidatedSamples = b.add(Sink.ignore)
-
-      // Wire the graph.
-      // admission.out0 → fork(2): one path to storage (via merge with replicatedIn), one to outbound
+      // Core replication wiring (same regardless of whether indexes are configured).
+      // admission.out0 → fork(2): one path to storage (via merge with replicatedIn), one to outbound.
       admission.out0 ~> admissionFork.in
       admissionFork.out(0) ~> upcastAdmission.in
       upcastAdmission.out ~> replicatedInletMerge.in0
       admissionFork.out(1) ~> outboundWriteFilter.in
-
-      // Replicated-write port → merge → storage
-      val replicatedInProxy = b.add(
-        Flow[TimedElement[AdmittedRequestSample]].map[TimedEvent](e => e)
-      )
       replicatedInProxy.out ~> replicatedInletMerge.in1
       replicatedInletMerge.out ~> coerceToAdmitted.in
       coerceToAdmitted.out ~> storage.in
 
-      // Outbound: admission throttled responses + storage normal responses → responseMerge
-      admission.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
-      storage.out0 ~> responseMerge.in(1)
+      if !hasIndexes then
+        // Base-table-only: storage.out3 unused; consumption wired directly from storage.
+        val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+        val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](2))
+        val ignoreValidatedSamples = b.add(Sink.ignore)
 
-      // Storage's validated-sample output (slice-9 out3): unused in slice 10 componentOfReplicated.
-      storage.out3 ~> ignoreValidatedSamples
+        admission.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
+        storage.out0 ~> responseMerge.in(1)
+        storage.out3 ~> ignoreValidatedSamples
+        admission.out2 ~> admissionMetricFilter ~> metricMerge.in(0)
+        storage.out2 ~> metricMerge.in(1)
 
-      // Admission and storage metrics merge directly into a single metric stream.
-      val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](2))
-      admission.out2 ~> admissionMetricFilter ~> metricMerge.in(0)
-      storage.out2 ~> metricMerge.in(1)
+        new DynamoDbTableReplicatedShape(
+          requestIn = admission.in,
+          replicatedIn = replicatedInProxy.in,
+          responseOut = responseMerge.out,
+          consumptionOut = storage.out1,
+          metricOut = metricMerge.out,
+          outboundReplicationOut = outboundWriteFilter.out
+        )
+      else
+        // With indexes: validate + broadcast client requests; wire storage.out3 into
+        // indexMaintenanceGraph so both client and replicated writes trigger index maintenance.
+        val validationFlow = b.add(
+          Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDBRequest]] {
+            case request: DynamoDBRequest =>
+              validateRequest(config, request)
+              request
+            case t: TimedControlEvent => t
+          }
+        )
+        val requestBroadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](1 + numIndexBranches))
+        val baseRequestFilter = b.add(
+          Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
+            case t: TimedControlEvent => t
+            case r: DynamoDBRequest if routeFor(config, r) == RouteBranch.BaseTable => r
+          }
+        )
+        validationFlow.out ~> requestBroadcast.in
+        requestBroadcast.out(0) ~> baseRequestFilter ~> admission.in
 
-      new DynamoDbTableReplicatedShape(
-        requestIn = admission.in,
-        replicatedIn = replicatedInProxy.in,
-        responseOut = responseMerge.out,
-        consumptionOut = storage.out1,
-        metricOut = metricMerge.out,
-        outboundReplicationOut = outboundWriteFilter.out
-      )
+        val maintenance = b.add(indexMaintenanceGraph(indexRuntimes))
+        storage.out3 ~> maintenance.in
+
+        // responseMerge: throttled(0) + storage(1) + one inlet per index branch
+        val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2 + numIndexBranches))
+        // consumptionMerge: storage(0) + maintenance(1) + one inlet per index branch
+        val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](2 + numIndexBranches))
+        // metricMerge: admission(0) + storage(1) + maintenance(2) + one inlet per index branch
+        val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](3 + numIndexBranches))
+
+        admission.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
+        storage.out0 ~> responseMerge.in(1)
+        storage.out1 ~> consumptionMerge.in(0)
+        maintenance.out0 ~> consumptionMerge.in(1)
+        admission.out2 ~> admissionMetricFilter ~> metricMerge.in(0)
+        storage.out2 ~> metricMerge.in(1)
+        maintenance.out1 ~> metricMerge.in(2)
+
+        var broadcastIdx = 1  // requestBroadcast outlet (0 is base table)
+        var respIdx = 2       // responseMerge inlet
+        var consIdx = 2       // consumptionMerge inlet
+        var metIdx = 3        // metricMerge inlet
+
+        config.globalSecondaryIndexes.foreach { indexDefinition =>
+          val requestFilter = b.add(
+            Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
+              case request: DynamoDBRequest
+                  if routeFor(config, request) == RouteBranch.GlobalSecondaryIndex(indexDefinition.indexName) =>
+                request
+            }
+          )
+          val indexRuntime = indexRuntimes.collectFirst {
+            case gsi: InternalIndexRuntime.GlobalSecondaryIndex if gsi.indexName == indexDefinition.indexName => gsi
+          }.getOrElse(
+            throw new IllegalStateException(s"Missing runtime for global secondary index '${indexDefinition.indexName}'")
+          )
+          val gsiStage = b.add(
+            branchGraph(
+              stateModel = indexRuntime.stateModel,
+              useCaseBehaviors = config.useCaseBehaviors,
+              executionTarget = indexRuntime.target,
+              admissionTarget = indexRuntime.target,
+              indexProjection = Some(indexDefinition.projection),
+              readConsistency = ReadConsistency.EventuallyConsistent,
+              maxReadRequestUnitsPerSecond =
+                config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName),
+              maxWriteRequestUnitsPerSecond = None,
+              partitionCount =
+                config.hotPartitionModel.flatMap(_.globalSecondaryIndexPartitionCounts.get(indexDefinition.indexName))
+                  .orElse(config.hotPartitionModel.map(_.tablePartitionCount))
+                  .getOrElse(1),
+              maxReadRequestUnitsPerSecondPerPartition =
+                config.hotPartitionModel.flatMap(_.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)),
+              maxWriteRequestUnitsPerSecondPerPartition = None,
+              adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+                config.adaptiveCapacityModel.flatMap(_.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)),
+              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = None,
+              burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+              initialReadBurstRequestUnits =
+                config.burstCapacityModel.flatMap(_.initialGlobalSecondaryIndexReadBurstRequestUnits.get(indexDefinition.indexName)),
+              initialWriteBurstRequestUnits = None,
+              dynamicPartitionTopologyConfig =
+                config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+                  TableAdmissionStage.DynamicPartitionTopologyConfig(
+                    initialPartitionCount =
+                      dynamic.globalSecondaryIndexInitialPartitionCounts.getOrElse(indexDefinition.indexName, dynamic.tableInitialPartitionCount),
+                    storageSplitThresholdBytes = dynamic.globalSecondaryIndexStorageSplitThresholdBytes.get(indexDefinition.indexName),
+                    readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                      dynamic.globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond.get(indexDefinition.indexName),
+                    writeThroughputGrowthSplitThresholdRequestUnitsPerSecond = None,
+                    heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+                    readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                      dynamic.globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.get(indexDefinition.indexName),
+                    writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
+                    maxPartitionCount = dynamic.maxGlobalSecondaryIndexPartitionCounts.get(indexDefinition.indexName)
+                  )
+                }
+            )
+          )
+          requestBroadcast.out(broadcastIdx) ~> requestFilter ~> gsiStage.in
+          gsiStage.out0 ~> responseMerge.in(respIdx)
+          gsiStage.out1 ~> consumptionMerge.in(consIdx)
+          gsiStage.out2 ~> metricMerge.in(metIdx)
+          broadcastIdx += 1; respIdx += 1; consIdx += 1; metIdx += 1
+        }
+
+        config.localSecondaryIndexes.foreach { indexDefinition =>
+          val requestFilter = b.add(
+            Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
+              case request: DynamoDBRequest
+                  if routeFor(config, request) == RouteBranch.LocalSecondaryIndex(indexDefinition.indexName) =>
+                request
+            }
+          )
+          val indexRuntime = indexRuntimes.collectFirst {
+            case lsi: InternalIndexRuntime.LocalSecondaryIndex if lsi.indexName == indexDefinition.indexName => lsi
+          }.getOrElse(
+            throw new IllegalStateException(s"Missing runtime for local secondary index '${indexDefinition.indexName}'")
+          )
+          val lsiStage = b.add(
+            branchGraph(
+              stateModel = indexRuntime.stateModel,
+              useCaseBehaviors = config.useCaseBehaviors,
+              executionTarget = indexRuntime.target,
+              admissionTarget = DynamoDbTarget.Table(config.tableName),
+              indexProjection = Some(indexDefinition.projection),
+              readConsistency = ReadConsistency.EventuallyConsistent,
+              maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
+              maxWriteRequestUnitsPerSecond = None,
+              partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
+              maxReadRequestUnitsPerSecondPerPartition =
+                config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
+              maxWriteRequestUnitsPerSecondPerPartition = None,
+              adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+                config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond),
+              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = None,
+              burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+              initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
+              initialWriteBurstRequestUnits = None,
+              dynamicPartitionTopologyConfig =
+                config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+                  TableAdmissionStage.DynamicPartitionTopologyConfig(
+                    initialPartitionCount = dynamic.tableInitialPartitionCount,
+                    storageSplitThresholdBytes = dynamic.tableStorageSplitThresholdBytes,
+                    readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                      dynamic.tableThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+                    writeThroughputGrowthSplitThresholdRequestUnitsPerSecond = None,
+                    heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+                    readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                      dynamic.tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                    writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
+                    maxPartitionCount = dynamic.maxTablePartitionCount
+                  )
+                }
+            )
+          )
+          requestBroadcast.out(broadcastIdx) ~> requestFilter ~> lsiStage.in
+          lsiStage.out0 ~> responseMerge.in(respIdx)
+          lsiStage.out1 ~> consumptionMerge.in(consIdx)
+          lsiStage.out2 ~> metricMerge.in(metIdx)
+          broadcastIdx += 1; respIdx += 1; consIdx += 1; metIdx += 1
+        }
+
+        new DynamoDbTableReplicatedShape(
+          requestIn = validationFlow.in,
+          replicatedIn = replicatedInProxy.in,
+          responseOut = responseMerge.out,
+          consumptionOut = consumptionMerge.out,
+          metricOut = metricMerge.out,
+          outboundReplicationOut = outboundWriteFilter.out
+        )
     }

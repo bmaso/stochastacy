@@ -35,6 +35,16 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
     override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
       GetItemSample(itemBytes = Some(itemBytes))
 
+  private case class FixedGsiQueryBehavior() extends UseCaseSampler[TableState]:
+    override def query(request: QueryRequest, state: TableState): QuerySample =
+      QuerySample(evaluatedItemCount = 1, evaluatedBytes = 128L, returnedItemCount = 1, returnedBytes = 64L,
+        logicalPartitionAccess = SingleLogicalPartitionKey("k"))
+
+  private case class FixedLsiQueryBehavior() extends UseCaseSampler[TableState]:
+    override def query(request: QueryRequest, state: TableState): QuerySample =
+      QuerySample(evaluatedItemCount = 1, evaluatedBytes = 256L, returnedItemCount = 1, returnedBytes = 128L,
+        logicalPartitionAccess = SingleLogicalPartitionKey("k"))
+
   private def baseConfig: DynamoDbTable.Config =
     DynamoDbTable.Config(
       tableName = "orders",
@@ -168,21 +178,240 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
       outboundBytes shouldBe Set(1024L)
     }
 
-    "reject configurations with GSIs in slice 10" in {
+    "route a GSI query to the GSI branch and produce GSI ReadCapacityConsumed, not base-table" in {
+      val gsiName = "status-index"
       val configWithGsi = baseConfig.copy(
-        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition("status-index"))
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
+        useCaseBehaviors = Map(
+          "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L),
+          "get-hit" -> FixedHitGetItemBehavior(itemBytes = 512L),
+          "gsi-query" -> FixedGsiQueryBehavior()
+        )
       )
-      an[IllegalArgumentException] should be thrownBy {
-        DynamoDbTable.componentOfReplicated(configWithGsi)
-      }
+
+      val (responses, consumption, _, outbound) = runReplicated(
+        configWithGsi,
+        requestSource = Source.single(
+          QueryRequest(SimTime.of(1L), usecase = "gsi-query",
+            target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", gsiName))
+        ),
+        replicatedSource = Source.empty[TimedElement[AdmittedRequestSample]]
+      )
+
+      responses.collect { case _: QueryResponse => 1 } should have size 1
+      // GSI read produces consumption for the GSI target, not the base table
+      val gsiTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", gsiName)
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReadCapacityConsumed if e.target == gsiTarget => 1
+      } should not be empty
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReadCapacityConsumed
+          if e.target == DynamoDbTarget.Table("orders") => 1
+      } shouldBe empty
+      // Reads are never forwarded on the outbound replication port
+      outbound.collect { case _: AdmittedWriteRequestSample => 1 } shouldBe empty
     }
 
-    "reject configurations with LSIs in slice 10" in {
-      val configWithLsi = baseConfig.copy(
-        localSecondaryIndexes = Vector(DynamoDbTable.LocalSecondaryIndexDefinition("created-index"))
+    "replicated write with GSI triggers index maintenance accruing rWCU for the GSI target" in {
+      val gsiName = "status-index"
+      val gsiTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", gsiName)
+      val configWithGsi = baseConfig.copy(
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
+        useCaseBehaviors = Map(
+          "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L),
+          "get-hit" -> FixedHitGetItemBehavior(itemBytes = 512L)
+        )
       )
-      an[IllegalArgumentException] should be thrownBy {
-        DynamoDbTable.componentOfReplicated(configWithLsi)
-      }
+
+      // Build a replicated put with a non-empty index maintenance plan so the maintenance
+      // graph emits consumption for the GSI target.
+      val plan = IndexMaintenancePlan(
+        target = gsiTarget,
+        action = IndexMaintenanceAction.InsertEntry,
+        throughputDemand = BigDecimal(1),
+        logicalPartitionAccess = SingleLogicalPartitionKey("pk"),
+        resolvedPartitionFootprint = ResolvedPartitionFootprint(
+          totalPartitionCount = 1,
+          partitionDemandById = SortedMap(0 -> BigDecimal(1))
+        ),
+        newIndexEntryBytes = Some(64L),
+        previousIndexEntryBytes = None,
+        storageBytesDelta = 64L
+      )
+      val replicatedWithPlan = Replicated(AdmittedPutItemSample(
+        req = PutItemRequest(eventTime = SimTime.of(1L), usecase = "replicated-put", itemBytes = 1024L),
+        executionTarget = DynamoDbTarget.Table("orders"),
+        admissionTarget = DynamoDbTarget.Table("orders"),
+        sample = FixedPutItemSample(1024L),
+        throughputDemand = BigDecimal(1),
+        resolvedPartitionFootprint = ResolvedPartitionFootprint(
+          totalPartitionCount = 1,
+          partitionDemandById = SortedMap(0 -> BigDecimal(1))
+        ),
+        indexMaintenancePlan = Vector(plan)
+      ))
+
+      val (_, consumption, _, outbound) = runReplicated(
+        configWithGsi,
+        requestSource = Source.empty[TimedElement[DynamoDBRequest]],
+        replicatedSource = Source.single(replicatedWithPlan)
+      )
+
+      // Index maintenance from a replicated write emits rWCU (not WCU) for the GSI target.
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed if e.target == gsiTarget => 1
+      } should not be empty
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed if e.target == gsiTarget => 1
+      } shouldBe empty
+      // Replicated writes never re-appear on outbound.
+      outbound.collect { case _: AdmittedWriteRequestSample => 1 } shouldBe empty
+    }
+
+    "route an LSI query to the LSI branch and produce LSI ReadCapacityConsumed, not base-table" in {
+      val lsiName = "created-index"
+      val lsiTarget = DynamoDbTarget.LocalSecondaryIndex("orders", lsiName)
+      val configWithLsi = baseConfig.copy(
+        localSecondaryIndexes = Vector(DynamoDbTable.LocalSecondaryIndexDefinition(lsiName)),
+        useCaseBehaviors = Map(
+          "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L),
+          "get-hit" -> FixedHitGetItemBehavior(itemBytes = 512L),
+          "lsi-query" -> FixedLsiQueryBehavior()
+        )
+      )
+
+      val (responses, consumption, _, outbound) = runReplicated(
+        configWithLsi,
+        requestSource = Source.single(
+          QueryRequest(SimTime.of(1L), usecase = "lsi-query",
+            target = DynamoDbReadTarget.LocalSecondaryIndex("orders", lsiName))
+        ),
+        replicatedSource = Source.empty[TimedElement[AdmittedRequestSample]]
+      )
+
+      responses.collect { case _: QueryResponse => 1 } should have size 1
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReadCapacityConsumed if e.target == lsiTarget => 1
+      } should not be empty
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReadCapacityConsumed
+          if e.target == DynamoDbTarget.Table("orders") => 1
+      } shouldBe empty
+      outbound.collect { case _: AdmittedWriteRequestSample => 1 } shouldBe empty
+    }
+
+    "replicated write with LSI triggers index maintenance accruing rWCU for the LSI target" in {
+      val lsiName = "created-index"
+      val lsiTarget = DynamoDbTarget.LocalSecondaryIndex("orders", lsiName)
+      val configWithLsi = baseConfig.copy(
+        localSecondaryIndexes = Vector(DynamoDbTable.LocalSecondaryIndexDefinition(lsiName)),
+        useCaseBehaviors = Map(
+          "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L),
+          "get-hit" -> FixedHitGetItemBehavior(itemBytes = 512L)
+        )
+      )
+
+      val plan = IndexMaintenancePlan(
+        target = lsiTarget,
+        action = IndexMaintenanceAction.InsertEntry,
+        throughputDemand = BigDecimal(1),
+        logicalPartitionAccess = SingleLogicalPartitionKey("pk"),
+        resolvedPartitionFootprint = ResolvedPartitionFootprint(
+          totalPartitionCount = 1,
+          partitionDemandById = SortedMap(0 -> BigDecimal(1))
+        ),
+        newIndexEntryBytes = Some(128L),
+        previousIndexEntryBytes = None,
+        storageBytesDelta = 128L
+      )
+      val replicatedWithLsiPlan = Replicated(AdmittedPutItemSample(
+        req = PutItemRequest(eventTime = SimTime.of(1L), usecase = "replicated-put", itemBytes = 1024L),
+        executionTarget = DynamoDbTarget.Table("orders"),
+        admissionTarget = DynamoDbTarget.Table("orders"),
+        sample = FixedPutItemSample(1024L),
+        throughputDemand = BigDecimal(1),
+        resolvedPartitionFootprint = ResolvedPartitionFootprint(
+          totalPartitionCount = 1,
+          partitionDemandById = SortedMap(0 -> BigDecimal(1))
+        ),
+        indexMaintenancePlan = Vector(plan)
+      ))
+
+      val (_, consumption, _, outbound) = runReplicated(
+        configWithLsi,
+        requestSource = Source.empty[TimedElement[DynamoDBRequest]],
+        replicatedSource = Source.single(replicatedWithLsiPlan)
+      )
+
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed if e.target == lsiTarget => 1
+      } should not be empty
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed if e.target == lsiTarget => 1
+      } shouldBe empty
+      outbound.collect { case _: AdmittedWriteRequestSample => 1 } shouldBe empty
+    }
+
+    "client write with GSI accrues WCU for both base-table target and GSI target at origin" in {
+      val gsiName = "status-index"
+      val gsiTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", gsiName)
+      val configWithGsi = baseConfig.copy(
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
+        useCaseBehaviors = Map(
+          "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L),
+          "get-hit" -> FixedHitGetItemBehavior(itemBytes = 512L)
+        )
+      )
+
+      val (responses, consumption, _, outbound) = runReplicated(
+        configWithGsi,
+        requestSource = Source.single(PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)),
+        replicatedSource = Source.empty[TimedElement[AdmittedRequestSample]]
+      )
+
+      responses.collect { case _: PutItemResponse => 1 } should have size 1
+      // Base-table write capacity consumed at the base table target
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed
+          if e.target == DynamoDbTarget.Table("orders") => 1
+      } should not be empty
+      // Index maintenance at the GSI target also accrues WCU (client write, not replicated)
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed if e.target == gsiTarget => 1
+      } should not be empty
+      // No rWCU for a client (non-replicated) write
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed => 1
+      } shouldBe empty
+      // Client write appears on outbound for replication
+      outbound.collect { case _: AdmittedPutItemSample => 1 } should have size 1
+    }
+
+    "GSI write back-pressure throttles a base-table write when GSI write limit is saturated" in {
+      val gsiName = "status-index"
+      val configWithTightGsi = baseConfig.copy(
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
+        onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(10)),
+          globalSecondaryIndexMaxWriteRequestUnitsPerSecond = Map(gsiName -> BigDecimal("0.5"))
+        ),
+        useCaseBehaviors = Map(
+          "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L),
+          "get-hit" -> FixedHitGetItemBehavior(itemBytes = 512L)
+        )
+      )
+
+      val (responses, consumption, _, _) = runReplicated(
+        configWithTightGsi,
+        requestSource = Source.single(PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 1024L)),
+        replicatedSource = Source.empty[TimedElement[AdmittedRequestSample]]
+      )
+
+      // The write should be throttled because the GSI write limit (0.5) is instantly saturated.
+      responses.collect { case r: ThrottledResponse => r.reason } shouldBe Vector(
+        DynamoDbThrottleReason.GlobalSecondaryIndexWriteMaxOnDemandThroughputExceeded
+      )
+      // Throttled writes produce no consumption events.
+      consumption.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
     }
   }

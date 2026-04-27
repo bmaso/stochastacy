@@ -15,9 +15,8 @@ import stochastacy.sim.stream.MergeTimedEventGraph
  * out on per-region consumption/metric streams; cross-region data transfer cost flows out on
  * a single dedicated transfer-event stream (per design decisions 4 and 5).
  *
- * Slice 10 supports base-table-only configurations per region. Tables configured with GSIs
- * or LSIs are not supported in slice 10 and will fail at component construction; this is a
- * tracked deferred follow-on item.
+ * Per-region configs may include GSIs and LSIs. Index maintenance (write amplification, rWCU
+ * accounting for index targets) runs at each destination region for replicated writes.
  */
 object DynamoDbGlobalTable:
 
@@ -26,10 +25,6 @@ object DynamoDbGlobalTable:
                            replicationModel: ReplicationModel
                          ):
     require(regions.nonEmpty, "regions must be non-empty")
-    require(
-      regions.values.forall(c => c.globalSecondaryIndexes.isEmpty && c.localSecondaryIndexes.isEmpty),
-      "DynamoDbGlobalTable in slice 10 does not support per-region tables with GSIs or LSIs"
-    )
 
   def componentOf(config: Config): Graph[DynamoDbGlobalTableShape, NotUsed] =
     val regions: Vector[String] = config.regions.keys.toVector.sorted
