@@ -61,11 +61,14 @@ object TimeWindowRollups:
                           ): BigDecimal =
     metric match
       case DemoMetric.ReadCapacityUnits | DemoMetric.WriteCapacityUnits |
-          DemoMetric.GsiReadCapacityUnits(_) | DemoMetric.GsiWriteCapacityUnits(_) =>
+          DemoMetric.GsiReadCapacityUnits(_) | DemoMetric.GsiWriteCapacityUnits(_) |
+          DemoMetric.RegionReadCapacityUnits(_) | DemoMetric.RegionWriteCapacityUnits(_) |
+          DemoMetric.RegionReplicatedWriteCapacityUnits(_) |
+          DemoMetric.CrossRegionTransferBytes(_, _) =>
         points.map(_.value).sum
-      case DemoMetric.StorageBytes =>
+      case DemoMetric.StorageBytes | DemoMetric.RegionStorageBytes(_) =>
         points.map(_.value).sum / BigDecimal(points.size)
-      case DemoMetric.CumulativeEstimatedCost =>
+      case DemoMetric.CumulativeEstimatedCost | DemoMetric.RegionCumulativeEstimatedCost(_) =>
         points.maxBy(_.tick).value
       case unsupported =>
         throw new IllegalArgumentException(s"windowed time-series rollups are not supported for metric: $unsupported")

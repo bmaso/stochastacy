@@ -58,7 +58,7 @@ sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge
 ### Generate A Batch
 
 ```bash
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-fleet-mr-001 --output /tmp/thermostat-fleet-mr-001.jsonl --mode multi-region --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-fleet-mr-001 --output /tmp/thermostat-fleet-mr-001.jsonl --mode multi-region --trial-count 100 --parallelism 4 --simulation-ticks 1200'
 ```
 
 This simulates a fleet in three regions:
@@ -67,10 +67,14 @@ This simulates a fleet in three regions:
 - Cross-region transfer costs at $0.02/GiB (us-east-1, eu-west-1) and $0.08/GiB (ap-southeast-1)
 - All phase-3 features active at every replica: GSI write amplification, rWCU at destination regions, LSI item-collection limits, GSI back-pressure
 
+> **Note:** Each multi-region trial runs three concurrent regional simulations, so the effective
+> concurrency is `parallelism × 3`. Keep `--parallelism` at 4 or below; higher values require
+> proportionally more heap and will OOM on the default 4 GiB configured in `.jvmopts`.
+
 ### Stage A Batch
 
 ```bash
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-fleet-mr-001.jsonl --batch-id thermostat-fleet-mr-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-fleet-mr-001.jsonl --batch-id thermostat-fleet-mr-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 4 --simulation-ticks 1200'
 ```
 
 ## Open The Dashboard
