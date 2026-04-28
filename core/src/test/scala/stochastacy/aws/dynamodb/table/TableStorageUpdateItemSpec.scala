@@ -163,13 +163,13 @@ class TableStorageStageUpdateItemSpec extends AnyWordSpec with should.Matchers:
     buf.result()
 
   private object StatefulTableBehavior extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
-      GetItemSample(itemBytes = state.averageItemBytes)
+    override def getItem(request: GetItemRequest, ctx: SamplerContext[TableState]): GetItemSample =
+      GetItemSample(itemBytes = ctx.state.averageItemBytes)
 
-    override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
+    override def updateItem(request: UpdateItemRequest, ctx: SamplerContext[TableState]): UpdateItemSample =
       FixedUpdateItemSample(
         writtenItemBytes = request.itemBytes,
-        previousItemBytes = state.averageItemBytes
+        previousItemBytes = ctx.state.averageItemBytes
       )
 
   private case class FixedUpdateItemSample(

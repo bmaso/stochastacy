@@ -268,7 +268,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
     buf.result()
 
   private object FilteredQueryBehavior extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(
         evaluatedItemCount = 10L,
         evaluatedBytes = 8192L,
@@ -277,7 +277,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       )
 
   private object EmptyButEvaluatedQueryBehavior extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(
         evaluatedItemCount = 4L,
         evaluatedBytes = 4096L,
@@ -286,7 +286,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       )
 
   private object GsiProjectionLimitedBehavior extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(
         evaluatedItemCount = 5L,
         evaluatedBytes = 4096L,
@@ -299,7 +299,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       )
 
   private object LsiFetchQueryBehavior extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(
         evaluatedItemCount = 3L,
         evaluatedBytes = 3072L,

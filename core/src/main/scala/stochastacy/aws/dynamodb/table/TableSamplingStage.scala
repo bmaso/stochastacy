@@ -3,7 +3,7 @@ package stochastacy.aws.dynamodb.table
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Flow
 import stochastacy.aws.dynamodb.*
-import stochastacy.sim.{TimedControlEvent, TimedElement}
+import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
 
 /**
  * The sampling and shaping stage sits upstream of `TableAdmissionStage` in the internal
@@ -100,7 +100,7 @@ private[table] object TableSamplingStage:
 
       request match
         case r: GetItemRequest =>
-          val sample = samplerFor(r).getItem(r, config.stateModel)
+          val sample = samplerFor(r).getItem(r, SamplerContext(config.stateModel, r.eventTime.ticks))
           val demand = TableThroughputMath.readCapacityUnitsFor(sample.itemBytes, config.readConsistency)
           val access = logicalAccessFor(r, sample)
           val footprint = resolveFootprint(r, sample, demand, topologySnapshot)
@@ -116,7 +116,7 @@ private[table] object TableSamplingStage:
           )
 
         case r: QueryRequest =>
-          val sample = samplerFor(r).query(r, config.stateModel)
+          val sample = samplerFor(r).query(r, SamplerContext(config.stateModel, r.eventTime.ticks))
           val demand = TableThroughputMath.readCapacityUnitsFor(Some(sample.evaluatedBytes), r.readConsistency)
           val access = logicalAccessFor(r, sample)
           val footprint = resolveFootprint(r, sample, demand, topologySnapshot)
@@ -131,7 +131,7 @@ private[table] object TableSamplingStage:
           )
 
         case r: ScanRequest =>
-          val sample = samplerFor(r).scan(r, config.stateModel)
+          val sample = samplerFor(r).scan(r, SamplerContext(config.stateModel, r.eventTime.ticks))
           val demand = TableThroughputMath.readCapacityUnitsFor(Some(sample.evaluatedBytes), r.readConsistency)
           val access = logicalAccessFor(r, sample)
           val footprint = resolveFootprint(r, sample, demand, topologySnapshot)
@@ -146,7 +146,7 @@ private[table] object TableSamplingStage:
           )
 
         case r: PutItemRequest =>
-          val sample = samplerFor(r).putItem(r, config.stateModel)
+          val sample = samplerFor(r).putItem(r, SamplerContext(config.stateModel, r.eventTime.ticks))
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.writtenItemBytes)
           val access = logicalAccessFor(r, sample)
           val footprint = resolveFootprint(r, sample, demand, topologySnapshot)
@@ -169,7 +169,7 @@ private[table] object TableSamplingStage:
           )
 
         case r: UpdateItemRequest =>
-          val sample = samplerFor(r).updateItem(r, config.stateModel)
+          val sample = samplerFor(r).updateItem(r, SamplerContext(config.stateModel, r.eventTime.ticks))
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.writtenItemBytes)
           val access = logicalAccessFor(r, sample)
           val footprint = resolveFootprint(r, sample, demand, topologySnapshot)
@@ -192,7 +192,7 @@ private[table] object TableSamplingStage:
           )
 
         case r: DeleteItemRequest =>
-          val sample = samplerFor(r).deleteItem(r, config.stateModel)
+          val sample = samplerFor(r).deleteItem(r, SamplerContext(config.stateModel, r.eventTime.ticks))
           val demand = TableThroughputMath.writeCapacityUnitsFor(sample.deletedItemBytes.getOrElse(0L))
           val access = logicalAccessFor(r, sample)
           val footprint = resolveFootprint(r, sample, demand, topologySnapshot)

@@ -956,7 +956,7 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
                                               bytes: Long,
                                               logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-get")
                                             ) extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+    override def getItem(request: GetItemRequest, ctx: SamplerContext[TableState]): GetItemSample =
       GetItemSample(itemBytes = Some(bytes), logicalPartitionAccess = logicalPartitionAccess)
 
   private case class FixedPutItemBehavior(
@@ -964,7 +964,7 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
                                            previousItemBytes: Option[Long],
                                            logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-put")
                                          ) extends UseCaseSampler[TableState]:
-    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+    override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       FixedPutItemSample(writtenItemBytes, previousItemBytes, logicalPartitionAccess)
 
   private case class FixedUpdateItemBehavior(
@@ -972,14 +972,14 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
                                               previousItemBytes: Option[Long],
                                               logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-update")
                                             ) extends UseCaseSampler[TableState]:
-    override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
+    override def updateItem(request: UpdateItemRequest, ctx: SamplerContext[TableState]): UpdateItemSample =
       FixedUpdateItemSample(writtenItemBytes, previousItemBytes, logicalPartitionAccess)
 
   private case class FixedQueryBehavior(
                                          evaluatedBytes: Long,
                                          logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-query")
                                        ) extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(
         evaluatedItemCount = 4L,
         evaluatedBytes = evaluatedBytes,
@@ -989,7 +989,7 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
       )
 
   private case class FixedScanBehavior(evaluatedBytes: Long) extends UseCaseSampler[TableState]:
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
       ScanSample(
         evaluatedItemCount = 6L,
         evaluatedBytes = evaluatedBytes,

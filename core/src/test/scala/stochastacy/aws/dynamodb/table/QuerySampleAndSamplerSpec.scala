@@ -176,7 +176,7 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
       )
 
       val error = the[UnsupportedOperationException] thrownBy {
-        sampler.query(request, FixedTableState(itemCount = 0L, totalItemBytes = 0L))
+        sampler.query(request, SamplerContext(FixedTableState(itemCount = 0L, totalItemBytes = 0L), 1L))
       }
 
       error.getMessage should include("Query is not supported for use-case 'unsupported-query'")
@@ -191,7 +191,7 @@ class QuerySampleAndSamplerSpec extends AnyWordSpec with should.Matchers:
       )
 
       val error = the[UnsupportedOperationException] thrownBy {
-        sampler.scan(request, FixedTableState(itemCount = 0L, totalItemBytes = 0L))
+        sampler.scan(request, SamplerContext(FixedTableState(itemCount = 0L, totalItemBytes = 0L), 1L))
       }
 
       error.getMessage should include("Scan is not supported for use-case 'unsupported-scan'")

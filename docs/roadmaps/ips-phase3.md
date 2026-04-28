@@ -151,21 +151,27 @@ That means the following remain secondary or deferred until the on-demand-mode t
 - provisioned auto scaling behavior
 - provisioned-only throttling categories as the main organizing focus
 
-### 11. Thermostat Fleet Demo
+### 11. Thermostat Fleet Demo (complete)
 
-Deliver a runnable IoT thermostat fleet demo that exercises the full phase-3 simulator feature set in both single-region and multi-region (global table) modes.
+Runnable IoT thermostat fleet demo exercising the full phase-3 simulator feature set in both single-region and multi-region (global table) modes. Simulates a connected thermostat company across up to three AWS regions with time-varying workloads (morning/evening HVAC spikes, stochastic alert storms), three GSIs, one LSI, and asymmetric regional traffic distribution.
 
-The demo simulates a connected thermostat company operating across up to three AWS regions, with time-varying workloads (morning/evening HVAC spikes, stochastic alert storms), three GSIs, one LSI, and asymmetric regional traffic distribution.
+New files:
+- `examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetScenarioConfig.scala`
+- `examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetBehavior.scala`
+- `examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetSingleTrialRunner.scala`
+- `examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetBridge.scala`
+- `examples/grafana/thermostat-fleet-dashboard.json`
+- `docs/runbooks/thermostat-fleet-demo.md`
 
-The detailed implementation plan is in `docs/roadmaps/ips-phase3-slice11.md`. The application concept and table design are in `docs/specs/thermostat-fleet-demo.md`.
+New `DemoMetric` variants: `RegionReadCapacityUnits(r)`, `RegionWriteCapacityUnits(r)`, `RegionStorageBytes(r)`, `RegionCumulativeEstimatedCost(r)`, `CrossRegionTransferBytes(src, dst)`, total variants for each, `TotalCrossRegionTransferBytes`, `TotalCrossRegionTransferCost`.
 
-## Current Next Step
+89 examples tests pass (81 pre-existing + 8 new thermostat-fleet-grafana assets test), 209 core tests pass.
 
-- `slice 11: thermostat fleet demo` — the phase-3 capstone demo
+## Current Status
 
-Slice 10 strategic decisions are recorded in `docs/specs/global-tables-design.md`.
+**Phase 3 is complete (slices 1–11 all shipped).**
 
-Phase-4 follow-on items (after slice 11):
+Phase-4 follow-on items:
 
 - **rWCU as a distinct capacity bucket and pricing dimension**: required before claiming full on-demand-mode fidelity for global tables.
 - **Tiered cross-region transfer pricing**: real AWS uses tiered rates; slice 10 ships with flat rates.

@@ -34,6 +34,7 @@ services:
       - ./examples/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./examples/grafana/order-tracking-phase1-dashboard.json:/var/lib/grafana/dashboards/order-tracking-phase1-dashboard.json:ro
       - ./examples/grafana/order-tracking-phase2-dashboard.json:/var/lib/grafana/dashboards/order-tracking-phase2-dashboard.json:ro
+      - ./examples/grafana/thermostat-fleet-dashboard.json:/var/lib/grafana/dashboards/thermostat-fleet-dashboard.json:ro
 
 volumes:
   postgres_data:

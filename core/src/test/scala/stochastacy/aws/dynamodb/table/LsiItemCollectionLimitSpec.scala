@@ -268,7 +268,7 @@ class LsiItemCollectionLimitSpec extends AnyWordSpec with should.Matchers:
                                             currentItemCollectionBytes: Long,
                                             logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-pk")
                                           ) extends UseCaseSampler[TableState]:
-    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+    override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       SizingPutItemSample(writtenItemBytes, previousItemBytes, currentItemCollectionBytes, logicalPartitionAccess)
 
   private case class SizingDeleteItemBehavior(
@@ -276,5 +276,5 @@ class LsiItemCollectionLimitSpec extends AnyWordSpec with should.Matchers:
                                                currentItemCollectionBytes: Long,
                                                logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-pk")
                                              ) extends UseCaseSampler[TableState]:
-    override def deleteItem(request: DeleteItemRequest, state: TableState): DeleteItemSample =
+    override def deleteItem(request: DeleteItemRequest, ctx: SamplerContext[TableState]): DeleteItemSample =
       SizingDeleteItemSample(deletedItemBytes, currentItemCollectionBytes, logicalPartitionAccess)

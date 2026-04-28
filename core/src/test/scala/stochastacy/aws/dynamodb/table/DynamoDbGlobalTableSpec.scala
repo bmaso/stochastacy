@@ -27,7 +27,7 @@ class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
                                        ) extends PutItemSample
 
   private case class FixedPutItemBehavior(writtenItemBytes: Long) extends UseCaseSampler[TableState]:
-    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+    override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       FixedPutItemSample(writtenItemBytes)
 
   /** Constant-zero distribution: every sample returns 0 (immediate replication). */

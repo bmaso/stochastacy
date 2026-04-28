@@ -85,3 +85,29 @@ object TimeWindowRollups:
       AggregateStatistic.Mean -> mean,
       AggregateStatistic.StdDev -> stddev
     )
+
+/**
+ * Incremental windowed aggregator: folds one trial's timeSeries at a time into Welford accumulators
+ * so that completed TrialResult timeSeries data can be GC'd — state size is O(windows × metrics),
+ * independent of trial count.
+ */
+final case class IncrementalWindowedAgg(
+  windowSize: WindowSizeSeconds,
+  acc: Map[(Long, DemoMetric), WelfordAcc] = Map.empty
+):
+  def addTrial(timeSeries: Vector[SimulationTimeSeriesPoint]): IncrementalWindowedAgg =
+    val windowed = TimeWindowRollups.rollupTrialTimeSeries(timeSeries, windowSize)
+    val newAcc = windowed.foldLeft(acc) { (a, point) =>
+      val key = (point.windowStartTick, point.metric)
+      a.updated(key, a.getOrElse(key, WelfordAcc()).update(point.value))
+    }
+    copy(acc = newAcc)
+
+  def toAggregatedWindowedPoints: Vector[AggregatedWindowedTimeSeriesPoint] =
+    acc.keySet.toVector
+      .sortBy { case (windowStart, metric) => (windowStart, metric.sortKey) }
+      .flatMap { case (windowStart, metric) =>
+        acc((windowStart, metric)).toStatisticPairs.map { case (stat, value) =>
+          AggregatedWindowedTimeSeriesPoint(windowSize.seconds, windowStart, metric, stat, value)
+        }
+      }

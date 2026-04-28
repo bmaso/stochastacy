@@ -135,13 +135,13 @@ class TableStorageStagePricingIntegrationSpec extends AnyWordSpec with should.Ma
     buf.result()
 
   private object StatefulTableBehavior extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
-      GetItemSample(itemBytes = state.averageItemBytes)
+    override def getItem(request: GetItemRequest, ctx: SamplerContext[TableState]): GetItemSample =
+      GetItemSample(itemBytes = ctx.state.averageItemBytes)
 
-    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+    override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       FixedPutItemSample(
         writtenItemBytes = request.itemBytes,
-        previousItemBytes = state.averageItemBytes
+        previousItemBytes = ctx.state.averageItemBytes
       )
 
   private case class FixedPutItemSample(

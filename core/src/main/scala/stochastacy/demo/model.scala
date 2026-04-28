@@ -14,6 +14,21 @@ enum DemoMetric:
   case TotalStorageByteTicks
   case FinalStorageBytes
   case TotalEstimatedCost
+  // Per-region metrics (multi-region / global table demos)
+  case RegionReadCapacityUnits(regionName: String)
+  case RegionWriteCapacityUnits(regionName: String)
+  case RegionReplicatedWriteCapacityUnits(regionName: String)
+  case RegionStorageBytes(regionName: String)
+  case RegionCumulativeEstimatedCost(regionName: String)
+  case CrossRegionTransferBytes(sourceRegion: String, destinationRegion: String)
+  case TotalRegionReadCapacityUnits(regionName: String)
+  case TotalRegionWriteCapacityUnits(regionName: String)
+  case TotalRegionReplicatedWriteCapacityUnits(regionName: String)
+  case TotalRegionStorageByteTicks(regionName: String)
+  case TotalRegionFinalStorageBytes(regionName: String)
+  case TotalRegionEstimatedCost(regionName: String)
+  case TotalCrossRegionTransferBytes
+  case TotalCrossRegionTransferCost
 
   def exportName: String =
     this match
@@ -30,6 +45,20 @@ enum DemoMetric:
       case DemoMetric.TotalStorageByteTicks => "TotalStorageByteTicks"
       case DemoMetric.FinalStorageBytes => "FinalStorageBytes"
       case DemoMetric.TotalEstimatedCost => "TotalEstimatedCost"
+      case DemoMetric.RegionReadCapacityUnits(r) => s"Region:$r:ReadCapacityUnits"
+      case DemoMetric.RegionWriteCapacityUnits(r) => s"Region:$r:WriteCapacityUnits"
+      case DemoMetric.RegionReplicatedWriteCapacityUnits(r) => s"Region:$r:ReplicatedWriteCapacityUnits"
+      case DemoMetric.RegionStorageBytes(r) => s"Region:$r:StorageBytes"
+      case DemoMetric.RegionCumulativeEstimatedCost(r) => s"Region:$r:CumulativeEstimatedCost"
+      case DemoMetric.CrossRegionTransferBytes(src, dst) => s"CrossRegionTransfer:$src:$dst:Bytes"
+      case DemoMetric.TotalRegionReadCapacityUnits(r) => s"Region:$r:TotalReadCapacityUnits"
+      case DemoMetric.TotalRegionWriteCapacityUnits(r) => s"Region:$r:TotalWriteCapacityUnits"
+      case DemoMetric.TotalRegionReplicatedWriteCapacityUnits(r) => s"Region:$r:TotalReplicatedWriteCapacityUnits"
+      case DemoMetric.TotalRegionStorageByteTicks(r) => s"Region:$r:TotalStorageByteTicks"
+      case DemoMetric.TotalRegionFinalStorageBytes(r) => s"Region:$r:FinalStorageBytes"
+      case DemoMetric.TotalRegionEstimatedCost(r) => s"Region:$r:TotalEstimatedCost"
+      case DemoMetric.TotalCrossRegionTransferBytes => "TotalCrossRegionTransferBytes"
+      case DemoMetric.TotalCrossRegionTransferCost => "TotalCrossRegionTransferCost"
 
   def sortKey: (Int, String) =
     this match
@@ -46,6 +75,20 @@ enum DemoMetric:
       case DemoMetric.TotalStorageByteTicks => (10, "")
       case DemoMetric.FinalStorageBytes => (11, "")
       case DemoMetric.TotalEstimatedCost => (12, "")
+      case DemoMetric.RegionReadCapacityUnits(r) => (13, r)
+      case DemoMetric.RegionWriteCapacityUnits(r) => (14, r)
+      case DemoMetric.RegionReplicatedWriteCapacityUnits(r) => (15, r)
+      case DemoMetric.RegionStorageBytes(r) => (16, r)
+      case DemoMetric.RegionCumulativeEstimatedCost(r) => (17, r)
+      case DemoMetric.CrossRegionTransferBytes(src, dst) => (18, s"$src:$dst")
+      case DemoMetric.TotalRegionReadCapacityUnits(r) => (19, r)
+      case DemoMetric.TotalRegionWriteCapacityUnits(r) => (20, r)
+      case DemoMetric.TotalRegionReplicatedWriteCapacityUnits(r) => (21, r)
+      case DemoMetric.TotalRegionStorageByteTicks(r) => (22, r)
+      case DemoMetric.TotalRegionFinalStorageBytes(r) => (23, r)
+      case DemoMetric.TotalRegionEstimatedCost(r) => (24, r)
+      case DemoMetric.TotalCrossRegionTransferBytes => (25, "")
+      case DemoMetric.TotalCrossRegionTransferCost => (26, "")
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

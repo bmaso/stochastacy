@@ -8,7 +8,15 @@ This is the capstone demo for phase 3. The detailed application concept and tabl
 
 ## Prerequisite State
 
-Slices 1-10 are complete. The simulator core supports on-demand throttling, hot partitions, burst capacity, adaptive capacity, dynamic partition topology, GSI write back-pressure, projection-aware reads, plan-driven index maintenance, LSI item-collection constraints, and global tables with cross-region replication and transfer pricing.
+Slices 1-10 (including 10b, 10c, 10d) are complete. The simulator core supports:
+
+- on-demand throttling, hot partitions, burst capacity, adaptive capacity, dynamic partition topology
+- GSI write back-pressure, projection-aware reads, plan-driven index maintenance
+- LSI item-collection constraints
+- global tables with cross-region replication (slice 10a)
+- GSI/LSI support inside `componentOfReplicated` — both single-region and multi-region paths support full index configurations (slice 10b)
+- rWCU as a distinct capacity bucket and pricing dimension — replicated writes at destination regions bill separately from origin writes (slice 10c)
+- tiered cross-region transfer pricing — `TransferPricingTier` schedule with per-source-region tier vectors (slice 10d)
 
 The existing order-tracking phase-2 demo is stable and will remain alongside the new demo.
 
@@ -72,7 +80,7 @@ Admission parameters (on-demand limits, hot-partition thresholds, burst, adaptiv
 Global table parameters (used only when `regions.size > 1`):
 - `replicationModel: Option[ReplicationModel]` — per-link lag distributions; when `None` and multi-region, uses a sensible default (e.g. log-normal with mean 500ms / stddev 200ms for all links)
 
-A companion object provides a `singleRegionDefault` and a `multiRegionDefault` preset.
+A companion object provides a `singleRegionDefault` (one region, full indexes) and a `multiRegionDefault` (three regions with the distribution from `docs/specs/thermostat-fleet-demo.md`, full indexes) preset.
 
 **Validation:** Standard `require` checks following the `OrderTrackingScenarioConfig` pattern.
 
@@ -127,9 +135,9 @@ The `DynamoDbTable.Config` is constructed with:
 - `itemCollectionSizeLimitBytes` from scenario config
 - `onDemandMaxThroughput`, `hotPartitionModel`, `burstCapacityModel`, `adaptiveCapacityModel`, `dynamicPartitionTopologyModel` from scenario config
 
-**Single-trial runner — multi-region path:** `runTrialMultiRegion(config, run)` constructs a `DynamoDbGlobalTable.componentOf` with per-region `DynamoDbTable.Config`s (base-table-only for slice 10 — GSI/LSI support inside replicated tables is a deferred follow-on). Materializes the graph with per-region request sources, collects per-region consumption/metrics plus cross-region transfer events, and builds a `TrialResult` with region-tagged metrics.
+**Single-trial runner — multi-region path:** `runTrialMultiRegion(config, run)` constructs a `DynamoDbGlobalTable.componentOf` with per-region `DynamoDbTable.Config`s using the full index configuration (3 GSIs + 1 LSI — same as the single-region path). Materializes the graph with per-region request sources, collects per-region consumption/metrics plus cross-region transfer events, and builds a `TrialResult` with region-tagged metrics.
 
-**Important constraint:** Slice 10's `DynamoDbGlobalTable` requires base-table-only configs (no GSIs/LSIs). The multi-region path therefore runs with base-table-only tables. This is a known limitation of slice 10; the dashboard should note this. The single-region path runs with full indexes.
+Both paths use the same full index configuration. The multi-region path additionally shows per-region write amplification across replicas (rWCU at destination regions), cross-region transfer costs, and GSI back-pressure behavior at each replica.
 
 **TrialResult construction:** Extends the existing `buildTrialResult` pattern with new metric names for per-region capacity (e.g. `RegionWriteCapacityUnits(regionName)`, `RegionReadCapacityUnits(regionName)`) and cross-region transfer (e.g. `CrossRegionTransferBytes(source, dest)`). These require extending `DemoMetric` in `core/src/main/scala/stochastacy/demo/model.scala`.
 
@@ -145,7 +153,7 @@ The `DynamoDbTable.Config` is constructed with:
 - `TotalRegionEstimatedCost(regionName: String)`
 - `TotalCrossRegionTransferCost`
 
-**Test:** `ThermostatFleetSingleTrialRunnerSpec` — runs a small single-region trial (few ticks, small fleet), verifies result shape: expected metric names present, non-negative values, consumption events emitted for base table and indexes. A multi-region variant (base-table-only) verifies per-region metrics and transfer events.
+**Test:** `ThermostatFleetSingleTrialRunnerSpec` — runs a small single-region trial (few ticks, small fleet), verifies result shape: expected metric names present, non-negative values, consumption events emitted for base table and all indexes. A multi-region variant (with full indexes) verifies per-region metrics, rWCU events at destination regions, index maintenance consumption at peer regions, and cross-region transfer events.
 
 ### Step 4: Multi-Trial Executor and Demo CLI Bridge
 
@@ -192,7 +200,7 @@ The `DynamoDbTable.Config` is constructed with:
 
 **Row 3 (Per-Region Write Capacity):** Time-series panels filtered by selected `regionName`, showing `Region:$regionName:WriteCapacityUnits` metric. Visible only when multi-region data is present.
 
-**Row 4 (GSI Pressure):** Per-GSI write capacity panels filtered by selected `gsiIndexName`, same structure as the phase-2 per-GSI row.
+**Row 4 (GSI Pressure):** Per-GSI write capacity panels filtered by selected `gsiIndexName`, same structure as the phase-2 per-GSI row. Applies to both single-region and multi-region modes — in multi-region mode, each region's GSI write amplification is visible, and back-pressure events at any replica region appear in the throttling row.
 
 **Row 5 (Throttling and Admission):** New panels. Requires throttle-rate metrics in the time series. If `Stage1MetricEvent` throttle counts are not currently exported to the demo time series, add `ThrottleCount` and `ThrottleCountByReason(reason)` as new `DemoMetric` variants, emitted from the trial runner's metric-event processing.
 
@@ -221,9 +229,9 @@ The `DynamoDbTable.Config` is constructed with:
 
 ## Key Design Decisions
 
-### Decision 1: Single-region path has full indexes; multi-region path is base-table-only
+### Decision 1: Both paths use full indexes
 
-Slice 10's `DynamoDbGlobalTable` does not support GSI/LSI inside replicated tables. Rather than block the multi-region demo until that follow-on is complete, the demo runs multi-region with base-table-only configs and single-region with full indexes. Both paths are valuable: single-region shows the admission/throttling/index story, multi-region shows the replication/cost story. The dashboard should clearly indicate which mode was used for a given batch.
+Slice 10b completed GSI/LSI support inside `componentOfReplicated`, so both single-region and multi-region paths use the identical full index configuration (3 GSIs + 1 LSI). The multi-region path shows the full phase-3 story in one run: admission/throttling, GSI write amplification at every replica, rWCU billing at destination regions, LSI item-collection limits, and cross-region transfer costs. The dashboard should indicate which mode was used for a given batch, and per-region panels are only populated for multi-region batches.
 
 ### Decision 2: Request stream is pre-generated, not live-sampled
 

@@ -268,7 +268,7 @@ class TableStorageStageScanSpec extends AnyWordSpec with should.Matchers:
     buf.result()
 
   private object FilteredScanBehavior extends UseCaseSampler[TableState]:
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
       ScanSample(
         evaluatedItemCount = 16L,
         evaluatedBytes = 12288L,
@@ -277,7 +277,7 @@ class TableStorageStageScanSpec extends AnyWordSpec with should.Matchers:
       )
 
   private object EmptyButEvaluatedScanBehavior extends UseCaseSampler[TableState]:
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
       ScanSample(
         evaluatedItemCount = 6L,
         evaluatedBytes = 4096L,
@@ -286,7 +286,7 @@ class TableStorageStageScanSpec extends AnyWordSpec with should.Matchers:
       )
 
   private object GsiProjectionLimitedBehavior extends UseCaseSampler[TableState]:
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
       ScanSample(
         evaluatedItemCount = 6L,
         evaluatedBytes = 6144L,
@@ -299,7 +299,7 @@ class TableStorageStageScanSpec extends AnyWordSpec with should.Matchers:
       )
 
   private object LsiFetchScanBehavior extends UseCaseSampler[TableState]:
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
       ScanSample(
         evaluatedItemCount = 8L,
         evaluatedBytes = 8192L,

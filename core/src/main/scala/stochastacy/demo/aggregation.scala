@@ -98,3 +98,62 @@ object MonteCarloAggregator:
       AggregateStatistic.Mean -> mean,
       AggregateStatistic.StdDev -> stddev
     )
+
+/** Welford online algorithm accumulator: computes mean and variance in a single pass. */
+private[demo] final case class WelfordAcc(
+  n: Int = 0,
+  mean: BigDecimal = BigDecimal(0),
+  m2: BigDecimal = BigDecimal(0)
+):
+  def update(x: BigDecimal): WelfordAcc =
+    val n1 = n + 1
+    val delta = x - mean
+    val newMean = mean + delta / BigDecimal(n1)
+    WelfordAcc(n1, newMean, m2 + delta * (x - newMean))
+
+  def toStatisticPairs: Vector[(AggregateStatistic, BigDecimal)] =
+    val variance = if n < 2 then BigDecimal(0) else m2 / BigDecimal(n)
+    Vector(
+      AggregateStatistic.Mean -> mean,
+      AggregateStatistic.StdDev -> BigDecimal.decimal(math.sqrt(variance.toDouble))
+    )
+
+/**
+ * Incremental Monte Carlo aggregator: folds one trial at a time using Welford accumulators so that
+ * completed TrialResult objects can be GC'd immediately — peak aggregate state is O(distinct ticks ×
+ * metrics), not O(trial count × ticks × metrics).
+ */
+final case class IncrementalMonteCarloAgg(
+  scenarioId: String,
+  trialCount: Int = 0,
+  timeSeriesAcc: Map[(Long, DemoMetric), WelfordAcc] = Map.empty,
+  summaryAcc: Map[DemoMetric, WelfordAcc] = Map.empty
+):
+  def addTrial(trial: TrialResult): IncrementalMonteCarloAgg =
+    require(trial.scenarioId == scenarioId)
+    val newTsAcc = trial.timeSeries.foldLeft(timeSeriesAcc) { (acc, point) =>
+      val key = (point.tick, point.metric)
+      acc.updated(key, acc.getOrElse(key, WelfordAcc()).update(point.value))
+    }
+    val newSumAcc = trial.summary.foldLeft(summaryAcc) { (acc, sv) =>
+      acc.updated(sv.metric, acc.getOrElse(sv.metric, WelfordAcc()).update(sv.value))
+    }
+    copy(trialCount = trialCount + 1, timeSeriesAcc = newTsAcc, summaryAcc = newSumAcc)
+
+  def toMonteCarloResult: MonteCarloResult =
+    val tsKeys = timeSeriesAcc.keySet.toVector.sortBy { case (tick, metric) => (tick, metric.sortKey) }
+    val sumKeys = summaryAcc.keySet.toVector.sortBy(_.sortKey)
+    MonteCarloResult(
+      scenarioId = scenarioId,
+      trialCount = trialCount,
+      timeSeries = tsKeys.flatMap { case (tick, metric) =>
+        timeSeriesAcc((tick, metric)).toStatisticPairs.map { case (stat, value) =>
+          AggregatedTimeSeriesPoint(tick, metric, stat, value)
+        }
+      },
+      summary = sumKeys.flatMap { metric =>
+        summaryAcc(metric).toStatisticPairs.map { case (stat, value) =>
+          AggregatedSummaryValue(metric, stat, value)
+        }
+      }
+    )

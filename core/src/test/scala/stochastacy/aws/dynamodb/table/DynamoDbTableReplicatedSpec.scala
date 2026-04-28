@@ -28,20 +28,20 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
                                            writtenItemBytes: Long,
                                            previousItemBytes: Option[Long] = None
                                          ) extends UseCaseSampler[TableState]:
-    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+    override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       FixedPutItemSample(writtenItemBytes, previousItemBytes)
 
   private case class FixedHitGetItemBehavior(itemBytes: Long) extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+    override def getItem(request: GetItemRequest, ctx: SamplerContext[TableState]): GetItemSample =
       GetItemSample(itemBytes = Some(itemBytes))
 
   private case class FixedGsiQueryBehavior() extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(evaluatedItemCount = 1, evaluatedBytes = 128L, returnedItemCount = 1, returnedBytes = 64L,
         logicalPartitionAccess = SingleLogicalPartitionKey("k"))
 
   private case class FixedLsiQueryBehavior() extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(evaluatedItemCount = 1, evaluatedBytes = 256L, returnedItemCount = 1, returnedBytes = 128L,
         logicalPartitionAccess = SingleLogicalPartitionKey("k"))
 

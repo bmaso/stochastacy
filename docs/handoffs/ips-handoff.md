@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-04-26 (phase 3 complete — slice 10 shipped)
+Last updated: 2026-04-27 (phase 3 complete — slice 11 shipped: thermostat fleet capstone demo)
 
 ## Current Position
 
@@ -32,7 +32,7 @@ The project currently centers on a DynamoDB simulator that supports:
 - a provisioned Grafana dashboard
 - overall demo reporting plus per-GSI consumed read/write reporting
 
-The current runnable demo surface is still the order-tracking phase-2 demo, but the simulator frontier has moved into phase 3 and is currently implemented through slice 8.
+The current runnable demo surface is the **thermostat fleet phase-3 demo** (`ThermostatFleetBridge`), which exercises all phase-3 simulator features in both single-region and multi-region (global table) modes. The order-tracking phase-2 demo remains available as a simpler single-region baseline.
 
 ## Architectural Direction
 
@@ -93,23 +93,24 @@ The implemented design direction is:
 
 ## Current Operator Workflow
 
-The current demo workflow is:
+The primary demo workflow is:
 
 1. `docker compose up -d`
-2. `generate` a batch to JSONL through `OrderTrackingPhase2Bridge`
+2. `generate` a batch to JSONL through `ThermostatFleetBridge --mode single-region` or `--mode multi-region`
 3. `stage` that batch into Postgres
-4. `view` the provisioned Grafana dashboard
-5. select a staged `batch_id`, a `Window Size` of `60` or `300`, and a `GSI Index Name` when inspecting per-GSI panels
+4. `view` the provisioned Grafana dashboard (`thermostat-fleet-demo` UID)
+5. select a staged `batch_id`, a `Window Size` of `60` or `300`, a `GSI Index Name`, and (for multi-region) a `Region Name`
+
+Full instructions: `docs/runbooks/thermostat-fleet-demo.md`
 
 ## Recommended Next Work
 
-Phase 3 is complete. Recommended next-phase work (phase 4):
+Phase 3 is complete (slices 1–11 all shipped). Recommended next-phase work (phase 4):
 
-1. **Multi-region runnable demo** — extend the order-tracking demo to materialize a multi-region scenario. Touches the JSONL/Postgres/Grafana stack with per-region cost panels, a Postgres schema migration adding region columns, and demo-runner CLI extensions. This is "slice 10b" or its own phase-4 deliverable.
-2. **rWCU as a distinct capacity bucket** — replicated writes at a destination region currently bill against normal WCU; AWS bills them as rWCU with separate pricing. Adding this is required before claiming "on-demand simulation is fully accurate."
-3. **Tiered cross-region transfer pricing** — slice 10 uses flat per-source-region rates. Real AWS uses tiered rates ("first 10 TB at rate X, next 40 TB at rate Y"). Requires the pricing component to track a billing-period bucket.
-4. **GSI/LSI support inside replicated tables** — slice 10's `componentOfReplicated` rejects configs with secondary indexes. Real AWS Global Tables support GSIs/LSIs on replicas; adding this is its own slice.
-5. Continue keeping the runnable phase-2 demo stable.
+1. **rWCU as a distinct capacity bucket** — replicated writes at a destination region currently bill against normal WCU; AWS bills them as rWCU with separate pricing. Adding this is required before claiming "on-demand simulation is fully accurate."
+2. **Tiered cross-region transfer pricing** — slice 10 uses flat per-source-region rates. Real AWS uses tiered rates ("first 10 TB at rate X, next 40 TB at rate Y"). Requires the pricing component to track a billing-period bucket.
+3. **GSI/LSI support inside replicated tables** — slice 10's `componentOfReplicated` rejects configs with secondary indexes. Real AWS Global Tables support GSIs/LSIs on replicas; adding this is its own slice.
+4. Continue keeping both runnable demos stable.
 
 Slice 8b (`TableAdmissionStage` decomposition) is complete: sampling and shaping have been extracted into the upstream `TableSamplingStage`, and `TableAdmissionStage` re-resolves a shaped request's footprint and index-maintenance plan when topology evolution at a tick boundary invalidates the memorialized values. `IndexMaintenancePlanDerivation` is the single canonical helper for deriving per-index plans, used by both stages.
 

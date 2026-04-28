@@ -690,7 +690,7 @@ object TableStorageStage:
       val rawToAdmitted = b.add(
         Flow[TimedElement[DynamoDBRequest]].map[TimedElement[AdmittedRequestSample]] {
           case r: GetItemRequest =>
-            val sample = samplerFor(r).getItem(r, stateModel)
+            val sample = samplerFor(r).getItem(r, SamplerContext(stateModel, r.eventTime.ticks))
             AdmittedGetItemSample(
               req = r,
               executionTarget = tableTarget,
@@ -706,7 +706,7 @@ object TableStorageStage:
             )
 
           case r: PutItemRequest =>
-            val sample = samplerFor(r).putItem(r, stateModel)
+            val sample = samplerFor(r).putItem(r, SamplerContext(stateModel, r.eventTime.ticks))
             AdmittedPutItemSample(
               req = r,
               executionTarget = tableTarget,
@@ -721,7 +721,7 @@ object TableStorageStage:
             )
 
           case r: QueryRequest =>
-            val sample = samplerFor(r).query(r, stateModel)
+            val sample = samplerFor(r).query(r, SamplerContext(stateModel, r.eventTime.ticks))
             AdmittedQuerySample(
               req = r,
               executionTarget = executionTargetFor(r.target),
@@ -736,7 +736,7 @@ object TableStorageStage:
             )
 
           case r: ScanRequest =>
-            val sample = samplerFor(r).scan(r, stateModel)
+            val sample = samplerFor(r).scan(r, SamplerContext(stateModel, r.eventTime.ticks))
             AdmittedScanSample(
               req = r,
               executionTarget = executionTargetFor(r.target),
@@ -751,7 +751,7 @@ object TableStorageStage:
             )
 
           case r: UpdateItemRequest =>
-            val sample = samplerFor(r).updateItem(r, stateModel)
+            val sample = samplerFor(r).updateItem(r, SamplerContext(stateModel, r.eventTime.ticks))
             AdmittedUpdateItemSample(
               req = r,
               executionTarget = tableTarget,
@@ -766,7 +766,7 @@ object TableStorageStage:
             )
 
           case r: DeleteItemRequest =>
-            val sample = samplerFor(r).deleteItem(r, stateModel)
+            val sample = samplerFor(r).deleteItem(r, SamplerContext(stateModel, r.eventTime.ticks))
             AdmittedDeleteItemSample(
               req = r,
               executionTarget = tableTarget,

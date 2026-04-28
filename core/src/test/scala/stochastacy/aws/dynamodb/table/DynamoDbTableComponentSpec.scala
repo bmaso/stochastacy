@@ -1306,7 +1306,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
                                               bytes: Long,
                                               logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-get")
                                             ) extends UseCaseSampler[TableState]:
-    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+    override def getItem(request: GetItemRequest, ctx: SamplerContext[TableState]): GetItemSample =
       GetItemSample(itemBytes = Some(bytes), logicalPartitionAccess = logicalPartitionAccess)
 
   private case class FixedPutItemBehavior(
@@ -1314,7 +1314,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
                                            previousItemBytes: Option[Long],
                                            logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-put")
                                          ) extends UseCaseSampler[TableState]:
-    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+    override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       FixedPutItemSample(writtenItemBytes, previousItemBytes, logicalPartitionAccess)
 
   private case class FixedUpdateItemBehavior(
@@ -1322,21 +1322,21 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
                                               previousItemBytes: Option[Long],
                                               logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-update")
                                             ) extends UseCaseSampler[TableState]:
-    override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
+    override def updateItem(request: UpdateItemRequest, ctx: SamplerContext[TableState]): UpdateItemSample =
       FixedUpdateItemSample(writtenItemBytes, previousItemBytes, logicalPartitionAccess)
 
   private case class FixedDeleteItemBehavior(
                                               deletedItemBytes: Option[Long],
                                               logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-delete")
                                             ) extends UseCaseSampler[TableState]:
-    override def deleteItem(request: DeleteItemRequest, state: TableState): DeleteItemSample =
+    override def deleteItem(request: DeleteItemRequest, ctx: SamplerContext[TableState]): DeleteItemSample =
       FixedDeleteItemSample(deletedItemBytes, logicalPartitionAccess)
 
   private case class FixedQueryBehavior(
                                          evaluatedBytes: Long = 4096L,
                                          logicalPartitionAccess: LogicalPartitionAccess = SingleLogicalPartitionKey("default-query")
                                        ) extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(
         evaluatedItemCount = 8L,
         evaluatedBytes = evaluatedBytes,
@@ -1346,7 +1346,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
 
   private object FixedScanBehavior extends UseCaseSampler[TableState]:
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
       ScanSample(
         evaluatedItemCount = 14L,
         evaluatedBytes = 8192L,
@@ -1355,7 +1355,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
 
   private object ProjectionLimitedQueryBehavior extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(
         evaluatedItemCount = 5L,
         evaluatedBytes = 4096L,
@@ -1368,7 +1368,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
 
   private object ProjectionFetchQueryBehavior extends UseCaseSampler[TableState]:
-    override def query(request: QueryRequest, state: TableState): QuerySample =
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(
         evaluatedItemCount = 3L,
         evaluatedBytes = 3072L,
@@ -1381,7 +1381,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
 
   private object ProjectionLimitedScanBehavior extends UseCaseSampler[TableState]:
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
       ScanSample(
         evaluatedItemCount = 6L,
         evaluatedBytes = 6144L,
@@ -1394,7 +1394,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
 
   private object ProjectionFetchScanBehavior extends UseCaseSampler[TableState]:
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
       ScanSample(
         evaluatedItemCount = 8L,
         evaluatedBytes = 8192L,
@@ -1407,7 +1407,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       )
 
   private case class SamplingPutBehavior(invocations: AtomicInteger) extends UseCaseSampler[TableState]:
-    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+    override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       val invocation = invocations.incrementAndGet()
       invocation match
         case 1 => FixedPutItemSample(writtenItemBytes = 1024L, previousItemBytes = None)

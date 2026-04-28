@@ -32,37 +32,29 @@ final class OrderTrackingSingleTrialRunner(
     val behaviors: Map[Any, UseCaseSampler[TableState]] =
       Map(config.scenarioId -> OrderTrackingBehavior(config, rng))
 
-    val requestSource = Source(generateRequests(config, rng))
+    val requestSource = Source.fromIterator(() => generateRequests(config, rng))
 
-    val materialized =
-      runTable(
-        requestSource = requestSource,
-        config = config,
-        tableState = tableState,
-        behaviors = behaviors
+    runTable(
+      requestSource = requestSource,
+      config = config,
+      tableState = tableState,
+      behaviors = behaviors
+    ).map { timedConsumption =>
+      buildTrialResult(
+        scenarioId = config.scenarioId,
+        trialId = run.trialId,
+        configuredGlobalSecondaryIndexes = config.globalSecondaryIndexNames,
+        timedConsumption = timedConsumption.collect {
+          case evt: DynamoDbConsumptionEvent => evt
+          case tick: TimedControlEvent => tick
+        }
       )
-    val responseFuture = materialized._1
-    val consumptionFuture = materialized._2
-    val metricsFuture = materialized._3
-
-    for
-      _ <- responseFuture
-      timedConsumption <- consumptionFuture
-      _ <- metricsFuture
-    yield buildTrialResult(
-      scenarioId = config.scenarioId,
-      trialId = run.trialId,
-      configuredGlobalSecondaryIndexes = config.globalSecondaryIndexNames,
-      timedConsumption = timedConsumption.collect {
-        case evt: DynamoDbConsumptionEvent => evt
-        case tick: TimedControlEvent => tick
-      }
-    )
+    }
 
   private def generateRequests(
                                 config: OrderTrackingScenarioConfig,
                                 rng: UniformRandomProvider
-                              ): Vector[TimedElement[DynamoDBRequest]] =
+                              ): Iterator[TimedElement[DynamoDBRequest]] =
     val createSampler = poissonSampler(config.createRatePerTick, rng)
     val fetchSampler = poissonSampler(config.fetchRatePerTick, rng)
     val updateSampler = poissonSampler(config.updateRatePerTick, rng)
@@ -72,70 +64,67 @@ final class OrderTrackingSingleTrialRunner(
     val gsiQuerySampler = poissonSampler(config.gsiQueryRatePerTick, rng)
     val gsiScanSampler = poissonSampler(config.gsiScanRatePerTick, rng)
 
-    (1L to config.simulationTicks).foldLeft(Vector.empty[TimedElement[DynamoDBRequest]]) {
-      case (acc, tick) =>
-        acc ++ Vector(
-          TimedControlEvent.Tick(SimTime.of(tick))
-        ) ++
-          Vector.fill(createSampler()) {
-            PutItemRequest(
-              eventTime = SimTime.of(tick),
-              usecase = config.scenarioId,
-              itemBytes = sampleBytes(config.newOrderMeanBytes, rng)
-            ): TimedElement[DynamoDBRequest]
-          } ++
-          Vector.fill(fetchSampler()) {
-            GetItemRequest(
-              eventTime = SimTime.of(tick),
-              usecase = config.scenarioId
-            ): TimedElement[DynamoDBRequest]
-          } ++
-          Vector.fill(updateSampler()) {
-            UpdateItemRequest(
-              eventTime = SimTime.of(tick),
-              usecase = config.scenarioId,
-              itemBytes = sampleBytes(config.updatedOrderMeanBytes, rng)
-            ): TimedElement[DynamoDBRequest]
-          } ++
-          Vector.fill(deleteSampler()) {
-            DeleteItemRequest(
-              eventTime = SimTime.of(tick),
-              usecase = config.scenarioId
-            ): TimedElement[DynamoDBRequest]
-          } ++
-          (0 until tableQuerySampler()).map { _ =>
-            QueryRequest(
-              eventTime = SimTime.of(tick),
-              usecase = config.scenarioId,
-              target = DynamoDbReadTarget.Table(config.tableName),
-              readConsistency = config.readConsistency
-            ): TimedElement[DynamoDBRequest]
-          } ++
-          (0 until tableScanSampler()).map { _ =>
-            ScanRequest(
-              eventTime = SimTime.of(tick),
-              usecase = config.scenarioId,
-              target = DynamoDbReadTarget.Table(config.tableName),
-              readConsistency = config.readConsistency
-            ): TimedElement[DynamoDBRequest]
-          } ++
-          (0 until gsiQuerySampler()).map { sampleIndex =>
-            QueryRequest(
-              eventTime = SimTime.of(tick),
-              usecase = config.scenarioId,
-              target = nextGlobalSecondaryIndexTarget(config, tick, sampleIndex),
-              readConsistency = ReadConsistency.EventuallyConsistent
-            ): TimedElement[DynamoDBRequest]
-          } ++
-          (0 until gsiScanSampler()).map { sampleIndex =>
-            ScanRequest(
-              eventTime = SimTime.of(tick),
-              usecase = config.scenarioId,
-              target = nextGlobalSecondaryIndexTarget(config, tick, sampleIndex + 13),
-              readConsistency = ReadConsistency.EventuallyConsistent
-            ): TimedElement[DynamoDBRequest]
-          }
-    } :+ TimedControlEvent.Tick(SimTime.of(config.simulationTicks + 1L))
+    (1L to config.simulationTicks).iterator.flatMap { tick =>
+      Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDBRequest]) ++
+        Iterator.fill(createSampler()) {
+          PutItemRequest(
+            eventTime = SimTime.of(tick),
+            usecase = config.scenarioId,
+            itemBytes = sampleBytes(config.newOrderMeanBytes, rng)
+          ): TimedElement[DynamoDBRequest]
+        } ++
+        Iterator.fill(fetchSampler()) {
+          GetItemRequest(
+            eventTime = SimTime.of(tick),
+            usecase = config.scenarioId
+          ): TimedElement[DynamoDBRequest]
+        } ++
+        Iterator.fill(updateSampler()) {
+          UpdateItemRequest(
+            eventTime = SimTime.of(tick),
+            usecase = config.scenarioId,
+            itemBytes = sampleBytes(config.updatedOrderMeanBytes, rng)
+          ): TimedElement[DynamoDBRequest]
+        } ++
+        Iterator.fill(deleteSampler()) {
+          DeleteItemRequest(
+            eventTime = SimTime.of(tick),
+            usecase = config.scenarioId
+          ): TimedElement[DynamoDBRequest]
+        } ++
+        (0 until tableQuerySampler()).iterator.map { _ =>
+          QueryRequest(
+            eventTime = SimTime.of(tick),
+            usecase = config.scenarioId,
+            target = DynamoDbReadTarget.Table(config.tableName),
+            readConsistency = config.readConsistency
+          ): TimedElement[DynamoDBRequest]
+        } ++
+        (0 until tableScanSampler()).iterator.map { _ =>
+          ScanRequest(
+            eventTime = SimTime.of(tick),
+            usecase = config.scenarioId,
+            target = DynamoDbReadTarget.Table(config.tableName),
+            readConsistency = config.readConsistency
+          ): TimedElement[DynamoDBRequest]
+        } ++
+        (0 until gsiQuerySampler()).iterator.map { sampleIndex =>
+          QueryRequest(
+            eventTime = SimTime.of(tick),
+            usecase = config.scenarioId,
+            target = nextGlobalSecondaryIndexTarget(config, tick, sampleIndex),
+            readConsistency = ReadConsistency.EventuallyConsistent
+          ): TimedElement[DynamoDBRequest]
+        } ++
+        (0 until gsiScanSampler()).iterator.map { sampleIndex =>
+          ScanRequest(
+            eventTime = SimTime.of(tick),
+            usecase = config.scenarioId,
+            target = nextGlobalSecondaryIndexTarget(config, tick, sampleIndex + 13),
+            readConsistency = ReadConsistency.EventuallyConsistent
+          ): TimedElement[DynamoDBRequest]
+        }
+    } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(config.simulationTicks + 1L)))
 
   private def nextGlobalSecondaryIndexTarget(
                                               config: OrderTrackingScenarioConfig,
@@ -169,20 +158,12 @@ final class OrderTrackingSingleTrialRunner(
                         config: OrderTrackingScenarioConfig,
                         tableState: TableState,
                         behaviors: Map[Any, UseCaseSampler[TableState]]
-                      ): (
-                        Future[Seq[TimedEvent]],
-                        Future[Seq[TimedEvent]],
-                        Future[Seq[TimedEvent]]
-                      ) =
-    val responseSink = Sink.seq[TimedEvent]
+                      ): Future[Seq[TimedEvent]] =
     val resourceSink = Sink.seq[TimedEvent]
-    val metricsSink = Sink.seq[TimedEvent]
 
     RunnableGraph.fromGraph(
-      GraphDSL.createGraph(responseSink, resourceSink, metricsSink)(
-        (r, c, m) => (r, c, m)
-      ) { implicit b =>
-        (respSink, consSink, metrSink) =>
+      GraphDSL.createGraph(resourceSink) { implicit b =>
+        consSink =>
           import GraphDSL.Implicits._
 
           val table = b.add(
@@ -203,9 +184,9 @@ final class OrderTrackingSingleTrialRunner(
           )
 
           requestSource ~> table.in
-          table.out0 ~> respSink
+          table.out0 ~> b.add(Sink.ignore)
           table.out1 ~> consSink
-          table.out2 ~> metrSink
+          table.out2 ~> b.add(Sink.ignore)
 
           ClosedShape
       }
@@ -388,16 +369,16 @@ final class OrderTrackingSingleTrialRunner(
                                                   rng: UniformRandomProvider
                                                 ) extends UseCaseSampler[TableState]:
 
-    override def getItem(request: GetItemRequest, state: TableState): GetItemSample =
+    override def getItem(request: GetItemRequest, ctx: SamplerContext[TableState]): GetItemSample =
       GetItemSample(
         itemBytes =
-          if state.itemCount <= 0L || rng.nextDouble() > config.getHitProbability then None
-          else Some(sampleBytes(state.averageItemBytes.getOrElse(config.initialAverageItemBytes), rng)),
+          if ctx.state.itemCount <= 0L || rng.nextDouble() > config.getHitProbability then None
+          else Some(sampleBytes(ctx.state.averageItemBytes.getOrElse(config.initialAverageItemBytes), rng)),
         logicalPartitionAccess = LogicalPartitionAccess.SingleLogicalPartitionKey(nextLogicalPartitionKey("get"))
       )
 
-    override def query(request: QueryRequest, state: TableState): QuerySample =
-      sampleReadShape(request.target, state) { (evaluatedItemCount, evaluatedBytes, returnedItemCount, returnedBytes) =>
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
+      sampleReadShape(request.target, ctx.state) { (evaluatedItemCount, evaluatedBytes, returnedItemCount, returnedBytes) =>
         QuerySample(
           evaluatedItemCount = evaluatedItemCount,
           evaluatedBytes = evaluatedBytes,
@@ -407,8 +388,8 @@ final class OrderTrackingSingleTrialRunner(
         )
       }
 
-    override def scan(request: ScanRequest, state: TableState): ScanSample =
-      sampleReadShape(request.target, state) { (evaluatedItemCount, evaluatedBytes, returnedItemCount, returnedBytes) =>
+    override def scan(request: ScanRequest, ctx: SamplerContext[TableState]): ScanSample =
+      sampleReadShape(request.target, ctx.state) { (evaluatedItemCount, evaluatedBytes, returnedItemCount, returnedBytes) =>
         ScanSample(
           evaluatedItemCount = evaluatedItemCount,
           evaluatedBytes = evaluatedBytes,
@@ -418,16 +399,16 @@ final class OrderTrackingSingleTrialRunner(
         )
       }
 
-    override def putItem(request: PutItemRequest, state: TableState): PutItemSample =
+    override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       FixedPutItemSample(
         writtenItemBytes = request.itemBytes,
         previousItemBytes = None,
         logicalPartitionAccess = LogicalPartitionAccess.SingleLogicalPartitionKey(nextLogicalPartitionKey("put"))
       )
 
-    override def updateItem(request: UpdateItemRequest, state: TableState): UpdateItemSample =
+    override def updateItem(request: UpdateItemRequest, ctx: SamplerContext[TableState]): UpdateItemSample =
       val previousItemBytes =
-        if state.itemCount > 0L && rng.nextDouble() <= config.updateExistingProbability then state.averageItemBytes
+        if ctx.state.itemCount > 0L && rng.nextDouble() <= config.updateExistingProbability then ctx.state.averageItemBytes
         else None
 
       FixedUpdateItemSample(
@@ -436,9 +417,9 @@ final class OrderTrackingSingleTrialRunner(
         logicalPartitionAccess = LogicalPartitionAccess.SingleLogicalPartitionKey(nextLogicalPartitionKey("update"))
       )
 
-    override def deleteItem(request: DeleteItemRequest, state: TableState): DeleteItemSample =
+    override def deleteItem(request: DeleteItemRequest, ctx: SamplerContext[TableState]): DeleteItemSample =
       val deletedItemBytes =
-        if state.itemCount > 0L && rng.nextDouble() <= config.deleteExistingProbability then state.averageItemBytes
+        if ctx.state.itemCount > 0L && rng.nextDouble() <= config.deleteExistingProbability then ctx.state.averageItemBytes
         else None
 
       FixedDeleteItemSample(
