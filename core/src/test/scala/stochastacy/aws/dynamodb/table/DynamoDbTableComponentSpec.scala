@@ -1539,6 +1539,81 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       throttled should have size 1
       throttled.head.reason shouldBe DynamoDbThrottleReason.GlobalSecondaryIndexReadProvisionedThroughputExceeded
     }
+
+    "componentOfManaged routes utilization metrics through the metric outlet" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 4096L),
+        useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(4096L)),
+        readConsistency = ReadConsistency.StronglyConsistent,
+        billingMode = DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick2 = TimedControlEvent.Tick(SimTime.of(2L))
+      val tick3 = TimedControlEvent.Tick(SimTime.of(3L))
+
+      val (_, _, metricsFuture) = runManagedComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](
+          tick1,
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "get"),
+          tick2,
+          GetItemRequest(eventTime = SimTime.of(2L), usecase = "get"),
+          tick3
+        )),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](tick1, tick2, tick3)),
+        config = config
+      )
+
+      val metrics = Await.result(metricsFuture, 5.seconds)
+
+      val utilization = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityUtilization => m }
+      utilization.size should be >= 2
+      utilization.foreach { u =>
+        u.provisionedReadCapacityUnits shouldBe 100L
+        u.provisionedWriteCapacityUnits shouldBe 100L
+      }
+
+      val consumed = metrics.collect { case m: AdmissionMetricEvent.ConsumedCapacitySnapshot => m }
+      consumed.size should be >= 2
+
+      val modeSnapshots = metrics.collect { case m: AdmissionMetricEvent.BillingModeSnapshot => m }
+      modeSnapshots.size should be >= 2
+      modeSnapshots.foreach(_.billingModeCode shouldBe 1)
+    }
+
+    "componentOf routes consumed-capacity and billing-mode snapshots in on-demand mode" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 4096L),
+        useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(4096L)),
+        readConsistency = ReadConsistency.StronglyConsistent
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick2 = TimedControlEvent.Tick(SimTime.of(2L))
+
+      val (_, _, metricsFuture) = runComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](
+          tick1,
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "get"),
+          tick2
+        )),
+        config = config
+      )
+
+      val metrics = Await.result(metricsFuture, 5.seconds)
+
+      val consumed = metrics.collect { case m: AdmissionMetricEvent.ConsumedCapacitySnapshot => m }
+      consumed should have size 1
+      consumed.head.consumedReadUnits shouldBe BigDecimal(1)
+
+      val modeSnapshots = metrics.collect { case m: AdmissionMetricEvent.BillingModeSnapshot => m }
+      modeSnapshots should have size 1
+      modeSnapshots.head.billingModeCode shouldBe 0
+
+      metrics.collect { case _: AdmissionMetricEvent.ProvisionedCapacityUtilization => 1 } shouldBe empty
+    }
   }
 
   private def indexedConfig(): DynamoDbTable.Config =

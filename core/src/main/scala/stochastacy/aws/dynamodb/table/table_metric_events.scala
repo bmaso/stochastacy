@@ -79,3 +79,25 @@ object AdmissionMetricEvent:
                                                previousCapacity: DynamoDbTable.BillingMode.Provisioned,
                                                newCapacity: DynamoDbTable.BillingMode.Provisioned
                                              ) extends AdmissionMetricEvent
+
+  final case class ConsumedCapacitySnapshot(
+                                             eventTime: SimTime,
+                                             usecase: Any,
+                                             consumedReadUnits: BigDecimal,
+                                             consumedWriteUnits: BigDecimal
+                                           ) extends AdmissionMetricEvent
+
+  final case class ProvisionedCapacityUtilization(
+                                                   eventTime: SimTime,
+                                                   usecase: Any,
+                                                   consumedReadUnits: BigDecimal,
+                                                   consumedWriteUnits: BigDecimal,
+                                                   provisionedReadCapacityUnits: Long,
+                                                   provisionedWriteCapacityUnits: Long
+                                                 ) extends AdmissionMetricEvent
+
+  final case class BillingModeSnapshot(
+                                        eventTime: SimTime,
+                                        usecase: Any,
+                                        billingModeCode: Int  // 0 = on-demand, 1 = provisioned
+                                      ) extends AdmissionMetricEvent

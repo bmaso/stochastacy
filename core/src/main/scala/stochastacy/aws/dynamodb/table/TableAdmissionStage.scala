@@ -1239,6 +1239,10 @@ object TableAdmissionStage:
             topologyChangedOnLastAdvance = false
             val tick = eventTime.ticks
             if currentTick.forall(_ != tick) then
+              var tickWasCompleted = false
+              var completedTickReadUnits  = BigDecimal(0)
+              var completedTickWriteUnits = BigDecimal(0)
+              var completedTickBillingMode: DynamoDbTable.BillingMode = currentBillingMode
               val topologyEvents =
                 if currentTick.nonEmpty then
                   burstState = burstState.replenish(usageState, currentMaxReadRqUnits, currentMaxWriteRqUnits)
@@ -1367,6 +1371,10 @@ object TableAdmissionStage:
                       stateModel = config.stateModel
                     )
                   topologyState = nextTopologyState
+                  completedTickReadUnits  = usageState.readUnits
+                  completedTickWriteUnits = usageState.writeUnits
+                  completedTickBillingMode = currentBillingMode
+                  tickWasCompleted = true
                   usageState = PerTickUsageState()
                   gsiUsageStates = config.gsiWriteScopes.map(scope => scope.target.indexName -> PerTickUsageState()).toMap
 
@@ -1406,8 +1414,30 @@ object TableAdmissionStage:
                       AdmissionMetricEvent.BillingModeSwitched(eventTime, "billing-mode-switch", previousMode, newMode)
                   Vector(metricEvent)
                 case _ => Vector.empty
+              val snapshotEvents: Vector[TimedEvent] =
+                if tickWasCompleted then
+                  val consumed = AdmissionMetricEvent.ConsumedCapacitySnapshot(
+                    eventTime, "tick-snapshot", completedTickReadUnits, completedTickWriteUnits
+                  )
+                  val modeCode = currentBillingMode match
+                    case _: DynamoDbTable.BillingMode.Provisioned => 1
+                    case _ => 0
+                  val modeSnapshot = AdmissionMetricEvent.BillingModeSnapshot(
+                    eventTime, "tick-snapshot", modeCode
+                  )
+                  val utilization = completedTickBillingMode match
+                    case p: DynamoDbTable.BillingMode.Provisioned =>
+                      Vector(AdmissionMetricEvent.ProvisionedCapacityUtilization(
+                        eventTime, "tick-snapshot",
+                        completedTickReadUnits, completedTickWriteUnits,
+                        p.readCapacityUnits, p.writeCapacityUnits
+                      ))
+                    case _ => Vector.empty
+                  Vector(consumed, modeSnapshot) ++ utilization
+                else
+                  Vector.empty
               currentTick = Some(tick)
-              topologyEvents ++ billingModeEvents
+              topologyEvents ++ billingModeEvents ++ snapshotEvents
             else
               Vector.empty
 
@@ -1483,6 +1513,9 @@ object TableAdmissionStage:
           case _: AdmissionMetricEvent.TopologyChanged => Nil
           case _: AdmissionMetricEvent.BillingModeSwitched => Nil
           case _: AdmissionMetricEvent.ProvisionedCapacityChanged => Nil
+          case _: AdmissionMetricEvent.ConsumedCapacitySnapshot => Nil
+          case _: AdmissionMetricEvent.ProvisionedCapacityUtilization => Nil
+          case _: AdmissionMetricEvent.BillingModeSnapshot => Nil
           case Admitted(_, sample, _, _) => List(sample)
           case _: Throttled => Nil
         }
@@ -1494,6 +1527,9 @@ object TableAdmissionStage:
           case _: AdmissionMetricEvent.TopologyChanged => Nil
           case _: AdmissionMetricEvent.BillingModeSwitched => Nil
           case _: AdmissionMetricEvent.ProvisionedCapacityChanged => Nil
+          case _: AdmissionMetricEvent.ConsumedCapacitySnapshot => Nil
+          case _: AdmissionMetricEvent.ProvisionedCapacityUtilization => Nil
+          case _: AdmissionMetricEvent.BillingModeSnapshot => Nil
           case Throttled(_, response, _) => List(response)
           case _: Admitted => Nil
         }
@@ -1505,6 +1541,9 @@ object TableAdmissionStage:
           case metric: AdmissionMetricEvent.TopologyChanged => List(metric)
           case metric: AdmissionMetricEvent.BillingModeSwitched => List(metric)
           case metric: AdmissionMetricEvent.ProvisionedCapacityChanged => List(metric)
+          case metric: AdmissionMetricEvent.ConsumedCapacitySnapshot => List(metric)
+          case metric: AdmissionMetricEvent.ProvisionedCapacityUtilization => List(metric)
+          case metric: AdmissionMetricEvent.BillingModeSnapshot => List(metric)
           case Admitted(_, _, metric, _) => List(metric)
           case Throttled(_, _, metric) => List(metric)
         }

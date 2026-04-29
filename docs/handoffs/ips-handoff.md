@@ -1,10 +1,10 @@
 # IPS Hand-Off
 
-Last updated: 2026-04-28 (phase 4 slices 1–5 complete: provisioned mode + management events + schedule DSL)
+Last updated: 2026-04-28 (phase 4 slices 1–6 complete: provisioned mode + management events + schedule DSL + utilization metrics)
 
 ## Current Position
 
-The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phase 3 (on-demand fidelity) is complete. **Phase 4** (provisioned capacity mode and dynamic reconfiguration) is in progress — **slices 1–5 are shipped**, slices 6–7 remain.
+The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phase 3 (on-demand fidelity) is complete. **Phase 4** (provisioned capacity mode and dynamic reconfiguration) is in progress — **slices 1–6 are shipped**, slice 7 remains.
 
 The simulator supports:
 
@@ -28,7 +28,7 @@ The simulator supports:
 - Monte Carlo multi-trial execution
 - JSONL export (raw + 60s/300s windowed), Postgres staging, provisioned Grafana dashboards
 
-### Phase 4 Status (slices 1–5 complete)
+### Phase 4 Status (slices 1–6 complete)
 
 | Slice | Status | Summary |
 |-------|--------|---------|
@@ -37,7 +37,7 @@ The simulator supports:
 | 3. Management Events + Billing Mode Switch | **Done** | `DynamoDbManagementEvent.SwitchBillingMode`, `componentOfManaged`, `BillingModeRef`, 24h cooldown, `BillingModeSwitched` metric |
 | 4. Provisioned Capacity Change Events | **Done** | `UpdateProvisionedCapacity`, `ProvisionedCapacityChanged` metric, no-cooldown capacity updates |
 | 5. Reconfiguration Schedule DSL | **Done** | `ReconfigurationSchedule`, thermostat scenario-config support, managed replicated/global table paths, schedule-driven management injection |
-| 6. Utilization Metrics | Not started | Per-tick provisioned RCU/WCU time-series, billing mode timeline |
+| 6. Utilization Metrics | **Done** | `ConsumedCapacitySnapshot`, `ProvisionedCapacityUtilization`, `BillingModeSnapshot` emitted per completed tick from `TableAdmissionStage` |
 | 7. Demo Scenario + Grafana Panels | Not started | Mixed-mode thermostat fleet preset, capacity utilization panels |
 
 ## Key Architectural Concepts (Phase 4)
@@ -87,7 +87,7 @@ The admission stage distinguishes these by pattern-matching `(previousMode, newM
 - [management_events.scala](core/src/main/scala/stochastacy/aws/dynamodb/table/management_events.scala) — `DynamoDbManagementEvent` (`SwitchBillingMode`, `UpdateProvisionedCapacity`)
 - [DynamoDbTableManagedShape.scala](core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTableManagedShape.scala) — custom Shape for `componentOfManaged`
 - [shaped_request.scala](core/src/main/scala/stochastacy/aws/dynamodb/table/shaped_request.scala) — `ShapedRequest`, `TopologySnapshotRef`, `BillingModeRef`
-- [table_metric_events.scala](core/src/main/scala/stochastacy/aws/dynamodb/table/table_metric_events.scala) — `AdmissionMetricEvent` variants including `BillingModeSwitched`, `ProvisionedCapacityChanged`
+- [table_metric_events.scala](core/src/main/scala/stochastacy/aws/dynamodb/table/table_metric_events.scala) — `AdmissionMetricEvent` variants including `BillingModeSwitched`, `ProvisionedCapacityChanged`, `ConsumedCapacitySnapshot`, `ProvisionedCapacityUtilization`, `BillingModeSnapshot`
 - [op_events.scala](core/src/main/scala/stochastacy/aws/dynamodb/op_events.scala) — DynamoDB request/response types including `ReconfigurationRejectedResponse`
 
 ### Global Tables / Replication
@@ -106,8 +106,8 @@ The admission stage distinguishes these by pattern-matching `(previousMode, newM
 
 ## Key Proof Tests
 
-- [TableAdmissionStageSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/TableAdmissionStageSpec.scala) — 33 tests including billing mode switching and provisioned capacity changes
-- [DynamoDbTableComponentSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableComponentSpec.scala) — 27 tests including `componentOfManaged` integration tests
+- [TableAdmissionStageSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/TableAdmissionStageSpec.scala) — 37 tests including billing mode switching, provisioned capacity changes, and utilization/snapshot metrics
+- [DynamoDbTableComponentSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableComponentSpec.scala) — 29 tests including `componentOfManaged` integration tests and metric outlet routing
 - [DynamoDbTableConfigSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableConfigSpec.scala)
 - [LsiItemCollectionLimitSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/LsiItemCollectionLimitSpec.scala)
 - [DynamoDbTableReplicatedSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableReplicatedSpec.scala)
@@ -115,17 +115,27 @@ The admission stage distinguishes these by pattern-matching `(previousMode, newM
 - All storage stage specs (GetItem, PutItem, UpdateItem, DeleteItem, Query, Scan)
 - [TableStorageStagePricingIntegrationSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/pricing/TableStorageStagePricingIntegrationSpec.scala)
 
-Total: 233 core tests + 89 examples tests = 322 tests all passing.
+Total: 250 core tests + 89 examples tests = 339 tests all passing.
+
+## Key Architectural Concepts (Phase 4 Slice 6)
+
+### Per-Tick Snapshot Events
+
+At each tick boundary in `advanceToShaped`, after resetting `usageState`, the admission stage emits three snapshot events for the just-completed tick:
+
+- **`ConsumedCapacitySnapshot`** — total RCU and WCU consumed during the tick. Always emitted (both billing modes).
+- **`ProvisionedCapacityUtilization`** — consumed + provisioned ceiling. Emitted only when the tick ran under `BillingMode.Provisioned`. Uses `completedTickBillingMode` (mode captured before the billing-mode switch block runs), so the ceiling reported is always the one that was actually in effect during the tick.
+- **`BillingModeSnapshot`** — integer mode code (0 = on-demand, 1 = provisioned). Always emitted. Uses `currentBillingMode` after the billing-mode switch block, so it reflects the mode going into the next tick.
+
+No snapshot is emitted before the first tick completes (`tickWasCompleted` flag guards this).
+
+All three event types route through `metricFlow` in `componentOfShaped`; `admittedFlow` and `responseFlow` drop them.
 
 ## Recommended Next Work
 
-### Immediate: Phase 4 Slice 6 — Utilization Metrics
+### Immediate: Phase 4 Slice 7 — Demo Scenario and Grafana Panels
 
-Per-tick `ProvisionedReadCapacityUnits` and `ProvisionedWriteCapacityUnits` time-series metrics for Grafana. A `BillingMode` time-series point per tick (0 = on-demand, 1 = provisioned) for state-timeline panels.
-
-### Then: Slice 7 — Demo Scenario and Grafana Panels
-
-Mixed-mode thermostat fleet preset: on-demand for the first third, switch to provisioned at ~110% of observed mean, optionally adjust at 2/3 mark. New Grafana rows: Capacity Utilization, Billing Mode Timeline, Cost Composition.
+Wire the three new slice-6 metric events through the demo pipeline into Grafana. Add `DemoMetric` cases for `ConsumedReadCapacityUnits`, `ConsumedWriteCapacityUnits`, `ProvisionedReadCapacityUnits`, `ProvisionedWriteCapacityUnits`, and `BillingModeIndicator`. Add rollup routing and update `ThermostatFleetSingleTrialRunner` to consume the metric outlet. Mixed-mode thermostat fleet preset: on-demand for the first third, switch to provisioned at ~110% of observed mean, optionally adjust at 2/3 mark. New Grafana rows: Capacity Utilization, Billing Mode Timeline, Cost Composition.
 
 ### Deferred (from phase 3 follow-ons)
 
@@ -136,9 +146,8 @@ Mixed-mode thermostat fleet preset: on-demand for the first third, switch to pro
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
-- `sbt test` runs all 322 tests; `sbt "core/test"` runs the 233 core tests
+- `sbt test` runs all 339 tests; `sbt "core/test"` runs the 250 core tests
 - The canonical planning anchor is [ips-phase4.md](../roadmaps/ips-phase4.md); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
-- The plan file for the current/completed slice lives at [docs/plans/phase4-slice4-plan.md](../plans/phase4-slice4-plan.md) — it shows the just-completed slice 4 implementation in full detail and can serve as a pattern for future slices
 - Phase-4 slices should be implemented one at a time
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries
 - `componentOfManaged` is the factory to use for any table that needs mid-simulation reconfiguration; `componentOf` and `componentOfReplicated` do not accept management events

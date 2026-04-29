@@ -1221,6 +1221,129 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
       switched should have size 1
       metrics.collect { case _: AdmissionMetricEvent.ProvisionedCapacityChanged => 1 } shouldBe empty
     }
+
+    "emit ConsumedCapacitySnapshot and BillingModeSnapshot per completed tick in on-demand mode" in {
+      val requests = Source(Vector[TimedElement[DynamoDBRequest]](
+        GetItemRequest(eventTime = SimTime.of(1L), usecase = "get"),
+        GetItemRequest(eventTime = SimTime.of(1L), usecase = "get"),
+        GetItemRequest(eventTime = SimTime.of(2L), usecase = "get")
+      ))
+
+      val (_, _, metricFuture) = runStage(
+        requests,
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(4096L)),
+          stateModel = FixedTableState(1L, 4096L),
+          readConsistency = ReadConsistency.StronglyConsistent
+        )
+      )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      val snapshots = metrics.collect { case m: AdmissionMetricEvent.ConsumedCapacitySnapshot => m }
+      snapshots should have size 1
+      snapshots.head.eventTime shouldBe SimTime.of(2L)
+      snapshots.head.consumedReadUnits should be > BigDecimal(0)
+
+      val modeSnapshots = metrics.collect { case m: AdmissionMetricEvent.BillingModeSnapshot => m }
+      modeSnapshots should have size 1
+      modeSnapshots.head.billingModeCode shouldBe 0
+
+      metrics.collect { case _: AdmissionMetricEvent.ProvisionedCapacityUtilization => 1 } shouldBe empty
+    }
+
+    "emit ProvisionedCapacityUtilization per completed tick in provisioned mode" in {
+      val requests = Source(Vector[TimedElement[DynamoDBRequest]](
+        GetItemRequest(eventTime = SimTime.of(1L), usecase = "get"),
+        GetItemRequest(eventTime = SimTime.of(2L), usecase = "get")
+      ))
+
+      val (_, _, metricFuture) = runStage(
+        requests,
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(4096L)),
+          stateModel = FixedTableState(1L, 4096L),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          billingMode = DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+        )
+      )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      val utilization = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityUtilization => m }
+      utilization should have size 1
+      utilization.head.provisionedReadCapacityUnits shouldBe 100L
+      utilization.head.provisionedWriteCapacityUnits shouldBe 100L
+      utilization.head.consumedReadUnits shouldBe BigDecimal(1)
+
+      val modeSnapshots = metrics.collect { case m: AdmissionMetricEvent.BillingModeSnapshot => m }
+      modeSnapshots should have size 1
+      modeSnapshots.head.billingModeCode shouldBe 1
+    }
+
+    "ConsumedCapacitySnapshot and ProvisionedCapacityUtilization both report actual consumed units" in {
+      val requests = Source(Vector[TimedElement[DynamoDBRequest]](
+        GetItemRequest(eventTime = SimTime.of(1L), usecase = "get"),
+        PutItemRequest(eventTime = SimTime.of(1L), usecase = "put", itemBytes = 1024L),
+        GetItemRequest(eventTime = SimTime.of(2L), usecase = "get")
+      ))
+
+      val (_, _, metricFuture) = runStage(
+        requests,
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map(
+            "get" -> FixedHitGetItemBehavior(4096L),
+            "put" -> FixedPutItemBehavior(1024L, None)
+          ),
+          stateModel = FixedTableState(1L, 4096L),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          billingMode = DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+        )
+      )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+
+      // Tick 1: 1 GetItem × 1 RCU (4096 bytes, strongly consistent) + 1 PutItem × 1 WCU (1024 bytes)
+      val consumed = metrics.collect { case m: AdmissionMetricEvent.ConsumedCapacitySnapshot => m }
+      consumed should have size 1
+      consumed.head.consumedReadUnits shouldBe BigDecimal(1)
+      consumed.head.consumedWriteUnits shouldBe BigDecimal(1)
+
+      val utilization = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityUtilization => m }
+      utilization should have size 1
+      utilization.head.consumedReadUnits shouldBe BigDecimal(1)
+      utilization.head.consumedWriteUnits shouldBe BigDecimal(1)
+      utilization.head.provisionedReadCapacityUnits shouldBe 100L
+      utilization.head.provisionedWriteCapacityUnits shouldBe 100L
+    }
+
+    "emit no snapshot events before the first tick completes" in {
+      val requests = Source(Vector[TimedElement[DynamoDBRequest]](
+        GetItemRequest(eventTime = SimTime.of(1L), usecase = "get")
+      ))
+
+      val (_, _, metricFuture) = runStage(
+        requests,
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(4096L)),
+          stateModel = FixedTableState(1L, 4096L),
+          readConsistency = ReadConsistency.StronglyConsistent
+        )
+      )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+      metrics.collect { case _: AdmissionMetricEvent.ConsumedCapacitySnapshot => 1 } shouldBe empty
+      metrics.collect { case _: AdmissionMetricEvent.ProvisionedCapacityUtilization => 1 } shouldBe empty
+      metrics.collect { case _: AdmissionMetricEvent.BillingModeSnapshot => 1 } shouldBe empty
+    }
   }
 
   private def runStageWithBillingRef(
