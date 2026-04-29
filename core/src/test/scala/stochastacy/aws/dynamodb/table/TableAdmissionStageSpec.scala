@@ -1141,6 +1141,86 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
         DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
       )
     }
+
+    "emit ProvisionedCapacityChanged metric when provisioned capacity ref changes" in {
+      val billingModeRef = new BillingModeRef(DynamoDbTable.BillingMode.Provisioned(100L, 100L))
+      billingModeRef.currentMode = DynamoDbTable.BillingMode.Provisioned(200L, 200L)
+
+      val (_, _, metricFuture) = runStageWithBillingRef(
+        Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get")),
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(1024L)),
+          stateModel = FixedTableState(1L, 1024L),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          billingMode = DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+        ),
+        billingModeRef
+      )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+      val capacityChanged = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityChanged => m }
+      capacityChanged should have size 1
+      capacityChanged.head.previousCapacity shouldBe DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+      capacityChanged.head.newCapacity shouldBe DynamoDbTable.BillingMode.Provisioned(200L, 200L)
+      metrics.collect { case _: AdmissionMetricEvent.BillingModeSwitched => 1 } shouldBe empty
+    }
+
+    "apply new capacity ceiling after provisioned capacity scale-down" in {
+      val billingModeRef = new BillingModeRef(DynamoDbTable.BillingMode.Provisioned(100L, 100L))
+      billingModeRef.currentMode = DynamoDbTable.BillingMode.Provisioned(3L, 3L)
+
+      val requests = Source(
+        Vector[TimedElement[DynamoDBRequest]](
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "first"),
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "second")
+        )
+      )
+
+      val (_, responseFuture, _) = runStageWithBillingRef(
+        requests,
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map(
+            "first" -> FixedHitGetItemBehavior(8192L),
+            "second" -> FixedHitGetItemBehavior(8192L)
+          ),
+          stateModel = FixedTableState(2L, 16384L),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          billingMode = DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+        ),
+        billingModeRef
+      )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val throttled = responses.collect { case t: ThrottledResponse => t }
+      throttled should have size 1
+      throttled.head.reason shouldBe DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+    }
+
+    "still emit BillingModeSwitched for on-demand to provisioned switch" in {
+      val billingModeRef = new BillingModeRef(DynamoDbTable.BillingMode.OnDemand())
+      billingModeRef.currentMode = DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+
+      val (_, _, metricFuture) = runStageWithBillingRef(
+        Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get")),
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(1024L)),
+          stateModel = FixedTableState(1L, 1024L),
+          readConsistency = ReadConsistency.StronglyConsistent
+        ),
+        billingModeRef
+      )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+      val switched = metrics.collect { case m: AdmissionMetricEvent.BillingModeSwitched => m }
+      switched should have size 1
+      metrics.collect { case _: AdmissionMetricEvent.ProvisionedCapacityChanged => 1 } shouldBe empty
+    }
   }
 
   private def runStageWithBillingRef(

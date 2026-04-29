@@ -1396,6 +1396,17 @@ object DynamoDbTable:
               billingModeRef.currentMode = event.newMode
               billingModeRef.lastSwitchTick = Some(event.eventTime.ticks)
               Nil
+        case event: DynamoDbManagementEvent.UpdateProvisionedCapacity =>
+          billingModeRef.currentMode match
+            case _: DynamoDbTable.BillingMode.Provisioned =>
+              billingModeRef.currentMode = event.newCapacity
+              Nil
+            case _ =>
+              List(ReconfigurationRejectedResponse(
+                event.eventTime,
+                event.usecase,
+                "UpdateProvisionedCapacity is only valid when the table is in provisioned billing mode"
+              ))
       }
     }
 

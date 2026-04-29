@@ -1399,7 +1399,12 @@ object TableAdmissionStage:
                     readBurst = BurstReservoir.from(currentMaxReadRqUnits, config.burstRetentionWindowSeconds, config.initialReadBurstRequestUnits),
                     writeBurst = BurstReservoir.from(currentMaxWriteRqUnits, config.burstRetentionWindowSeconds, config.initialWriteBurstRequestUnits)
                   )
-                  Vector(AdmissionMetricEvent.BillingModeSwitched(eventTime, "billing-mode-switch", previousMode, newMode))
+                  val metricEvent: TimedEvent = (previousMode, newMode) match
+                    case (p: DynamoDbTable.BillingMode.Provisioned, n: DynamoDbTable.BillingMode.Provisioned) =>
+                      AdmissionMetricEvent.ProvisionedCapacityChanged(eventTime, "provisioned-capacity-change", p, n)
+                    case _ =>
+                      AdmissionMetricEvent.BillingModeSwitched(eventTime, "billing-mode-switch", previousMode, newMode)
+                  Vector(metricEvent)
                 case _ => Vector.empty
               currentTick = Some(tick)
               topologyEvents ++ billingModeEvents
@@ -1477,6 +1482,7 @@ object TableAdmissionStage:
           case t: TimedControlEvent => List(t)
           case _: AdmissionMetricEvent.TopologyChanged => Nil
           case _: AdmissionMetricEvent.BillingModeSwitched => Nil
+          case _: AdmissionMetricEvent.ProvisionedCapacityChanged => Nil
           case Admitted(_, sample, _, _) => List(sample)
           case _: Throttled => Nil
         }
@@ -1487,6 +1493,7 @@ object TableAdmissionStage:
           case t: TimedControlEvent => List(t)
           case _: AdmissionMetricEvent.TopologyChanged => Nil
           case _: AdmissionMetricEvent.BillingModeSwitched => Nil
+          case _: AdmissionMetricEvent.ProvisionedCapacityChanged => Nil
           case Throttled(_, response, _) => List(response)
           case _: Admitted => Nil
         }
@@ -1497,6 +1504,7 @@ object TableAdmissionStage:
           case t: TimedControlEvent => List(t)
           case metric: AdmissionMetricEvent.TopologyChanged => List(metric)
           case metric: AdmissionMetricEvent.BillingModeSwitched => List(metric)
+          case metric: AdmissionMetricEvent.ProvisionedCapacityChanged => List(metric)
           case Admitted(_, _, metric, _) => List(metric)
           case Throttled(_, _, metric) => List(metric)
         }

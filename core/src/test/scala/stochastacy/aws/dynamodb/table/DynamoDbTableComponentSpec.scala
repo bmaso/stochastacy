@@ -1357,8 +1357,183 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       val responses = Await.result(responseFuture, 5.seconds)
       val metrics = Await.result(metricsFuture, 5.seconds)
 
-      val switched = metrics.collect { case m: AdmissionMetricEvent.BillingModeSwitched => m }
-      switched.size should be >= 1
+      val capacityChanged = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityChanged => m }
+      capacityChanged.size should be >= 1
+
+      val throttled = responses.collect { case t: ThrottledResponse => t }
+      throttled should have size 1
+      throttled.head.reason shouldBe DynamoDbThrottleReason.GlobalSecondaryIndexReadProvisionedThroughputExceeded
+    }
+
+    "componentOfManaged applies UpdateProvisionedCapacity and emits ProvisionedCapacityChanged" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 5120L),
+        useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(5120L)),
+        readConsistency = ReadConsistency.StronglyConsistent,
+        billingMode = DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick50 = TimedControlEvent.Tick(SimTime.of(50L))
+
+      val updateEvent = DynamoDbManagementEvent.UpdateProvisionedCapacity(
+        eventTime = SimTime.of(10L),
+        usecase = "scale-up",
+        newCapacity = DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+      )
+
+      val (responseFuture, _, metricsFuture) = runManagedComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](
+          tick1,
+          tick50,
+          GetItemRequest(eventTime = SimTime.of(50L), usecase = "get")
+        )),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](
+          tick1,
+          updateEvent,
+          tick50
+        )),
+        config = config
+      )
+
+      val responses = Await.result(responseFuture, 5.seconds)
+      val metrics = Await.result(metricsFuture, 5.seconds)
+
+      val capacityChanged = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityChanged => m }
+      capacityChanged.size should be >= 1
+      metrics.collect { case _: AdmissionMetricEvent.BillingModeSwitched => 1 } shouldBe empty
+
+      val throttled = responses.collect { case t: ThrottledResponse => t }
+      throttled shouldBe empty
+    }
+
+    "componentOfManaged rejects UpdateProvisionedCapacity when table is on-demand" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 512L),
+        useCaseBehaviors = Map.empty,
+        readConsistency = ReadConsistency.StronglyConsistent
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+
+      val updateEvent = DynamoDbManagementEvent.UpdateProvisionedCapacity(
+        eventTime = SimTime.of(1L),
+        usecase = "bad-update",
+        newCapacity = DynamoDbTable.BillingMode.Provisioned(50L, 50L)
+      )
+
+      val (responseFuture, _, _) = runManagedComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](tick1)),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](
+          updateEvent
+        )),
+        config = config
+      )
+
+      val responses = Await.result(responseFuture, 5.seconds)
+      val rejections = responses.collect { case r: ReconfigurationRejectedResponse => r }
+      rejections should have size 1
+      rejections.head.usecase shouldBe "bad-update"
+      rejections.head.reason should include("provisioned billing mode")
+    }
+
+    "componentOfManaged does not apply 24-hour cooldown to UpdateProvisionedCapacity" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 512L),
+        useCaseBehaviors = Map.empty,
+        readConsistency = ReadConsistency.StronglyConsistent,
+        billingMode = DynamoDbTable.BillingMode.Provisioned(10L, 10L)
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick2 = TimedControlEvent.Tick(SimTime.of(2L))
+
+      val switchEvent = DynamoDbManagementEvent.SwitchBillingMode(
+        eventTime = SimTime.of(1L),
+        usecase = "switch",
+        newMode = DynamoDbTable.BillingMode.Provisioned(20L, 20L)
+      )
+      val updateEvent = DynamoDbManagementEvent.UpdateProvisionedCapacity(
+        eventTime = SimTime.of(2L),
+        usecase = "capacity-update",
+        newCapacity = DynamoDbTable.BillingMode.Provisioned(30L, 30L)
+      )
+
+      val (responseFuture, _, metricsFuture) = runManagedComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](tick1, tick2)),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](
+          switchEvent, updateEvent
+        )),
+        config = config
+      )
+
+      val responses = Await.result(responseFuture, 5.seconds)
+      val metrics = Await.result(metricsFuture, 5.seconds)
+
+      val rejections = responses.collect { case r: ReconfigurationRejectedResponse => r }
+      rejections shouldBe empty
+
+      val capacityChanged = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityChanged => m }
+      capacityChanged.size should be >= 1
+    }
+
+    "componentOfManaged propagates provisioned capacity change to GSI branch" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 512L),
+        useCaseBehaviors = Map(
+          "query" -> FixedQueryBehavior(evaluatedBytes = 12288L)
+        ),
+        readConsistency = ReadConsistency.StronglyConsistent,
+        globalSecondaryIndexes = Vector(
+          DynamoDbTable.GlobalSecondaryIndexDefinition("status-index",
+            stateModel = FixedTableState(4L, 4096L),
+            projection = DynamoDbTable.IndexProjection.All
+          )
+        ),
+        billingMode = DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 1000L,
+          writeCapacityUnits = 100L,
+          globalSecondaryIndexReadCapacityUnits = Map("status-index" -> 1000L)
+        )
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick50 = TimedControlEvent.Tick(SimTime.of(50L))
+
+      val updateEvent = DynamoDbManagementEvent.UpdateProvisionedCapacity(
+        eventTime = SimTime.of(10L),
+        usecase = "reduce-gsi",
+        newCapacity = DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 1000L,
+          writeCapacityUnits = 100L,
+          globalSecondaryIndexReadCapacityUnits = Map("status-index" -> 1L)
+        )
+      )
+
+      val (responseFuture, _, metricsFuture) = runManagedComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](
+          tick1,
+          tick50,
+          QueryRequest(eventTime = SimTime.of(50L), usecase = "query",
+            target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index"))
+        )),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](
+          tick1,
+          updateEvent,
+          tick50
+        )),
+        config = config
+      )
+
+      val responses = Await.result(responseFuture, 5.seconds)
+      val metrics = Await.result(metricsFuture, 5.seconds)
+
+      val capacityChanged = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityChanged => m }
+      capacityChanged.size should be >= 1
 
       val throttled = responses.collect { case t: ThrottledResponse => t }
       throttled should have size 1

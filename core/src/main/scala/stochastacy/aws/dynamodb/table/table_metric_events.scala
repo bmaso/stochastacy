@@ -72,3 +72,10 @@ object AdmissionMetricEvent:
                                         previousMode: DynamoDbTable.BillingMode,
                                         newMode: DynamoDbTable.BillingMode
                                       ) extends AdmissionMetricEvent
+
+  final case class ProvisionedCapacityChanged(
+                                               eventTime: SimTime,
+                                               usecase: Any,
+                                               previousCapacity: DynamoDbTable.BillingMode.Provisioned,
+                                               newCapacity: DynamoDbTable.BillingMode.Provisioned
+                                             ) extends AdmissionMetricEvent
