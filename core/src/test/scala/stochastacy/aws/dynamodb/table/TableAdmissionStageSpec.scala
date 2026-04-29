@@ -1013,7 +1013,160 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
         DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
       )
     }
+
+    "emit BillingModeSwitched metric when billing mode ref changes at tick boundary" in {
+      val billingModeRef = new BillingModeRef(DynamoDbTable.BillingMode.OnDemand())
+      billingModeRef.currentMode = DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+
+      val (_, _, metricFuture) = runStageWithBillingRef(
+        Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get")),
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(1024L)),
+          stateModel = FixedTableState(1L, 1024L),
+          readConsistency = ReadConsistency.StronglyConsistent
+        ),
+        billingModeRef
+      )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+      val switched = metrics.collect { case m: AdmissionMetricEvent.BillingModeSwitched => m }
+      switched should have size 1
+      switched.head.previousMode shouldBe DynamoDbTable.BillingMode.OnDemand()
+      switched.head.newMode shouldBe DynamoDbTable.BillingMode.Provisioned(100L, 100L)
+    }
+
+    "use provisioned throttle reason after billing mode switch to provisioned" in {
+      val billingModeRef = new BillingModeRef(DynamoDbTable.BillingMode.OnDemand())
+      billingModeRef.currentMode = DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+
+      val (_, responseFuture, _) = runStageWithBillingRef(
+        Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get")),
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(16384L)),
+          stateModel = FixedTableState(1L, 16384L),
+          readConsistency = ReadConsistency.StronglyConsistent
+        ),
+        billingModeRef
+      )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      responses.collect { case t: ThrottledResponse => t.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+      )
+    }
+
+    "apply new capacity ceiling after billing mode switch" in {
+      val billingModeRef = new BillingModeRef(DynamoDbTable.BillingMode.OnDemand())
+      billingModeRef.currentMode = DynamoDbTable.BillingMode.Provisioned(3L, 3L)
+
+      val requests = Source(
+        Vector[TimedElement[DynamoDBRequest]](
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "under-limit"),
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "over-limit")
+        )
+      )
+
+      val (_, responseFuture, _) = runStageWithBillingRef(
+        requests,
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map(
+            "under-limit" -> FixedHitGetItemBehavior(8192L),
+            "over-limit" -> FixedHitGetItemBehavior(8192L)
+          ),
+          stateModel = FixedTableState(2L, 16384L),
+          readConsistency = ReadConsistency.StronglyConsistent
+        ),
+        billingModeRef
+      )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val throttled = responses.collect { case t: ThrottledResponse => t }
+      throttled should have size 1
+      throttled.head.reason shouldBe DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+    }
+
+    "suppress adaptive capacity after billing mode switch to provisioned" in {
+      val (hotKey1, hotKey2) = twoKeysForSamePartition(4)
+      val billingModeRef = new BillingModeRef(DynamoDbTable.BillingMode.OnDemand())
+      billingModeRef.currentMode = DynamoDbTable.BillingMode.Provisioned(1000L, 100L)
+
+      val (_, responseFuture, _) = runStageWithBillingRef(
+        Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "hot-read")),
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("hot-read" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey(hotKey1))),
+          stateModel = FixedTableState(1L, 8192L),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          partitionCount = 4,
+          maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+          adaptiveMaxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(100))
+        ),
+        billingModeRef
+      )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      responses.collect { case t: ThrottledResponse => t.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
+      )
+    }
+
+    "restore on-demand throttle reason after billing mode switch back to on-demand" in {
+      val billingModeRef = new BillingModeRef(DynamoDbTable.BillingMode.Provisioned(1L, 1L))
+      billingModeRef.currentMode = DynamoDbTable.BillingMode.OnDemand(
+        DynamoDbTable.OnDemandMaxThroughput(tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(1)))
+      )
+
+      val (_, responseFuture, _) = runStageWithBillingRef(
+        Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get")),
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(16384L)),
+          stateModel = FixedTableState(1L, 16384L),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          billingMode = DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+        ),
+        billingModeRef
+      )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      responses.collect { case t: ThrottledResponse => t.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
+      )
+    }
   }
+
+  private def runStageWithBillingRef(
+                                      requestSource: Source[TimedElement[DynamoDBRequest], ?],
+                                      config: TableAdmissionStage.Config,
+                                      billingModeRef: BillingModeRef
+                                    ): (Future[Seq[TimedEvent]], Future[Seq[TimedEvent]], Future[Seq[TimedEvent]]) =
+    val admittedSink = Sink.seq[TimedEvent]
+    val responseSink = Sink.seq[TimedEvent]
+    val metricsSink = Sink.seq[TimedEvent]
+
+    RunnableGraph.fromGraph(
+      GraphDSL.createGraph(admittedSink, responseSink, metricsSink)((a, r, m) => (a, r, m)) { implicit b =>
+        (admSink, respSink, metrSink) =>
+          import GraphDSL.Implicits.*
+
+          val stage = b.add(TableAdmissionStage.componentOf(config, Some(billingModeRef)))
+
+          requestSource ~> stage.in
+          stage.out0 ~> admSink
+          stage.out1 ~> respSink
+          stage.out2 ~> metrSink
+
+          ClosedShape
+      }
+    ).run()
 
   private def runStage(
                         requestSource: Source[TimedElement[DynamoDBRequest], ?],

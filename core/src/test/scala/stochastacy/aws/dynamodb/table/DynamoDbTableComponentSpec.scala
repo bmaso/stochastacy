@@ -1224,6 +1224,146 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         DynamoDbTarget.GlobalSecondaryIndex("orders", "status-index")
       )
     }
+
+    "componentOfManaged emits BillingModeSwitched metric and changes admission behavior on SwitchBillingMode event" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 5120L),
+        useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(5120L)),
+        readConsistency = ReadConsistency.StronglyConsistent
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick50 = TimedControlEvent.Tick(SimTime.of(50L))
+
+      val switchEvent = DynamoDbManagementEvent.SwitchBillingMode(
+        eventTime = SimTime.of(10L),
+        usecase = "switch",
+        newMode = DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+      )
+
+      val (responseFuture, _, metricsFuture) = runManagedComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](
+          tick1,
+          GetItemRequest(eventTime = SimTime.of(1L), usecase = "get"),
+          tick50,
+          GetItemRequest(eventTime = SimTime.of(50L), usecase = "get")
+        )),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](
+          tick1,
+          switchEvent,
+          tick50
+        )),
+        config = config
+      )
+
+      val responses = Await.result(responseFuture, 5.seconds)
+      val metrics = Await.result(metricsFuture, 5.seconds)
+
+      val switched = metrics.collect { case m: AdmissionMetricEvent.BillingModeSwitched => m }
+      switched should have size 1
+      switched.head.newMode shouldBe DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+
+      val throttled = responses.collect { case t: ThrottledResponse => t }
+      throttled should have size 1
+      throttled.head.reason shouldBe DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+    }
+
+    "componentOfManaged rejects billing mode switch within 24-hour cooldown" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 512L),
+        useCaseBehaviors = Map.empty,
+        readConsistency = ReadConsistency.StronglyConsistent
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick100 = TimedControlEvent.Tick(SimTime.of(100L))
+
+      val firstSwitch = DynamoDbManagementEvent.SwitchBillingMode(
+        eventTime = SimTime.of(1L),
+        usecase = "switch-1",
+        newMode = DynamoDbTable.BillingMode.Provisioned(10L, 10L)
+      )
+      val secondSwitch = DynamoDbManagementEvent.SwitchBillingMode(
+        eventTime = SimTime.of(100L),
+        usecase = "switch-2",
+        newMode = DynamoDbTable.BillingMode.OnDemand()
+      )
+
+      val (responseFuture, _, _) = runManagedComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](tick1, tick100)),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](
+          firstSwitch, secondSwitch
+        )),
+        config = config
+      )
+
+      val responses = Await.result(responseFuture, 5.seconds)
+      val rejections = responses.collect { case r: ReconfigurationRejectedResponse => r }
+      rejections should have size 1
+      rejections.head.usecase shouldBe "switch-2"
+    }
+
+    "componentOfManaged propagates billing mode switch to GSI admission branch" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 512L),
+        useCaseBehaviors = Map(
+          "query" -> FixedQueryBehavior(evaluatedBytes = 12288L)
+        ),
+        readConsistency = ReadConsistency.StronglyConsistent,
+        globalSecondaryIndexes = Vector(
+          DynamoDbTable.GlobalSecondaryIndexDefinition("status-index",
+            stateModel = FixedTableState(4L, 4096L),
+            projection = DynamoDbTable.IndexProjection.All
+          )
+        ),
+        billingMode = DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 1000L,
+          writeCapacityUnits = 100L,
+          globalSecondaryIndexReadCapacityUnits = Map("status-index" -> 1000L)
+        )
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick50 = TimedControlEvent.Tick(SimTime.of(50L))
+
+      val switchEvent = DynamoDbManagementEvent.SwitchBillingMode(
+        eventTime = SimTime.of(10L),
+        usecase = "switch",
+        newMode = DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 1000L,
+          writeCapacityUnits = 100L,
+          globalSecondaryIndexReadCapacityUnits = Map("status-index" -> 1L)
+        )
+      )
+
+      val (responseFuture, _, metricsFuture) = runManagedComponent(
+        requestSource = Source(Vector[TimedElement[DynamoDBRequest]](
+          tick1,
+          tick50,
+          QueryRequest(eventTime = SimTime.of(50L), usecase = "query",
+            target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index"))
+        )),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](
+          tick1,
+          switchEvent,
+          tick50
+        )),
+        config = config
+      )
+
+      val responses = Await.result(responseFuture, 5.seconds)
+      val metrics = Await.result(metricsFuture, 5.seconds)
+
+      val switched = metrics.collect { case m: AdmissionMetricEvent.BillingModeSwitched => m }
+      switched.size should be >= 1
+
+      val throttled = responses.collect { case t: ThrottledResponse => t }
+      throttled should have size 1
+      throttled.head.reason shouldBe DynamoDbThrottleReason.GlobalSecondaryIndexReadProvisionedThroughputExceeded
+    }
   }
 
   private def indexedConfig(): DynamoDbTable.Config =
@@ -1256,6 +1396,36 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         DynamoDbTable.LocalSecondaryIndexDefinition("created-at-index", stateModel = FixedTableState(5L, 5120L))
       )
     )
+
+  private def runManagedComponent(
+                                   requestSource: Source[TimedElement[DynamoDBRequest], ?],
+                                   managementSource: Source[TimedElement[DynamoDbManagementEvent], ?],
+                                   config: DynamoDbTable.Config
+                                 ): (
+                                   Future[Seq[TimedEvent]],
+                                   Future[Seq[TimedEvent]],
+                                   Future[Seq[TimedEvent]]
+                                 ) =
+    val responseSink = Sink.seq[TimedEvent]
+    val resourceSink = Sink.seq[TimedEvent]
+    val metricsSink = Sink.seq[TimedEvent]
+
+    RunnableGraph.fromGraph(
+      GraphDSL.createGraph(responseSink, resourceSink, metricsSink)((r, c, m) => (r, c, m)) { implicit b =>
+        (respSink, consSink, metrSink) =>
+          import GraphDSL.Implicits.*
+
+          val table = b.add(DynamoDbTable.componentOfManaged(config))
+
+          requestSource ~> table.requestIn
+          managementSource ~> table.managementIn
+          table.responseOut ~> respSink
+          table.consumptionOut ~> consSink
+          table.metricOut ~> metrSink
+
+          ClosedShape
+      }
+    ).run()
 
   private def runComponent(
                             requestSource: Source[TimedElement[DynamoDBRequest], ?],

@@ -107,3 +107,15 @@ private[table] class TopologySnapshotRef(
                                           @volatile var baseTopology: PartitionTopologySnapshot,
                                           @volatile var gsiTopologies: Map[String, PartitionTopologySnapshot]
                                         )
+
+/**
+ * A shared mutable reference for the current billing mode. Written by the management event
+ * processor in `DynamoDbTable.componentOfManaged` (at the table level) when a valid
+ * `SwitchBillingMode` event is received. Read by each admission stage at tick boundaries.
+ *
+ * Thread-safety: all stages run fused in the same Pekko actor.
+ */
+private[table] class BillingModeRef(
+  @volatile var currentMode: DynamoDbTable.BillingMode,
+  @volatile var lastSwitchTick: Option[Long] = None
+)

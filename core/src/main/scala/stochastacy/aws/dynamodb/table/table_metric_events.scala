@@ -65,3 +65,10 @@ object AdmissionMetricEvent:
                                     previousPartitionCount: Int,
                                     newPartitionCount: Int
                                   ) extends AdmissionMetricEvent
+
+  final case class BillingModeSwitched(
+                                        eventTime: SimTime,
+                                        usecase: Any,
+                                        previousMode: DynamoDbTable.BillingMode,
+                                        newMode: DynamoDbTable.BillingMode
+                                      ) extends AdmissionMetricEvent

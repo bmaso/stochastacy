@@ -796,7 +796,8 @@ object DynamoDbTable:
                            indexMaintenanceTargets: Vector[TableAdmissionStage.IndexMaintenanceTargetConfig] = Vector.empty,
                            indexMaintenanceRuntimes: Vector[InternalIndexRuntime] = Vector.empty,
                            gsiWriteScopes: Vector[TableAdmissionStage.GsiWriteScopeConfig] = Vector.empty,
-                           itemCollectionSizeLimitBytes: Option[Long] = None
+                           itemCollectionSizeLimitBytes: Option[Long] = None,
+                           billingModeRef: Option[BillingModeRef] = None
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -831,7 +832,8 @@ object DynamoDbTable:
             billingMode = billingMode,
             indexMaintenanceTargets = indexMaintenanceTargets,
             gsiWriteScopes = gsiWriteScopes
-          )
+          ),
+          billingModeRef = billingModeRef
         )
       )
       val storage = b.add(
@@ -1128,6 +1130,293 @@ object DynamoDbTable:
           metricMerge.out
         )
       }
+
+  /**
+   * Management-event-aware factory variant. Adds a `managementIn` inlet for `DynamoDbManagementEvent`
+   * events (billing mode switches) alongside the standard request inlet. The table pipeline is
+   * otherwise identical to `componentOf`.
+   *
+   * A management event processor validates the 24-hour billing mode switch cooldown and updates a
+   * shared `BillingModeRef`. Each branch's admission stage detects the mode change at the next tick
+   * boundary and adjusts its capacity state accordingly.
+   */
+  def componentOfManaged(config: Config): Graph[DynamoDbTableManagedShape, NotUsed] =
+    val billingModeRef = new BillingModeRef(config.billingMode)
+    val indexRuntimes = indexRuntimesFor(config)
+    val baseTableGraph =
+      branchGraph(
+        stateModel = config.stateModel,
+        useCaseBehaviors = config.useCaseBehaviors,
+        executionTarget = DynamoDbTarget.Table(config.tableName),
+        admissionTarget = DynamoDbTarget.Table(config.tableName),
+        indexProjection = None,
+        readConsistency = config.readConsistency,
+        maxReadRequestUnitsPerSecond = config.billingMode match
+          case BillingMode.OnDemand(odmt) => odmt.tableMaxReadRequestUnitsPerSecond
+          case p: BillingMode.Provisioned => Some(BigDecimal(p.readCapacityUnits)),
+        maxWriteRequestUnitsPerSecond = config.billingMode match
+          case BillingMode.OnDemand(odmt) => odmt.tableMaxWriteRequestUnitsPerSecond
+          case p: BillingMode.Provisioned => Some(BigDecimal(p.writeCapacityUnits)),
+        partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
+        maxReadRequestUnitsPerSecondPerPartition =
+          config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
+        maxWriteRequestUnitsPerSecondPerPartition =
+          config.hotPartitionModel.flatMap(_.tablePerPartitionMaxWriteRequestUnitsPerSecond),
+        adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+          config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond),
+        adaptiveMaxWriteRequestUnitsPerSecondPerPartition =
+          config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxWriteRequestUnitsPerSecond),
+        burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+        initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
+        initialWriteBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableWriteBurstRequestUnits),
+        dynamicPartitionTopologyConfig =
+          config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+            TableAdmissionStage.DynamicPartitionTopologyConfig(
+              initialPartitionCount = dynamic.tableInitialPartitionCount,
+              storageSplitThresholdBytes = dynamic.tableStorageSplitThresholdBytes,
+              readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                dynamic.tableThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+              writeThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                dynamic.tableWriteThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+              heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+              readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                dynamic.tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+              writeHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                dynamic.tableWriteHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+              maxPartitionCount = dynamic.maxTablePartitionCount
+            )
+          },
+        billingMode = config.billingMode,
+        indexMaintenanceTargets = indexMaintenanceTargetsFor(config, indexRuntimes),
+        indexMaintenanceRuntimes = indexRuntimes,
+        gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
+        itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
+        billingModeRef = Some(billingModeRef)
+      )
+
+    val globalSecondaryIndexes = config.globalSecondaryIndexes
+    val localSecondaryIndexes = config.localSecondaryIndexes
+
+    val tableGraph =
+      if globalSecondaryIndexes.isEmpty && localSecondaryIndexes.isEmpty then
+        baseTableGraph
+      else
+        val branchCount = 1 + globalSecondaryIndexes.size + localSecondaryIndexes.size
+
+        GraphDSL.create() { implicit b =>
+          import GraphDSL.Implicits.*
+
+          val validationFlow = b.add(
+            Flow[TimedElement[DynamoDBRequest]].map[TimedElement[DynamoDBRequest]] {
+              case request: DynamoDBRequest =>
+                validateRequest(config, request)
+                request
+              case t: TimedControlEvent => t
+            }
+          )
+
+          val requestBroadcast = b.add(Broadcast[TimedElement[DynamoDBRequest]](branchCount))
+          val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](branchCount))
+          val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](branchCount))
+          val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](branchCount))
+
+          val baseRequestFilter = b.add(
+            Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
+              case t: TimedControlEvent => t
+              case request: DynamoDBRequest if routeFor(config, request) == RouteBranch.BaseTable => request
+            }
+          )
+
+          val baseTable = b.add(baseTableGraph)
+          validationFlow.out ~> requestBroadcast.in
+          requestBroadcast.out(0) ~> baseRequestFilter ~> baseTable.in
+          baseTable.out0 ~> responseMerge.in(0)
+          baseTable.out1 ~> consumptionMerge.in(0)
+          baseTable.out2 ~> metricMerge.in(0)
+
+          var mergeInputIndex = 1
+
+          globalSecondaryIndexes.foreach { indexDefinition =>
+            val requestFilter = b.add(
+              Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
+                case request: DynamoDBRequest
+                    if routeFor(config, request) == RouteBranch.GlobalSecondaryIndex(indexDefinition.indexName) =>
+                  request
+              }
+            )
+
+            val indexRuntime = indexRuntimes.collectFirst {
+              case gsi: InternalIndexRuntime.GlobalSecondaryIndex if gsi.indexName == indexDefinition.indexName => gsi
+            }.getOrElse(
+              throw new IllegalStateException(s"Missing runtime for global secondary index '${indexDefinition.indexName}'")
+            )
+
+            val queryAndScanEnabledStage = b.add(
+              branchGraph(
+                stateModel = indexRuntime.stateModel,
+                useCaseBehaviors = config.useCaseBehaviors,
+                executionTarget = indexRuntime.target,
+                admissionTarget = indexRuntime.target,
+                indexProjection = Some(indexDefinition.projection),
+                readConsistency = ReadConsistency.EventuallyConsistent,
+                maxReadRequestUnitsPerSecond = config.billingMode match
+                  case BillingMode.OnDemand(odmt) =>
+                    odmt.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)
+                  case p: BillingMode.Provisioned =>
+                    Some(BigDecimal(p.globalSecondaryIndexReadCapacityUnits.getOrElse(indexDefinition.indexName, p.readCapacityUnits))),
+                maxWriteRequestUnitsPerSecond = None,
+                partitionCount =
+                  config.hotPartitionModel.flatMap(_.globalSecondaryIndexPartitionCounts.get(indexDefinition.indexName))
+                    .orElse(config.hotPartitionModel.map(_.tablePartitionCount))
+                    .getOrElse(1),
+                maxReadRequestUnitsPerSecondPerPartition =
+                  config.hotPartitionModel.flatMap(_.globalSecondaryIndexPerPartitionMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)),
+                maxWriteRequestUnitsPerSecondPerPartition = None,
+                adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+                  config.adaptiveCapacityModel.flatMap(_.globalSecondaryIndexPerPartitionAdaptiveMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)),
+                adaptiveMaxWriteRequestUnitsPerSecondPerPartition = None,
+                burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+                initialReadBurstRequestUnits =
+                  config.burstCapacityModel.flatMap(_.initialGlobalSecondaryIndexReadBurstRequestUnits.get(indexDefinition.indexName)),
+                initialWriteBurstRequestUnits = None,
+                dynamicPartitionTopologyConfig =
+                  config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+                    TableAdmissionStage.DynamicPartitionTopologyConfig(
+                      initialPartitionCount =
+                        dynamic.globalSecondaryIndexInitialPartitionCounts.getOrElse(indexDefinition.indexName, dynamic.tableInitialPartitionCount),
+                      storageSplitThresholdBytes = dynamic.globalSecondaryIndexStorageSplitThresholdBytes.get(indexDefinition.indexName),
+                      readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                        dynamic.globalSecondaryIndexReadThroughputGrowthSplitThresholdRequestUnitsPerSecond.get(indexDefinition.indexName),
+                      writeThroughputGrowthSplitThresholdRequestUnitsPerSecond = None,
+                      heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+                      readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                        dynamic.globalSecondaryIndexReadHeatSplitTriggerRequestUnitsPerSecondPerPartition.get(indexDefinition.indexName),
+                      writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
+                      maxPartitionCount = dynamic.maxGlobalSecondaryIndexPartitionCounts.get(indexDefinition.indexName)
+                    )
+                  },
+                billingMode = config.billingMode,
+                billingModeRef = Some(billingModeRef)
+              )
+            )
+
+            requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> queryAndScanEnabledStage.in
+            queryAndScanEnabledStage.out0 ~> responseMerge.in(mergeInputIndex)
+            queryAndScanEnabledStage.out1 ~> consumptionMerge.in(mergeInputIndex)
+            queryAndScanEnabledStage.out2 ~> metricMerge.in(mergeInputIndex)
+
+            mergeInputIndex = mergeInputIndex + 1
+          }
+
+          localSecondaryIndexes.foreach { indexDefinition =>
+            val requestFilter = b.add(
+              Flow[TimedElement[DynamoDBRequest]].collect[TimedElement[DynamoDBRequest]] {
+                case request: DynamoDBRequest
+                    if routeFor(config, request) == RouteBranch.LocalSecondaryIndex(indexDefinition.indexName) =>
+                  request
+              }
+            )
+
+            val indexRuntime = indexRuntimes.collectFirst {
+              case lsi: InternalIndexRuntime.LocalSecondaryIndex if lsi.indexName == indexDefinition.indexName => lsi
+            }.getOrElse(
+              throw new IllegalStateException(s"Missing runtime for local secondary index '${indexDefinition.indexName}'")
+            )
+
+            val queryAndScanEnabledStage = b.add(
+              branchGraph(
+                stateModel = indexRuntime.stateModel,
+                useCaseBehaviors = config.useCaseBehaviors,
+                executionTarget = indexRuntime.target,
+                admissionTarget = DynamoDbTarget.Table(config.tableName),
+                indexProjection = Some(indexDefinition.projection),
+                readConsistency = ReadConsistency.EventuallyConsistent,
+                maxReadRequestUnitsPerSecond = config.billingMode match
+                  case BillingMode.OnDemand(odmt) => odmt.tableMaxReadRequestUnitsPerSecond
+                  case p: BillingMode.Provisioned => Some(BigDecimal(p.readCapacityUnits)),
+                maxWriteRequestUnitsPerSecond = None,
+                partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
+                maxReadRequestUnitsPerSecondPerPartition =
+                  config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
+                maxWriteRequestUnitsPerSecondPerPartition = None,
+                adaptiveMaxReadRequestUnitsPerSecondPerPartition =
+                  config.adaptiveCapacityModel.flatMap(_.tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond),
+                adaptiveMaxWriteRequestUnitsPerSecondPerPartition = None,
+                burstRetentionWindowSeconds = config.burstCapacityModel.filter(_.enabled).map(_.retentionWindowSeconds),
+                initialReadBurstRequestUnits = config.burstCapacityModel.flatMap(_.initialTableReadBurstRequestUnits),
+                initialWriteBurstRequestUnits = None,
+                dynamicPartitionTopologyConfig =
+                  config.dynamicPartitionTopologyModel.filter(_.enabled).map { dynamic =>
+                    TableAdmissionStage.DynamicPartitionTopologyConfig(
+                      initialPartitionCount = dynamic.tableInitialPartitionCount,
+                      storageSplitThresholdBytes = dynamic.tableStorageSplitThresholdBytes,
+                      readThroughputGrowthSplitThresholdRequestUnitsPerSecond =
+                        dynamic.tableThroughputGrowthSplitThresholdRequestUnitsPerSecond,
+                      writeThroughputGrowthSplitThresholdRequestUnitsPerSecond = None,
+                      heatSplitSustainWindowSeconds = dynamic.heatSplitSustainWindowSeconds,
+                      readHeatSplitTriggerRequestUnitsPerSecondPerPartition =
+                        dynamic.tableReadHeatSplitTriggerRequestUnitsPerSecondPerPartition,
+                      writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
+                      maxPartitionCount = dynamic.maxTablePartitionCount
+                    )
+                  },
+                billingMode = config.billingMode,
+                billingModeRef = Some(billingModeRef)
+              )
+            )
+
+            requestBroadcast.out(mergeInputIndex) ~> requestFilter ~> queryAndScanEnabledStage.in
+            queryAndScanEnabledStage.out0 ~> responseMerge.in(mergeInputIndex)
+            queryAndScanEnabledStage.out1 ~> consumptionMerge.in(mergeInputIndex)
+            queryAndScanEnabledStage.out2 ~> metricMerge.in(mergeInputIndex)
+
+            mergeInputIndex = mergeInputIndex + 1
+          }
+
+          new FanOutShape3(
+            validationFlow.in,
+            responseMerge.out,
+            consumptionMerge.out,
+            metricMerge.out
+          )
+        }
+
+    val managementProcessor = Flow[TimedElement[DynamoDbManagementEvent]].statefulMapConcat[TimedElement[DynamoDBResponse]] { () =>
+      {
+        case _: TimedControlEvent => Nil
+        case event: DynamoDbManagementEvent.SwitchBillingMode =>
+          billingModeRef.lastSwitchTick match
+            case Some(lastTick) if event.eventTime.ticks - lastTick < 86400L =>
+              List(ReconfigurationRejectedResponse(
+                event.eventTime,
+                event.usecase,
+                "Billing mode switch attempted within the 24-hour cooldown period"
+              ))
+            case _ =>
+              billingModeRef.currentMode = event.newMode
+              billingModeRef.lastSwitchTick = Some(event.eventTime.ticks)
+              Nil
+      }
+    }
+
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val table = b.add(tableGraph)
+      val mgmt = b.add(managementProcessor)
+      val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+
+      table.out0 ~> responseMerge.in(0)
+      mgmt.out ~> responseMerge.in(1)
+
+      new DynamoDbTableManagedShape(
+        requestIn = table.in,
+        managementIn = mgmt.in,
+        responseOut = responseMerge.out,
+        consumptionOut = table.out1,
+        metricOut = table.out2
+      )
+    }
 
   /**
    * Replication-aware factory variant. Produces a graph with the same response/consumption/metric

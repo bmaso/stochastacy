@@ -193,3 +193,14 @@ case class ItemCollectionSizeLimitExceededResponse(
                                                     resultingCollectionBytes: Long,
                                                     limitBytes: Long
                                                   ) extends DynamoDBResponse
+
+/**
+ * Emitted when a management-API reconfiguration event is rejected. The simulator enforces
+ * real DynamoDB constraints (e.g., the 24-hour billing mode switch cooldown) and emits this
+ * response instead of applying the change when the constraint is violated.
+ */
+final case class ReconfigurationRejectedResponse(
+                                                  override val eventTime: SimTime,
+                                                  override val usecase: Any,
+                                                  reason: String
+                                                ) extends DynamoDBResponse

@@ -267,15 +267,22 @@ object TableAdmissionStage:
                                        writeBurst: BurstReservoir
                                      ):
     def replenish(usageState: PerTickUsageState, config: Config): BurstState =
+      replenish(usageState, config.maxReadRequestUnitsPerSecond, config.maxWriteRequestUnitsPerSecond)
+
+    def replenish(
+      usageState: PerTickUsageState,
+      maxReadRequestUnits: Option[BigDecimal],
+      maxWriteRequestUnits: Option[BigDecimal]
+    ): BurstState =
       val replenishedReadBurst =
-        config.maxReadRequestUnitsPerSecond match
+        maxReadRequestUnits match
           case Some(limit) =>
             val unused = (limit - usageState.readUnitsChargedToSteadyState).max(BigDecimal(0))
             readBurst.replenish(unused)
           case None => readBurst
 
       val replenishedWriteBurst =
-        config.maxWriteRequestUnitsPerSecond match
+        maxWriteRequestUnits match
           case Some(limit) =>
             val unused = (limit - usageState.writeUnitsChargedToSteadyState).max(BigDecimal(0))
             writeBurst.replenish(unused)
@@ -328,7 +335,8 @@ object TableAdmissionStage:
                                                )
 
   def componentOf(
-                   config: Config
+                   config: Config,
+                   billingModeRef: Option[BillingModeRef] = None
                  ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -338,15 +346,19 @@ object TableAdmissionStage:
     ],
     NotUsed
   ] =
-    componentOfComposed(config)
+    componentOfComposed(config, billingModeRef)
 
   /**
    * A composed component that wires `TableSamplingStage` upstream of the shaped admission stage.
    * The external shape is identical to `componentOf`: it takes `TimedElement[DynamoDBRequest]` and
    * produces the same three output streams (admitted samples, throttled responses, metrics).
+   *
+   * When `billingModeRef` is provided, it is threaded through to `componentOfShaped` so the
+   * admission stage can detect and apply mid-simulation billing mode changes.
    */
   def componentOfComposed(
-                            config: Config
+                            config: Config,
+                            billingModeRef: Option[BillingModeRef] = None
                           ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -386,7 +398,7 @@ object TableAdmissionStage:
       import GraphDSL.Implicits.*
 
       val samplingStage = b.add(TableSamplingStage.flowOf(samplingConfig))
-      val admissionStage = b.add(componentOfShaped(config, topologyRef))
+      val admissionStage = b.add(componentOfShaped(config, topologyRef, billingModeRef))
 
       samplingStage.out ~> admissionStage.in
 
@@ -403,10 +415,14 @@ object TableAdmissionStage:
    * rather than raw `DynamoDBRequest` elements. All sampling, demand calculation,
    * partition resolution, and index-maintenance-plan derivation have already been
    * performed by the upstream `TableSamplingStage`.
+   *
+   * When `billingModeRef` is provided, the admission stage reads the ref at every tick
+   * boundary and updates its internal capacity state if the billing mode has changed.
    */
   def componentOfShaped(
                           config: Config,
-                          topologyRef: TopologySnapshotRef
+                          topologyRef: TopologySnapshotRef,
+                          billingModeRef: Option[BillingModeRef] = None
                         ): Graph[
     FanOutShape3[
       TimedElement[ShapedRequest],
@@ -416,6 +432,21 @@ object TableAdmissionStage:
     ],
     NotUsed
   ] =
+    def extractCapacityForTarget(mode: DynamoDbTable.BillingMode, target: DynamoDbTarget): (Option[BigDecimal], Option[BigDecimal]) =
+      mode match
+        case DynamoDbTable.BillingMode.OnDemand(maxThroughput) =>
+          target match
+            case DynamoDbTarget.Table(_) | DynamoDbTarget.LocalSecondaryIndex(_, _) =>
+              (maxThroughput.tableMaxReadRequestUnitsPerSecond, maxThroughput.tableMaxWriteRequestUnitsPerSecond)
+            case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
+              (maxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexName), None)
+        case p: DynamoDbTable.BillingMode.Provisioned =>
+          target match
+            case DynamoDbTarget.Table(_) | DynamoDbTarget.LocalSecondaryIndex(_, _) =>
+              (Some(BigDecimal(p.readCapacityUnits)), Some(BigDecimal(p.writeCapacityUnits)))
+            case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
+              (Some(BigDecimal(p.globalSecondaryIndexReadCapacityUnits.getOrElse(indexName, p.readCapacityUnits))), None)
+
     def metricForAdmissionShaped(
                                   shaped: ShapedRequest,
                                   admissionMode: AdmissionMode,
@@ -536,8 +567,8 @@ object TableAdmissionStage:
         case (DynamoDbThroughputDimension.Write, _) =>
           DynamoDbThrottleReason.TableWriteHotPartitionThroughputExceeded
 
-    def wholeResourceReason(dimension: DynamoDbThroughputDimension): DynamoDbThrottleReason =
-      val isProvisioned = config.billingMode.isInstanceOf[DynamoDbTable.BillingMode.Provisioned]
+    def wholeResourceReason(dimension: DynamoDbThroughputDimension, billingMode: DynamoDbTable.BillingMode): DynamoDbThrottleReason =
+      val isProvisioned = billingMode.isInstanceOf[DynamoDbTable.BillingMode.Provisioned]
       (dimension, config.admissionTarget) match
         case (DynamoDbThroughputDimension.Read, DynamoDbTarget.Table(_)) |
              (DynamoDbThroughputDimension.Read, DynamoDbTarget.LocalSecondaryIndex(_, _)) =>
@@ -565,8 +596,8 @@ object TableAdmissionStage:
         case (DynamoDbThroughputDimension.Write, _) =>
           DynamoDbThrottleReason.TableWriteHotPartitionThroughputExceeded
 
-    def wholeResourceReasonFor(target: DynamoDbTarget, dimension: DynamoDbThroughputDimension): DynamoDbThrottleReason =
-      val isProvisioned = config.billingMode.isInstanceOf[DynamoDbTable.BillingMode.Provisioned]
+    def wholeResourceReasonFor(target: DynamoDbTarget, dimension: DynamoDbThroughputDimension, billingMode: DynamoDbTable.BillingMode): DynamoDbThrottleReason =
+      val isProvisioned = billingMode.isInstanceOf[DynamoDbTable.BillingMode.Provisioned]
       (dimension, target) match
         case (DynamoDbThroughputDimension.Read, DynamoDbTarget.Table(_)) |
              (DynamoDbThroughputDimension.Read, DynamoDbTarget.LocalSecondaryIndex(_, _)) =>
@@ -670,7 +701,8 @@ object TableAdmissionStage:
                             burstState: BurstState,
                             maxWriteRequestUnitsPerSecond: Option[BigDecimal],
                             maxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal],
-                            adaptiveMaxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal]
+                            adaptiveMaxWriteRequestUnitsPerSecondPerPartition: Option[BigDecimal],
+                            billingMode: DynamoDbTable.BillingMode
                           ): WriteScopeEvaluation =
       val adaptiveRelief =
         adaptiveReliefFor(
@@ -700,7 +732,7 @@ object TableAdmissionStage:
           if requiredBurst > 0 && burstAvailable < requiredBurst then
             Some(
               if adaptiveRelief.remainingHotPartitionOverage > 0 then hotPartitionReasonFor(target, DynamoDbThroughputDimension.Write)
-              else wholeResourceReasonFor(target, DynamoDbThroughputDimension.Write)
+              else wholeResourceReasonFor(target, DynamoDbThroughputDimension.Write, billingMode)
             )
           else None
       )
@@ -798,17 +830,20 @@ object TableAdmissionStage:
                                      shaped: ShapedRequest,
                                      usageState: PerTickUsageState,
                                      burstState: BurstState,
-                                     admittedSample: => AdmittedRequestSample
+                                     admittedSample: => AdmittedRequestSample,
+                                     currentBillingMode: DynamoDbTable.BillingMode,
+                                     currentMaxReadRqUnits: Option[BigDecimal],
+                                     currentAdaptiveMaxReadPerPartition: Option[BigDecimal]
                                    ): AdmissionDecision =
       val adaptiveRelief =
         adaptiveReliefFor(
           currentlyUsedByPartition = usageState.readUnitsByPartition,
           resolvedPartitionFootprint = shaped.resolvedPartitionFootprint,
           baselineLimit = config.maxReadRequestUnitsPerSecondPerPartition,
-          adaptiveLimit = config.adaptiveMaxReadRequestUnitsPerSecondPerPartition
+          adaptiveLimit = currentAdaptiveMaxReadPerPartition
         )
       val wholeOverage =
-        config.maxReadRequestUnitsPerSecond.map { limit =>
+        currentMaxReadRqUnits.map { limit =>
           wholeResourceOverage(usageState.readUnits, shaped.throughputDemand, limit)
         }.getOrElse(BigDecimal(0))
       val requiredBurst = adaptiveRelief.remainingHotPartitionOverage.max(wholeOverage)
@@ -822,7 +857,7 @@ object TableAdmissionStage:
           throughputDemand = shaped.throughputDemand,
           reason =
             if adaptiveRelief.remainingHotPartitionOverage > 0 then hotPartitionReason(DynamoDbThroughputDimension.Read)
-            else wholeResourceReason(DynamoDbThroughputDimension.Read),
+            else wholeResourceReason(DynamoDbThroughputDimension.Read, currentBillingMode),
           adaptiveAvailableRequestUnits = adaptiveRelief.availableRequestUnits,
           burstAvailableRequestUnits = burstAvailable,
           topologyPartitionCount = shaped.resolvedPartitionFootprint.totalPartitionCount,
@@ -850,7 +885,10 @@ object TableAdmissionStage:
                                       burstState: BurstState,
                                       gsiUsageStates: Map[String, PerTickUsageState],
                                       gsiBurstStates: Map[String, BurstState],
-                                      admittedSample: => AdmittedRequestSample
+                                      admittedSample: => AdmittedRequestSample,
+                                      currentBillingMode: DynamoDbTable.BillingMode,
+                                      currentMaxWriteRqUnits: Option[BigDecimal],
+                                      currentAdaptiveMaxWritePerPartition: Option[BigDecimal]
                                     ): AdmissionDecision =
       val indexMaintenanceSummary = shaped.indexMaintenancePlan.map(_.summary)
       val baseEvaluation =
@@ -860,9 +898,10 @@ object TableAdmissionStage:
           resolvedPartitionFootprint = shaped.resolvedPartitionFootprint,
           usageState = usageState,
           burstState = burstState,
-          maxWriteRequestUnitsPerSecond = config.maxWriteRequestUnitsPerSecond,
+          maxWriteRequestUnitsPerSecond = currentMaxWriteRqUnits,
           maxWriteRequestUnitsPerSecondPerPartition = config.maxWriteRequestUnitsPerSecondPerPartition,
-          adaptiveMaxWriteRequestUnitsPerSecondPerPartition = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
+          adaptiveMaxWriteRequestUnitsPerSecondPerPartition = currentAdaptiveMaxWritePerPartition,
+          billingMode = currentBillingMode
         )
       val gsiEvaluations =
         config.gsiWriteScopes.map { scope =>
@@ -891,7 +930,8 @@ object TableAdmissionStage:
               ),
               maxWriteRequestUnitsPerSecond = scope.maxWriteRequestUnitsPerSecond,
               maxWriteRequestUnitsPerSecondPerPartition = scope.maxWriteRequestUnitsPerSecondPerPartition,
-              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = scope.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
+              adaptiveMaxWriteRequestUnitsPerSecondPerPartition = scope.adaptiveMaxWriteRequestUnitsPerSecondPerPartition,
+              billingMode = currentBillingMode
             )
         }.toMap
       val failingGsi = config.gsiWriteScopes.collectFirst {
@@ -956,7 +996,12 @@ object TableAdmissionStage:
                           usageState: PerTickUsageState,
                           burstState: BurstState,
                           gsiUsageStates: Map[String, PerTickUsageState],
-                          gsiBurstStates: Map[String, BurstState]
+                          gsiBurstStates: Map[String, BurstState],
+                          currentBillingMode: DynamoDbTable.BillingMode,
+                          currentMaxReadRqUnits: Option[BigDecimal],
+                          currentMaxWriteRqUnits: Option[BigDecimal],
+                          currentAdaptiveMaxReadPerPartition: Option[BigDecimal],
+                          currentAdaptiveMaxWritePerPartition: Option[BigDecimal]
                         ): AdmissionDecision =
       shaped match
         case s: ShapedGetItemRequest =>
@@ -973,7 +1018,10 @@ object TableAdmissionStage:
                 sample = s.sample,
                 throughputDemand = s.throughputDemand,
                 resolvedPartitionFootprint = s.resolvedPartitionFootprint
-              )
+              ),
+            currentBillingMode = currentBillingMode,
+            currentMaxReadRqUnits = currentMaxReadRqUnits,
+            currentAdaptiveMaxReadPerPartition = currentAdaptiveMaxReadPerPartition
           )
 
         case s: ShapedQueryRequest =>
@@ -989,7 +1037,10 @@ object TableAdmissionStage:
                 sample = s.sample,
                 throughputDemand = s.throughputDemand,
                 resolvedPartitionFootprint = s.resolvedPartitionFootprint
-              )
+              ),
+            currentBillingMode = currentBillingMode,
+            currentMaxReadRqUnits = currentMaxReadRqUnits,
+            currentAdaptiveMaxReadPerPartition = currentAdaptiveMaxReadPerPartition
           )
 
         case s: ShapedScanRequest =>
@@ -1005,7 +1056,10 @@ object TableAdmissionStage:
                 sample = s.sample,
                 throughputDemand = s.throughputDemand,
                 resolvedPartitionFootprint = s.resolvedPartitionFootprint
-              )
+              ),
+            currentBillingMode = currentBillingMode,
+            currentMaxReadRqUnits = currentMaxReadRqUnits,
+            currentAdaptiveMaxReadPerPartition = currentAdaptiveMaxReadPerPartition
           )
 
         case s: ShapedPutItemRequest =>
@@ -1024,7 +1078,10 @@ object TableAdmissionStage:
                 throughputDemand = s.throughputDemand,
                 resolvedPartitionFootprint = s.resolvedPartitionFootprint,
                 indexMaintenancePlan = s.indexMaintenancePlan
-              )
+              ),
+            currentBillingMode = currentBillingMode,
+            currentMaxWriteRqUnits = currentMaxWriteRqUnits,
+            currentAdaptiveMaxWritePerPartition = currentAdaptiveMaxWritePerPartition
           )
 
         case s: ShapedUpdateItemRequest =>
@@ -1043,7 +1100,10 @@ object TableAdmissionStage:
                 throughputDemand = s.throughputDemand,
                 resolvedPartitionFootprint = s.resolvedPartitionFootprint,
                 indexMaintenancePlan = s.indexMaintenancePlan
-              )
+              ),
+            currentBillingMode = currentBillingMode,
+            currentMaxWriteRqUnits = currentMaxWriteRqUnits,
+            currentAdaptiveMaxWritePerPartition = currentAdaptiveMaxWritePerPartition
           )
 
         case s: ShapedDeleteItemRequest =>
@@ -1062,7 +1122,10 @@ object TableAdmissionStage:
                 throughputDemand = s.throughputDemand,
                 resolvedPartitionFootprint = s.resolvedPartitionFootprint,
                 indexMaintenancePlan = s.indexMaintenancePlan
-              )
+              ),
+            currentBillingMode = currentBillingMode,
+            currentMaxWriteRqUnits = currentMaxWriteRqUnits,
+            currentAdaptiveMaxWritePerPartition = currentAdaptiveMaxWritePerPartition
           )
 
     GraphDSL.create() { implicit b =>
@@ -1123,6 +1186,11 @@ object TableAdmissionStage:
                 )
             )
           var topologyChangedOnLastAdvance = false
+          var currentBillingMode: DynamoDbTable.BillingMode = config.billingMode
+          var currentMaxReadRqUnits: Option[BigDecimal] = config.maxReadRequestUnitsPerSecond
+          var currentMaxWriteRqUnits: Option[BigDecimal] = config.maxWriteRequestUnitsPerSecond
+          var currentAdaptiveMaxReadPerPartition: Option[BigDecimal] = config.adaptiveMaxReadRequestUnitsPerSecondPerPartition
+          var currentAdaptiveMaxWritePerPartition: Option[BigDecimal] = config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
 
           def reshapeWithCurrentTopology(shaped: ShapedRequest): ShapedRequest =
             val newFootprint =
@@ -1173,7 +1241,7 @@ object TableAdmissionStage:
             if currentTick.forall(_ != tick) then
               val topologyEvents =
                 if currentTick.nonEmpty then
-                  burstState = burstState.replenish(usageState, config)
+                  burstState = burstState.replenish(usageState, currentMaxReadRqUnits, currentMaxWriteRqUnits)
                   gsiBurstStates =
                     config.gsiWriteScopes.foldLeft(gsiBurstStates) { (acc, scope) =>
                       val updatedState =
@@ -1313,8 +1381,28 @@ object TableAdmissionStage:
                   events ++ gsiTopologyEvents
                 else
                   Vector.empty
+              val billingModeEvents: Vector[TimedEvent] = billingModeRef match
+                case Some(ref) if ref.currentMode != currentBillingMode =>
+                  val previousMode = currentBillingMode
+                  val newMode = ref.currentMode
+                  currentBillingMode = newMode
+                  val (newMaxRead, newMaxWrite) = extractCapacityForTarget(newMode, config.admissionTarget)
+                  currentMaxReadRqUnits = newMaxRead
+                  currentMaxWriteRqUnits = newMaxWrite
+                  currentAdaptiveMaxReadPerPartition = newMode match
+                    case _: DynamoDbTable.BillingMode.Provisioned => None
+                    case _ => config.adaptiveMaxReadRequestUnitsPerSecondPerPartition
+                  currentAdaptiveMaxWritePerPartition = newMode match
+                    case _: DynamoDbTable.BillingMode.Provisioned => None
+                    case _ => config.adaptiveMaxWriteRequestUnitsPerSecondPerPartition
+                  burstState = BurstState(
+                    readBurst = BurstReservoir.from(currentMaxReadRqUnits, config.burstRetentionWindowSeconds, config.initialReadBurstRequestUnits),
+                    writeBurst = BurstReservoir.from(currentMaxWriteRqUnits, config.burstRetentionWindowSeconds, config.initialWriteBurstRequestUnits)
+                  )
+                  Vector(AdmissionMetricEvent.BillingModeSwitched(eventTime, "billing-mode-switch", previousMode, newMode))
+                case _ => Vector.empty
               currentTick = Some(tick)
-              topologyEvents
+              topologyEvents ++ billingModeEvents
             else
               Vector.empty
 
@@ -1331,11 +1419,16 @@ object TableAdmissionStage:
                 if topologyChangedOnLastAdvance then reshapeWithCurrentTopology(shaped) else shaped
               val decision =
                 decideFromShaped(
-                  effectiveShaped,
-                  usageState,
-                  burstState,
-                  gsiUsageStates,
-                  gsiBurstStates
+                  shaped = effectiveShaped,
+                  usageState = usageState,
+                  burstState = burstState,
+                  gsiUsageStates = gsiUsageStates,
+                  gsiBurstStates = gsiBurstStates,
+                  currentBillingMode = currentBillingMode,
+                  currentMaxReadRqUnits = currentMaxReadRqUnits,
+                  currentMaxWriteRqUnits = currentMaxWriteRqUnits,
+                  currentAdaptiveMaxReadPerPartition = currentAdaptiveMaxReadPerPartition,
+                  currentAdaptiveMaxWritePerPartition = currentAdaptiveMaxWritePerPartition
                 )
               decision match
                 case admitted: Admitted =>
@@ -1353,8 +1446,8 @@ object TableAdmissionStage:
                   usageState = usageState.afterAdmission(
                     admitted.sample,
                     admitted.sample.throughputDimension match
-                      case DynamoDbThroughputDimension.Read => config.maxReadRequestUnitsPerSecond
-                      case DynamoDbThroughputDimension.Write => config.maxWriteRequestUnitsPerSecond
+                      case DynamoDbThroughputDimension.Read => currentMaxReadRqUnits
+                      case DynamoDbThroughputDimension.Write => currentMaxWriteRqUnits
                   )
                   gsiUsageStates =
                     admitted.gsiWriteAdmissions.foldLeft(gsiUsageStates) { (acc, admission) =>
@@ -1383,6 +1476,7 @@ object TableAdmissionStage:
         Flow[TimedEvent].mapConcat[TimedElement[AdmittedRequestSample]] {
           case t: TimedControlEvent => List(t)
           case _: AdmissionMetricEvent.TopologyChanged => Nil
+          case _: AdmissionMetricEvent.BillingModeSwitched => Nil
           case Admitted(_, sample, _, _) => List(sample)
           case _: Throttled => Nil
         }
@@ -1392,6 +1486,7 @@ object TableAdmissionStage:
         Flow[TimedEvent].mapConcat[TimedElement[DynamoDBResponse]] {
           case t: TimedControlEvent => List(t)
           case _: AdmissionMetricEvent.TopologyChanged => Nil
+          case _: AdmissionMetricEvent.BillingModeSwitched => Nil
           case Throttled(_, response, _) => List(response)
           case _: Admitted => Nil
         }
@@ -1401,6 +1496,7 @@ object TableAdmissionStage:
         Flow[TimedEvent].mapConcat[TimedElement[AdmissionMetricEvent]] {
           case t: TimedControlEvent => List(t)
           case metric: AdmissionMetricEvent.TopologyChanged => List(metric)
+          case metric: AdmissionMetricEvent.BillingModeSwitched => List(metric)
           case Admitted(_, _, metric, _) => List(metric)
           case Throttled(_, _, metric) => List(metric)
         }
