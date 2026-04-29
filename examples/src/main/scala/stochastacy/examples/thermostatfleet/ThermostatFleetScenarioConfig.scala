@@ -38,7 +38,7 @@ final case class ThermostatFleetScenarioConfig(
   deviceStatusGsiProjection: DynamoDbTable.IndexProjection = DynamoDbTable.IndexProjection.All,
   readingTypeHistoryLsiProjection: DynamoDbTable.IndexProjection = DynamoDbTable.IndexProjection.All,
   itemCollectionSizeLimitBytes: Option[Long] = None,
-  onDemandMaxThroughput: DynamoDbTable.OnDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(),
+  billingMode: DynamoDbTable.BillingMode = DynamoDbTable.BillingMode.OnDemand(),
   hotPartitionModel: Option[DynamoDbTable.HotPartitionModel] = None,
   burstCapacityModel: Option[DynamoDbTable.BurstCapacityModel] = None,
   adaptiveCapacityModel: Option[DynamoDbTable.AdaptiveCapacityModel] = None,

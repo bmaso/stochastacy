@@ -447,14 +447,27 @@ object ThermostatFleetGrafanaView:
 
         case stage: ThermostatFleetBridgeCommand.Stage =>
           try
+            import org.json4s.*
+            import org.json4s.jackson.JsonMethods.parse
+            given Formats = DefaultFormats
+            // Infer the scenarioId from the first JSONL record so --mode is not required for stage.
+            val inferredScenarioId = Try {
+              val lines = Files.lines(stage.inputPath)
+              try
+                val opt = lines.filter(s => s.trim.nonEmpty).findFirst()
+                if opt.isPresent then (parse(opt.get()) \ "scenarioId").extract[String]
+                else stage.metadata.scenarioId
+              finally lines.close()
+            }.getOrElse(stage.metadata.scenarioId)
+            val metadata = stage.metadata.copy(scenarioId = inferredScenarioId)
             val count = OrderTrackingPostgresBridge.stage(
               inputPath = stage.inputPath,
-              metadata = stage.metadata,
+              metadata = metadata,
               dbUrl = stage.dbUrl,
               dbUser = stage.dbUser,
               dbPassword = stage.dbPassword
             )
-            println(s"staged $count records for batch ${stage.metadata.batchId} into ${stage.dbUrl}")
+            println(s"staged $count records for batch ${metadata.batchId} into ${stage.dbUrl}")
           catch
             case t: Throwable =>
               System.err.println(s"stage failed: ${t.getMessage}")

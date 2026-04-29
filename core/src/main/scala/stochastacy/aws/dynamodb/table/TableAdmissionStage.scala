@@ -98,6 +98,7 @@ object TableAdmissionStage:
                            initialReadBurstRequestUnits: Option[BigDecimal] = None,
                            initialWriteBurstRequestUnits: Option[BigDecimal] = None,
                            dynamicPartitionTopologyConfig: Option[DynamicPartitionTopologyConfig] = None,
+                           billingMode: DynamoDbTable.BillingMode = DynamoDbTable.BillingMode.OnDemand(),
                            indexMaintenanceTargets: Vector[IndexMaintenanceTargetConfig] = Vector.empty,
                            gsiWriteScopes: Vector[GsiWriteScopeConfig] = Vector.empty
                          ):
@@ -169,6 +170,17 @@ object TableAdmissionStage:
       indexMaintenanceTargets.map(_.target).distinct.size == indexMaintenanceTargets.size,
       "indexMaintenanceTargets must not contain duplicate targets"
     )
+    billingMode match
+      case _: DynamoDbTable.BillingMode.Provisioned =>
+        require(
+          adaptiveMaxReadRequestUnitsPerSecondPerPartition.isEmpty,
+          "adaptiveMaxReadRequestUnitsPerSecondPerPartition must be None in provisioned billing mode"
+        )
+        require(
+          adaptiveMaxWriteRequestUnitsPerSecondPerPartition.isEmpty,
+          "adaptiveMaxWriteRequestUnitsPerSecondPerPartition must be None in provisioned billing mode"
+        )
+      case _ => ()
 
   private final case class BurstReservoir(
                                            currentRequestUnits: BigDecimal,
@@ -525,16 +537,21 @@ object TableAdmissionStage:
           DynamoDbThrottleReason.TableWriteHotPartitionThroughputExceeded
 
     def wholeResourceReason(dimension: DynamoDbThroughputDimension): DynamoDbThrottleReason =
+      val isProvisioned = config.billingMode.isInstanceOf[DynamoDbTable.BillingMode.Provisioned]
       (dimension, config.admissionTarget) match
         case (DynamoDbThroughputDimension.Read, DynamoDbTarget.Table(_)) |
              (DynamoDbThroughputDimension.Read, DynamoDbTarget.LocalSecondaryIndex(_, _)) =>
-          DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
+          if isProvisioned then DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+          else DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
         case (DynamoDbThroughputDimension.Read, DynamoDbTarget.GlobalSecondaryIndex(_, _)) =>
-          DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
+          if isProvisioned then DynamoDbThrottleReason.GlobalSecondaryIndexReadProvisionedThroughputExceeded
+          else DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
         case (DynamoDbThroughputDimension.Write, DynamoDbTarget.GlobalSecondaryIndex(_, _)) =>
-          DynamoDbThrottleReason.GlobalSecondaryIndexWriteMaxOnDemandThroughputExceeded
+          if isProvisioned then DynamoDbThrottleReason.GlobalSecondaryIndexWriteProvisionedThroughputExceeded
+          else DynamoDbThrottleReason.GlobalSecondaryIndexWriteMaxOnDemandThroughputExceeded
         case (DynamoDbThroughputDimension.Write, _) =>
-          DynamoDbThrottleReason.TableWriteMaxOnDemandThroughputExceeded
+          if isProvisioned then DynamoDbThrottleReason.TableWriteProvisionedThroughputExceeded
+          else DynamoDbThrottleReason.TableWriteMaxOnDemandThroughputExceeded
 
     def hotPartitionReasonFor(target: DynamoDbTarget, dimension: DynamoDbThroughputDimension): DynamoDbThrottleReason =
       (dimension, target) match
@@ -549,16 +566,21 @@ object TableAdmissionStage:
           DynamoDbThrottleReason.TableWriteHotPartitionThroughputExceeded
 
     def wholeResourceReasonFor(target: DynamoDbTarget, dimension: DynamoDbThroughputDimension): DynamoDbThrottleReason =
+      val isProvisioned = config.billingMode.isInstanceOf[DynamoDbTable.BillingMode.Provisioned]
       (dimension, target) match
         case (DynamoDbThroughputDimension.Read, DynamoDbTarget.Table(_)) |
              (DynamoDbThroughputDimension.Read, DynamoDbTarget.LocalSecondaryIndex(_, _)) =>
-          DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
+          if isProvisioned then DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+          else DynamoDbThrottleReason.TableReadMaxOnDemandThroughputExceeded
         case (DynamoDbThroughputDimension.Read, DynamoDbTarget.GlobalSecondaryIndex(_, _)) =>
-          DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
+          if isProvisioned then DynamoDbThrottleReason.GlobalSecondaryIndexReadProvisionedThroughputExceeded
+          else DynamoDbThrottleReason.GlobalSecondaryIndexReadMaxOnDemandThroughputExceeded
         case (DynamoDbThroughputDimension.Write, DynamoDbTarget.GlobalSecondaryIndex(_, _)) =>
-          DynamoDbThrottleReason.GlobalSecondaryIndexWriteMaxOnDemandThroughputExceeded
+          if isProvisioned then DynamoDbThrottleReason.GlobalSecondaryIndexWriteProvisionedThroughputExceeded
+          else DynamoDbThrottleReason.GlobalSecondaryIndexWriteMaxOnDemandThroughputExceeded
         case (DynamoDbThroughputDimension.Write, _) =>
-          DynamoDbThrottleReason.TableWriteMaxOnDemandThroughputExceeded
+          if isProvisioned then DynamoDbThrottleReason.TableWriteProvisionedThroughputExceeded
+          else DynamoDbThrottleReason.TableWriteMaxOnDemandThroughputExceeded
 
     def partitionOverages(
                            currentlyUsedByPartition: Map[Int, BigDecimal],

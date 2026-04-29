@@ -125,6 +125,12 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
     }
 
     "accept optional on-demand max throughput config for the table and configured GSIs" in {
+      val odmt = DynamoDbTable.OnDemandMaxThroughput(
+        tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(100)),
+        tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(200)),
+        globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal(25)),
+        globalSecondaryIndexMaxWriteRequestUnitsPerSecond = Map("status-index" -> BigDecimal(10))
+      )
       val config =
         DynamoDbTable.Config(
           tableName = "orders",
@@ -133,20 +139,16 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
           globalSecondaryIndexes = Vector(
             DynamoDbTable.GlobalSecondaryIndexDefinition("status-index")
           ),
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
-            tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(100)),
-            tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(200)),
-            globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal(25)),
-            globalSecondaryIndexMaxWriteRequestUnitsPerSecond = Map("status-index" -> BigDecimal(10))
-          )
+          billingMode = DynamoDbTable.BillingMode.OnDemand(odmt)
         )
 
-      config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond shouldBe Some(BigDecimal(100))
-      config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond shouldBe Some(BigDecimal(200))
-      config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond shouldBe Map(
+      val mode = config.billingMode.asInstanceOf[DynamoDbTable.BillingMode.OnDemand]
+      mode.maxThroughput.tableMaxReadRequestUnitsPerSecond shouldBe Some(BigDecimal(100))
+      mode.maxThroughput.tableMaxWriteRequestUnitsPerSecond shouldBe Some(BigDecimal(200))
+      mode.maxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond shouldBe Map(
         "status-index" -> BigDecimal(25)
       )
-      config.onDemandMaxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond shouldBe Map(
+      mode.maxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond shouldBe Map(
         "status-index" -> BigDecimal(10)
       )
     }
@@ -161,14 +163,123 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
             globalSecondaryIndexes = Vector(
               DynamoDbTable.GlobalSecondaryIndexDefinition("status-index")
             ),
-            onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
-              globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("missing-index" -> BigDecimal(25))
+            billingMode = DynamoDbTable.BillingMode.OnDemand(
+              DynamoDbTable.OnDemandMaxThroughput(
+                globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("missing-index" -> BigDecimal(25))
+              )
             )
           )
         }
 
       error.getMessage should include("unknown global secondary indexes")
       error.getMessage should include("missing-index")
+    }
+
+    "accept provisioned billing mode with valid RCU/WCU" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map.empty,
+          billingMode = DynamoDbTable.BillingMode.Provisioned(
+            readCapacityUnits = 100L,
+            writeCapacityUnits = 200L
+          )
+        )
+
+      val mode = config.billingMode.asInstanceOf[DynamoDbTable.BillingMode.Provisioned]
+      mode.readCapacityUnits shouldBe 100L
+      mode.writeCapacityUnits shouldBe 200L
+    }
+
+    "accept provisioned billing mode with per-GSI capacity overrides" in {
+      val config =
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map.empty,
+          globalSecondaryIndexes = Vector(
+            DynamoDbTable.GlobalSecondaryIndexDefinition("status-index")
+          ),
+          billingMode = DynamoDbTable.BillingMode.Provisioned(
+            readCapacityUnits = 100L,
+            writeCapacityUnits = 50L,
+            globalSecondaryIndexReadCapacityUnits = Map("status-index" -> 25L),
+            globalSecondaryIndexWriteCapacityUnits = Map("status-index" -> 10L)
+          )
+        )
+
+      val mode = config.billingMode.asInstanceOf[DynamoDbTable.BillingMode.Provisioned]
+      mode.globalSecondaryIndexReadCapacityUnits shouldBe Map("status-index" -> 25L)
+      mode.globalSecondaryIndexWriteCapacityUnits shouldBe Map("status-index" -> 10L)
+    }
+
+    "reject provisioned billing mode when adaptive capacity is configured" in {
+      val error =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+            useCaseBehaviors = Map.empty,
+            billingMode = DynamoDbTable.BillingMode.Provisioned(
+              readCapacityUnits = 100L,
+              writeCapacityUnits = 50L
+            ),
+            hotPartitionModel = Some(
+              DynamoDbTable.HotPartitionModel(
+                tablePartitionCount = 4,
+                tablePerPartitionMaxReadRequestUnitsPerSecond = Some(BigDecimal(10))
+              )
+            ),
+            adaptiveCapacityModel = Some(
+              DynamoDbTable.AdaptiveCapacityModel(
+                tablePerPartitionAdaptiveMaxReadRequestUnitsPerSecond = Some(BigDecimal(20))
+              )
+            )
+          )
+        }
+
+      error.getMessage should include("does not support adaptive capacity")
+    }
+
+    "reject provisioned billing mode with unknown GSI names in capacity maps" in {
+      val error =
+        the[IllegalArgumentException] thrownBy {
+          DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+            useCaseBehaviors = Map.empty,
+            billingMode = DynamoDbTable.BillingMode.Provisioned(
+              readCapacityUnits = 100L,
+              writeCapacityUnits = 50L,
+              globalSecondaryIndexReadCapacityUnits = Map("missing-index" -> 25L)
+            )
+          )
+        }
+
+      error.getMessage should include("unknown global secondary indexes")
+      error.getMessage should include("missing-index")
+    }
+
+    "accept provisioned billing mode burst config without requiring on-demand max throughput" in {
+      noException should be thrownBy {
+        DynamoDbTable.Config(
+          tableName = "orders",
+          stateModel = FixedTableState(itemCount = 0L, totalItemBytes = 0L),
+          useCaseBehaviors = Map.empty,
+          billingMode = DynamoDbTable.BillingMode.Provisioned(
+            readCapacityUnits = 100L,
+            writeCapacityUnits = 50L
+          ),
+          burstCapacityModel = Some(
+            DynamoDbTable.BurstCapacityModel(
+              retentionWindowSeconds = 300,
+              initialTableReadBurstRequestUnits = Some(BigDecimal(500)),
+              initialTableWriteBurstRequestUnits = Some(BigDecimal(250))
+            )
+          )
+        )
+      }
     }
 
     "accept optional fixed hot-partition topology config" in {
@@ -289,10 +400,12 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
           globalSecondaryIndexes = Vector(
             DynamoDbTable.GlobalSecondaryIndexDefinition("status-index")
           ),
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
-            tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(100)),
-            tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(200)),
-            globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal(25))
+          billingMode = DynamoDbTable.BillingMode.OnDemand(
+            DynamoDbTable.OnDemandMaxThroughput(
+              tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(100)),
+              tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(200)),
+              globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal(25))
+            )
           ),
           burstCapacityModel = Some(
             DynamoDbTable.BurstCapacityModel(

@@ -505,11 +505,22 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         )
       }
 
+      val perLinkSummary: Vector[TrialSummaryValue] =
+        transferAcc.byTickAndLink
+          .foldLeft(Map.empty[(String, String), Long]) {
+            case (m, ((_, link), bytes)) => m.updated(link, m.getOrElse(link, 0L) + bytes)
+          }
+          .toVector
+          .sortBy { case ((src, dst), _) => s"$src:$dst" }
+          .map { case ((src, dst), bytes) =>
+            TrialSummaryValue(DemoMetric.CrossRegionTransferBytes(src, dst), BigDecimal(bytes))
+          }
+
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
         timeSeries = aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries,
-        summary = overallSummary ++ perRegionSummary
+        summary = overallSummary ++ perRegionSummary ++ perLinkSummary
       )
 
   // ── Merge helpers ───────────────────────────────────────────────────────────
@@ -669,7 +680,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         )
       ),
       itemCollectionSizeLimitBytes = config.itemCollectionSizeLimitBytes,
-      onDemandMaxThroughput = config.onDemandMaxThroughput,
+      billingMode = config.billingMode,
       hotPartitionModel = config.hotPartitionModel,
       burstCapacityModel = config.burstCapacityModel,
       adaptiveCapacityModel = config.adaptiveCapacityModel,

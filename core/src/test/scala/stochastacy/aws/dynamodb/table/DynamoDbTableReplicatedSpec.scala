@@ -391,10 +391,10 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
       val gsiName = "status-index"
       val configWithTightGsi = baseConfig.copy(
         globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
-        onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+        billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
           tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(10)),
           globalSecondaryIndexMaxWriteRequestUnitsPerSecond = Map(gsiName -> BigDecimal("0.5"))
-        ),
+        )),
         useCaseBehaviors = Map(
           "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L),
           "get-hit" -> FixedHitGetItemBehavior(itemBytes = 512L)

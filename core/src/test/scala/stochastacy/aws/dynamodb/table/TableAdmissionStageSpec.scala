@@ -914,6 +914,105 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
       planByTarget(DynamoDbTarget.LocalSecondaryIndex("orders", "created-at-index")).newIndexEntryBytes shouldBe Some(2048L)
       metrics.collect { case metric: AdmissionMetricEvent.RequestAdmitted => metric.indexMaintenanceSummary.size } shouldBe Vector(2)
     }
+
+    "throttle at provisioned RCU ceiling with TableReadProvisionedThroughputExceeded reason" in {
+      val (_, responseFuture, _) =
+        runStage(
+          Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "get-hit")),
+          TableAdmissionStage.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
+            stateModel = FixedTableState(1L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            maxReadRequestUnitsPerSecond = Some(BigDecimal(1)),
+            billingMode = DynamoDbTable.BillingMode.Provisioned(
+              readCapacityUnits = 1L,
+              writeCapacityUnits = 1L
+            )
+          )
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+
+      responses.collect { case r: ThrottledResponse => r.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+      )
+    }
+
+    "throttle at provisioned WCU ceiling with TableWriteProvisionedThroughputExceeded reason" in {
+      val (_, responseFuture, _) =
+        runStage(
+          Source.single(PutItemRequest(eventTime = SimTime.of(1L), usecase = "put-new", itemBytes = 4096L)),
+          TableAdmissionStage.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map("put-new" -> FixedPutItemBehavior(writtenItemBytes = 4096L, previousItemBytes = None)),
+            stateModel = FixedTableState(0L, 0L),
+            maxWriteRequestUnitsPerSecond = Some(BigDecimal(1)),
+            billingMode = DynamoDbTable.BillingMode.Provisioned(
+              readCapacityUnits = 1L,
+              writeCapacityUnits = 1L
+            )
+          )
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+
+      responses.collect { case r: ThrottledResponse => r.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableWriteProvisionedThroughputExceeded
+      )
+    }
+
+    "reject Config with adaptive capacity in provisioned billing mode" in {
+      val error =
+        the[IllegalArgumentException] thrownBy {
+          TableAdmissionStage.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map.empty,
+            stateModel = FixedTableState(0L, 0L),
+            maxReadRequestUnitsPerSecond = Some(BigDecimal(10)),
+            maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(5)),
+            partitionCount = 2,
+            adaptiveMaxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(8)),
+            billingMode = DynamoDbTable.BillingMode.Provisioned(
+              readCapacityUnits = 10L,
+              writeCapacityUnits = 5L
+            )
+          )
+        }
+
+      error.getMessage should include("provisioned billing mode")
+    }
+
+    "hot partition throttle reason is unchanged in provisioned mode (hot-partition check fires before whole-resource)" in {
+      val hotKey = "hot-partition-key"
+      val (_, responseFuture, _) =
+        runStage(
+          Source.single(GetItemRequest(eventTime = SimTime.of(1L), usecase = "hot-read")),
+          TableAdmissionStage.Config(
+            executionTarget = DynamoDbTarget.Table("orders"),
+            admissionTarget = DynamoDbTarget.Table("orders"),
+            useCaseBehaviors = Map("hot-read" -> FixedHitGetItemBehavior(8192L, SingleLogicalPartitionKey(hotKey))),
+            stateModel = FixedTableState(1L, 8192L),
+            readConsistency = ReadConsistency.StronglyConsistent,
+            maxReadRequestUnitsPerSecond = Some(BigDecimal(1000)),
+            partitionCount = 4,
+            maxReadRequestUnitsPerSecondPerPartition = Some(BigDecimal(1)),
+            billingMode = DynamoDbTable.BillingMode.Provisioned(
+              readCapacityUnits = 1000L,
+              writeCapacityUnits = 100L
+            )
+          )
+        )
+
+      val responses = Await.result(responseFuture, 3.seconds)
+
+      responses.collect { case r: ThrottledResponse => r.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadHotPartitionThroughputExceeded
+      )
+    }
   }
 
   private def runStage(

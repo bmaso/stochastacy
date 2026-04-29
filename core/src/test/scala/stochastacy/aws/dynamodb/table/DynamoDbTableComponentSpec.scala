@@ -738,9 +738,9 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
           stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 8192L),
           useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
           readConsistency = ReadConsistency.StronglyConsistent,
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
             tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(1))
-          )
+          ))
         )
 
       val (responseFuture, resourceFuture, metricsFuture) =
@@ -775,10 +775,10 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
           localSecondaryIndexes = Vector(
             DynamoDbTable.LocalSecondaryIndexDefinition("created-at-index", stateModel = FixedTableState(5L, 5120L))
           ),
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
             tableMaxReadRequestUnitsPerSecond = Some(BigDecimal("0.5")),
             globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal("0.25"))
-          )
+          ))
         )
 
       val gsiResponses =
@@ -830,9 +830,9 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
           stateModel = FixedTableState(itemCount = 1L, totalItemBytes = 8192L),
           useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(8192L)),
           readConsistency = ReadConsistency.StronglyConsistent,
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
             tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(1))
-          ),
+          )),
           burstCapacityModel = Some(
             DynamoDbTable.BurstCapacityModel(
               initialTableReadBurstRequestUnits = Some(BigDecimal(2))
@@ -866,9 +866,9 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
           globalSecondaryIndexes = Vector(
             DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = FixedTableState(4L, 4096L))
           ),
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
             globalSecondaryIndexMaxReadRequestUnitsPerSecond = Map("status-index" -> BigDecimal("0.5"))
-          ),
+          )),
           burstCapacityModel = Some(
             DynamoDbTable.BurstCapacityModel(
               initialGlobalSecondaryIndexReadBurstRequestUnits = Map("status-index" -> BigDecimal("0.5"))
@@ -965,9 +965,9 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
             "hot-read" -> FixedHitGetItemBehavior(10240L, SingleLogicalPartitionKey(hotKey))
           ),
           readConsistency = ReadConsistency.StronglyConsistent,
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
             tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(3))
-          ),
+          )),
           hotPartitionModel = Some(
             DynamoDbTable.HotPartitionModel(
               tablePartitionCount = 4,
@@ -1016,9 +1016,9 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
           useCaseBehaviors = Map(
             "put-sampled-once" -> SamplingPutBehavior(invocationCount)
           ),
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
             tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal("1.5"))
-          )
+          ))
         )
 
       val (responseFuture, resourceFuture, metricsFuture) =
@@ -1048,10 +1048,10 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
             "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L, previousItemBytes = None)
           ),
           readConsistency = ReadConsistency.StronglyConsistent,
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
             tableMaxReadRequestUnitsPerSecond = Some(BigDecimal(1)),
             tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(1))
-          )
+          ))
         )
 
       val requests = Source(
@@ -1197,10 +1197,10 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
           useCaseBehaviors = Map(
             "put-new" -> FixedPutItemBehavior(writtenItemBytes = 1024L, previousItemBytes = None, logicalPartitionAccess = SingleLogicalPartitionKey("hot-gsi-write"))
           ),
-          onDemandMaxThroughput = DynamoDbTable.OnDemandMaxThroughput(
+          billingMode = DynamoDbTable.BillingMode.OnDemand(DynamoDbTable.OnDemandMaxThroughput(
             tableMaxWriteRequestUnitsPerSecond = Some(BigDecimal(10)),
             globalSecondaryIndexMaxWriteRequestUnitsPerSecond = Map("status-index" -> BigDecimal("0.5"))
-          ),
+          )),
           globalSecondaryIndexes = Vector(
             DynamoDbTable.GlobalSecondaryIndexDefinition("status-index", stateModel = FixedTableState(0L, 0L))
           )

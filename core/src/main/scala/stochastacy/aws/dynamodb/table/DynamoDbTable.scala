@@ -34,6 +34,30 @@ object DynamoDbTable:
       "globalSecondaryIndexMaxWriteRequestUnitsPerSecond values must be positive"
     )
 
+  sealed trait BillingMode
+
+  object BillingMode:
+    final case class OnDemand(
+      maxThroughput: OnDemandMaxThroughput = OnDemandMaxThroughput()
+    ) extends BillingMode
+
+    final case class Provisioned(
+      readCapacityUnits: Long,
+      writeCapacityUnits: Long,
+      globalSecondaryIndexReadCapacityUnits: Map[String, Long] = Map.empty,
+      globalSecondaryIndexWriteCapacityUnits: Map[String, Long] = Map.empty
+    ) extends BillingMode:
+      require(readCapacityUnits > 0L, "readCapacityUnits must be positive")
+      require(writeCapacityUnits > 0L, "writeCapacityUnits must be positive")
+      require(
+        globalSecondaryIndexReadCapacityUnits.values.forall(_ > 0L),
+        "globalSecondaryIndexReadCapacityUnits values must be positive"
+      )
+      require(
+        globalSecondaryIndexWriteCapacityUnits.values.forall(_ > 0L),
+        "globalSecondaryIndexWriteCapacityUnits values must be positive"
+      )
+
   final case class HotPartitionModel(
                                       tablePartitionCount: Int,
                                       tablePerPartitionMaxReadRequestUnitsPerSecond: Option[BigDecimal] = None,
@@ -201,7 +225,7 @@ object DynamoDbTable:
                            readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent,
                            globalSecondaryIndexes: Vector[GlobalSecondaryIndexDefinition] = Vector.empty,
                            localSecondaryIndexes: Vector[LocalSecondaryIndexDefinition] = Vector.empty,
-                           onDemandMaxThroughput: OnDemandMaxThroughput = OnDemandMaxThroughput(),
+                           billingMode: BillingMode = BillingMode.OnDemand(),
                            hotPartitionModel: Option[HotPartitionModel] = None,
                            burstCapacityModel: Option[BurstCapacityModel] = None,
                            adaptiveCapacityModel: Option[AdaptiveCapacityModel] = None,
@@ -237,13 +261,19 @@ object DynamoDbTable:
       )
 
       val unknownGlobalSecondaryIndexNames =
-        (config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.keySet ++
-          config.onDemandMaxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.keySet) --
-          config.globalSecondaryIndexes.map(_.indexName).toSet
+        config.billingMode match
+          case BillingMode.OnDemand(odmt) =>
+            (odmt.globalSecondaryIndexMaxReadRequestUnitsPerSecond.keySet ++
+              odmt.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.keySet) --
+              config.globalSecondaryIndexes.map(_.indexName).toSet
+          case p: BillingMode.Provisioned =>
+            (p.globalSecondaryIndexReadCapacityUnits.keySet ++
+              p.globalSecondaryIndexWriteCapacityUnits.keySet) --
+              config.globalSecondaryIndexes.map(_.indexName).toSet
 
       require(
         unknownGlobalSecondaryIndexNames.isEmpty,
-        s"On-demand max-throughput config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNames.toVector.sorted.mkString(", ")}"
+        s"Billing-mode config references unknown global secondary indexes for table '${config.tableName}': ${unknownGlobalSecondaryIndexNames.toVector.sorted.mkString(", ")}"
       )
 
       val unknownGlobalSecondaryIndexNamesForHotPartitions =
@@ -274,30 +304,37 @@ object DynamoDbTable:
       )
 
       config.burstCapacityModel.foreach { burst =>
-        if burst.initialTableReadBurstRequestUnits.isDefined then
-          require(
-            config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond.isDefined,
-            s"Burst-capacity config for table '${config.tableName}' defines initialTableReadBurstRequestUnits without tableMaxReadRequestUnitsPerSecond"
-          )
+        config.billingMode match
+          case BillingMode.OnDemand(odmt) =>
+            if burst.initialTableReadBurstRequestUnits.isDefined then
+              require(
+                odmt.tableMaxReadRequestUnitsPerSecond.isDefined,
+                s"Burst-capacity config for table '${config.tableName}' defines initialTableReadBurstRequestUnits without tableMaxReadRequestUnitsPerSecond"
+              )
 
-        if burst.initialTableWriteBurstRequestUnits.isDefined then
-          require(
-            config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond.isDefined,
-            s"Burst-capacity config for table '${config.tableName}' defines initialTableWriteBurstRequestUnits without tableMaxWriteRequestUnitsPerSecond"
-          )
+            if burst.initialTableWriteBurstRequestUnits.isDefined then
+              require(
+                odmt.tableMaxWriteRequestUnitsPerSecond.isDefined,
+                s"Burst-capacity config for table '${config.tableName}' defines initialTableWriteBurstRequestUnits without tableMaxWriteRequestUnitsPerSecond"
+              )
 
-        val missingThroughputForInitialGsiBurst =
-          (burst.initialGlobalSecondaryIndexReadBurstRequestUnits.keySet
-            .filterNot(config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.contains) ++
-            burst.initialGlobalSecondaryIndexWriteBurstRequestUnits.keySet
-              .filterNot(config.onDemandMaxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.contains))
-            .toVector
-            .sorted
+            val missingThroughputForInitialGsiBurst =
+              (burst.initialGlobalSecondaryIndexReadBurstRequestUnits.keySet
+                .filterNot(odmt.globalSecondaryIndexMaxReadRequestUnitsPerSecond.contains) ++
+                burst.initialGlobalSecondaryIndexWriteBurstRequestUnits.keySet
+                  .filterNot(odmt.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.contains))
+                .toVector
+                .sorted
 
-        require(
-          missingThroughputForInitialGsiBurst.isEmpty,
-          s"Burst-capacity config for table '${config.tableName}' defines initial GSI burst for indexes without GSI max throughput: ${missingThroughputForInitialGsiBurst.mkString(", ")}"
-        )
+            require(
+              missingThroughputForInitialGsiBurst.isEmpty,
+              s"Burst-capacity config for table '${config.tableName}' defines initial GSI burst for indexes without GSI max throughput: ${missingThroughputForInitialGsiBurst.mkString(", ")}"
+            )
+
+          case _: BillingMode.Provisioned =>
+            // provisioned mode: every table and GSI always has a throughput ceiling;
+            // no "missing throughput" validation needed for burst initial values
+            ()
       }
 
       val unknownGlobalSecondaryIndexNamesForAdaptive =
@@ -392,6 +429,14 @@ object DynamoDbTable:
           )
         }
       }
+
+      config.billingMode match
+        case _: BillingMode.Provisioned =>
+          require(
+            config.adaptiveCapacityModel.isEmpty,
+            s"Provisioned billing mode for table '${config.tableName}' does not support adaptive capacity"
+          )
+        case _ => ()
 
       config.itemCollectionSizeLimitBytes.foreach { limit =>
         require(
@@ -532,7 +577,11 @@ object DynamoDbTable:
         target = indexRuntime.target,
         stateModel = indexRuntime.stateModel,
         maxWriteRequestUnitsPerSecond =
-          config.onDemandMaxThroughput.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.get(definition.indexName),
+          config.billingMode match
+            case BillingMode.OnDemand(odmt) =>
+              odmt.globalSecondaryIndexMaxWriteRequestUnitsPerSecond.get(definition.indexName)
+            case p: BillingMode.Provisioned =>
+              Some(BigDecimal(p.globalSecondaryIndexWriteCapacityUnits.getOrElse(definition.indexName, p.writeCapacityUnits))),
         maxWriteRequestUnitsPerSecondPerPartition =
           config.hotPartitionModel.flatMap(_.globalSecondaryIndexPerPartitionMaxWriteRequestUnitsPerSecond.get(definition.indexName)),
         adaptiveMaxWriteRequestUnitsPerSecondPerPartition =
@@ -743,6 +792,7 @@ object DynamoDbTable:
                            initialReadBurstRequestUnits: Option[BigDecimal],
                            initialWriteBurstRequestUnits: Option[BigDecimal],
                            dynamicPartitionTopologyConfig: Option[TableAdmissionStage.DynamicPartitionTopologyConfig],
+                           billingMode: BillingMode = BillingMode.OnDemand(),
                            indexMaintenanceTargets: Vector[TableAdmissionStage.IndexMaintenanceTargetConfig] = Vector.empty,
                            indexMaintenanceRuntimes: Vector[InternalIndexRuntime] = Vector.empty,
                            gsiWriteScopes: Vector[TableAdmissionStage.GsiWriteScopeConfig] = Vector.empty,
@@ -778,6 +828,7 @@ object DynamoDbTable:
             initialReadBurstRequestUnits = initialReadBurstRequestUnits,
             initialWriteBurstRequestUnits = initialWriteBurstRequestUnits,
             dynamicPartitionTopologyConfig = dynamicPartitionTopologyConfig,
+            billingMode = billingMode,
             indexMaintenanceTargets = indexMaintenanceTargets,
             gsiWriteScopes = gsiWriteScopes
           )
@@ -850,8 +901,12 @@ object DynamoDbTable:
         admissionTarget = DynamoDbTarget.Table(config.tableName),
         indexProjection = None,
         readConsistency = config.readConsistency,
-        maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
-        maxWriteRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond,
+        maxReadRequestUnitsPerSecond = config.billingMode match
+          case BillingMode.OnDemand(odmt) => odmt.tableMaxReadRequestUnitsPerSecond
+          case p: BillingMode.Provisioned => Some(BigDecimal(p.readCapacityUnits)),
+        maxWriteRequestUnitsPerSecond = config.billingMode match
+          case BillingMode.OnDemand(odmt) => odmt.tableMaxWriteRequestUnitsPerSecond
+          case p: BillingMode.Provisioned => Some(BigDecimal(p.writeCapacityUnits)),
         partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
         maxReadRequestUnitsPerSecondPerPartition =
           config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
@@ -881,6 +936,7 @@ object DynamoDbTable:
               maxPartitionCount = dynamic.maxTablePartitionCount
             )
           },
+        billingMode = config.billingMode,
         indexMaintenanceTargets = indexMaintenanceTargetsFor(config, indexRuntimes),
         indexMaintenanceRuntimes = indexRuntimes,
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
@@ -953,8 +1009,11 @@ object DynamoDbTable:
               admissionTarget = indexRuntime.target,
               indexProjection = Some(indexDefinition.projection),
               readConsistency = ReadConsistency.EventuallyConsistent,
-              maxReadRequestUnitsPerSecond =
-                config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName),
+              maxReadRequestUnitsPerSecond = config.billingMode match
+                case BillingMode.OnDemand(odmt) =>
+                  odmt.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)
+                case p: BillingMode.Provisioned =>
+                  Some(BigDecimal(p.globalSecondaryIndexReadCapacityUnits.getOrElse(indexDefinition.indexName, p.readCapacityUnits))),
               maxWriteRequestUnitsPerSecond = None,
               partitionCount =
                 config.hotPartitionModel.flatMap(_.globalSecondaryIndexPartitionCounts.get(indexDefinition.indexName))
@@ -985,7 +1044,8 @@ object DynamoDbTable:
                     writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
                     maxPartitionCount = dynamic.maxGlobalSecondaryIndexPartitionCounts.get(indexDefinition.indexName)
                   )
-                }
+                },
+              billingMode = config.billingMode
             )
           )
 
@@ -1020,7 +1080,9 @@ object DynamoDbTable:
               admissionTarget = DynamoDbTarget.Table(config.tableName),
               indexProjection = Some(indexDefinition.projection),
               readConsistency = ReadConsistency.EventuallyConsistent,
-              maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
+              maxReadRequestUnitsPerSecond = config.billingMode match
+                case BillingMode.OnDemand(odmt) => odmt.tableMaxReadRequestUnitsPerSecond
+                case p: BillingMode.Provisioned => Some(BigDecimal(p.readCapacityUnits)),
               maxWriteRequestUnitsPerSecond = None,
               partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
               maxReadRequestUnitsPerSecondPerPartition =
@@ -1046,7 +1108,8 @@ object DynamoDbTable:
                     writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
                     maxPartitionCount = dynamic.maxTablePartitionCount
                   )
-                }
+                },
+              billingMode = config.billingMode
             )
           )
 
@@ -1093,8 +1156,12 @@ object DynamoDbTable:
             useCaseBehaviors = config.useCaseBehaviors,
             stateModel = config.stateModel,
             readConsistency = config.readConsistency,
-            maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
-            maxWriteRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxWriteRequestUnitsPerSecond,
+            maxReadRequestUnitsPerSecond = config.billingMode match
+              case BillingMode.OnDemand(odmt) => odmt.tableMaxReadRequestUnitsPerSecond
+              case p: BillingMode.Provisioned => Some(BigDecimal(p.readCapacityUnits)),
+            maxWriteRequestUnitsPerSecond = config.billingMode match
+              case BillingMode.OnDemand(odmt) => odmt.tableMaxWriteRequestUnitsPerSecond
+              case p: BillingMode.Provisioned => Some(BigDecimal(p.writeCapacityUnits)),
             partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
             maxReadRequestUnitsPerSecondPerPartition =
               config.hotPartitionModel.flatMap(_.tablePerPartitionMaxReadRequestUnitsPerSecond),
@@ -1124,6 +1191,7 @@ object DynamoDbTable:
                   maxPartitionCount = dynamic.maxTablePartitionCount
                 )
               },
+            billingMode = config.billingMode,
             indexMaintenanceTargets = indexMaintenanceTargetsFor(config, indexRuntimes),
             gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes)
           )
@@ -1287,8 +1355,11 @@ object DynamoDbTable:
               admissionTarget = indexRuntime.target,
               indexProjection = Some(indexDefinition.projection),
               readConsistency = ReadConsistency.EventuallyConsistent,
-              maxReadRequestUnitsPerSecond =
-                config.onDemandMaxThroughput.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName),
+              maxReadRequestUnitsPerSecond = config.billingMode match
+                case BillingMode.OnDemand(odmt) =>
+                  odmt.globalSecondaryIndexMaxReadRequestUnitsPerSecond.get(indexDefinition.indexName)
+                case p: BillingMode.Provisioned =>
+                  Some(BigDecimal(p.globalSecondaryIndexReadCapacityUnits.getOrElse(indexDefinition.indexName, p.readCapacityUnits))),
               maxWriteRequestUnitsPerSecond = None,
               partitionCount =
                 config.hotPartitionModel.flatMap(_.globalSecondaryIndexPartitionCounts.get(indexDefinition.indexName))
@@ -1319,7 +1390,8 @@ object DynamoDbTable:
                     writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
                     maxPartitionCount = dynamic.maxGlobalSecondaryIndexPartitionCounts.get(indexDefinition.indexName)
                   )
-                }
+                },
+              billingMode = config.billingMode
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> gsiStage.in
@@ -1350,7 +1422,9 @@ object DynamoDbTable:
               admissionTarget = DynamoDbTarget.Table(config.tableName),
               indexProjection = Some(indexDefinition.projection),
               readConsistency = ReadConsistency.EventuallyConsistent,
-              maxReadRequestUnitsPerSecond = config.onDemandMaxThroughput.tableMaxReadRequestUnitsPerSecond,
+              maxReadRequestUnitsPerSecond = config.billingMode match
+                case BillingMode.OnDemand(odmt) => odmt.tableMaxReadRequestUnitsPerSecond
+                case p: BillingMode.Provisioned => Some(BigDecimal(p.readCapacityUnits)),
               maxWriteRequestUnitsPerSecond = None,
               partitionCount = config.hotPartitionModel.map(_.tablePartitionCount).getOrElse(1),
               maxReadRequestUnitsPerSecondPerPartition =
@@ -1376,7 +1450,8 @@ object DynamoDbTable:
                     writeHeatSplitTriggerRequestUnitsPerSecondPerPartition = None,
                     maxPartitionCount = dynamic.maxTablePartitionCount
                   )
-                }
+                },
+              billingMode = config.billingMode
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> lsiStage.in
