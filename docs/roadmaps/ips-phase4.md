@@ -148,18 +148,69 @@ metrics so Grafana can show provisioned capacity alongside consumed capacity. Ut
 Also emit a `BillingMode` time-series point per tick (encoded as 0 = on-demand, 1 = provisioned)
 so a state-timeline panel can show when the switch happened.
 
-### 7. Demo Scenario and Grafana Panels
+### 7. Mixed-Mode Demo: New Bridge Application and Grafana Dashboard
 
-Extend the thermostat fleet demo with a `provisioned-mode` variant (or a new mixed-mode preset)
-that:
+The existing thermostat fleet demo (`ThermostatFleetBridge`) is left **unchanged**. Slice 7
+introduces a brand-new bridge application — a separate `@main` entry point, separate scenario
+config, and a dedicated Grafana dashboard — that tells the mixed billing-mode story using the
+same thermostat fleet workload as its foundation.
 
-- Starts in on-demand for the first third of the simulation
-- Switches to provisioned at approximately the 1/3 tick mark, set at 110% of the observed
-  mean capacity from the on-demand phase (simulating a team right-sizing after observation)
-- Optionally adjusts provisioned capacity at the 2/3 tick mark
+#### New Bridge Application
 
-Grafana additions:
-- **Capacity Utilization** row: provisioned RCU/WCU vs. consumed RCU/WCU as overlaid time series
-- **Billing Mode Timeline**: single-value or state panel showing when mode switches occurred
-- **Cost Composition**: stacked bar distinguishing on-demand cost (consumed) vs. provisioned
-  capacity cost (reserved) over the simulation window
+Create `examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeBridge.scala`
+(name is a suggestion; adjust as appropriate). It should expose the same `generate / stage / view`
+subcommand pattern as `ThermostatFleetBridge`, operating against a new mixed-mode scenario preset.
+
+The scenario preset:
+- Runs the standard thermostat fleet workload (telemetry ingest, customer-support queries,
+  fleet-dashboard scans) in on-demand mode for the first third of the simulation
+- Switches to provisioned at the 1/3 tick mark, setting RCU/WCU to 110% of the observed mean
+  consumed capacity from the on-demand phase (simulating a team right-sizing after observation)
+- Adjusts provisioned capacity upward at the 2/3 tick mark, sized to eliminate throttles
+  (simulating the operator response after seeing throttles in Grafana)
+
+The 110% and scale-up values should be expressed as scenario-config parameters with sensible
+defaults so they can be varied without code changes.
+
+#### New Grafana Dashboard
+
+Create a dedicated dashboard (new JSON file under `examples/grafana/`) for this demo. It should
+include the panels already present in the base thermostat fleet dashboard that remain relevant
+(request throughput, cost trajectory), plus the following new rows:
+
+- **Billing Mode Timeline**: state-timeline or annotations panel showing the on-demand →
+  provisioned transition at the 1/3 mark and the capacity adjustment at the 2/3 mark
+- **Capacity Utilization**: overlaid time series of provisioned RCU/WCU (ceiling) vs. consumed
+  RCU/WCU; under-provisioning is visible as consumed approaching or hitting the ceiling
+- **Throttle Rate**: throttled requests per minute; should show a spike immediately after the
+  mode switch and return to zero after the capacity adjustment (see "The Right-Sizing Trap")
+- **Cost Composition**: stacked view distinguishing on-demand cost (first third, consumption-
+  driven) from provisioned capacity cost (remainder, reservation-driven)
+
+#### The Right-Sizing Trap
+
+Provisioning at 110% of the observed on-demand mean is a reasonable, conservative choice — but
+mean ≠ peak. On-demand mode absorbed telemetry bursts elastically via burst and adaptive
+capacity. Once the table switches to provisioned at 110% of mean, any tick where demand
+exceeds that ceiling throttles instead of absorbing.
+
+The demo makes this visible: throttled request count spikes immediately after the billing mode
+switch at the 1/3 mark, then drops to zero after the capacity adjustment at the 2/3 mark. The
+Grafana story is: the team observed their on-demand costs, switched to provisioned to save money,
+discovered they were throttling under peak telemetry load, and scaled up to eliminate it.
+
+Implementation notes:
+- `AdmissionMetricEvent.RequestThrottled` already fires for every throttled request; count
+  these per 60-tick window for the Throttle Rate panel
+- The `reason` field (`DynamoDbThrottleReason`) can distinguish table-level provisioned
+  throttles from hot-partition throttles if a split view is desired (optional)
+- The throttle spike is structural, not accidental: the stochastic load variance that on-demand
+  handled invisibly becomes visible as soon as a hard ceiling is in place
+
+#### Demo Metric Pipeline Changes
+
+The `DemoMetric` enum, rollup routing, and `JSONL` export pipeline need new cases for the
+metrics introduced in slice 6: `ConsumedReadCapacityUnits`, `ConsumedWriteCapacityUnits`,
+`ProvisionedReadCapacityUnits`, `ProvisionedWriteCapacityUnits`, `BillingModeIndicator`, and
+`ThrottleCount`. These additions feed all panels above and are shared infrastructure — the
+existing `ThermostatFleetBridge` can emit them even if its own dashboard does not display them.
