@@ -40,6 +40,11 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
       QuerySample(evaluatedItemCount = 1, evaluatedBytes = 128L, returnedItemCount = 1, returnedBytes = 64L,
         logicalPartitionAccess = SingleLogicalPartitionKey("k"))
 
+  private case class FixedHeavyGsiQueryBehavior() extends UseCaseSampler[TableState]:
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
+      QuerySample(evaluatedItemCount = 1, evaluatedBytes = 12288L, returnedItemCount = 1, returnedBytes = 64L,
+        logicalPartitionAccess = SingleLogicalPartitionKey("k"))
+
   private case class FixedLsiQueryBehavior() extends UseCaseSampler[TableState]:
     override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
       QuerySample(evaluatedItemCount = 1, evaluatedBytes = 256L, returnedItemCount = 1, returnedBytes = 128L,
@@ -90,6 +95,40 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
           import GraphDSL.Implicits.*
           val table = b.add(DynamoDbTable.componentOfReplicated(config))
           requestSource ~> table.requestIn
+          replicatedSource ~> table.replicatedIn
+          table.responseOut ~> respSink
+          table.consumptionOut ~> consSink
+          table.metricOut ~> metrSink
+          table.outboundReplicationOut ~> outboundSinkPort
+          ClosedShape
+      }
+    ).run()
+
+    (
+      Await.result(rF, 5.seconds),
+      Await.result(cF, 5.seconds),
+      Await.result(mF, 5.seconds),
+      Await.result(oF, 5.seconds)
+    )
+
+  private def runManagedReplicated(
+                                    config: DynamoDbTable.Config,
+                                    requestSource: Source[TimedElement[DynamoDBRequest], ?],
+                                    managementSource: Source[TimedElement[DynamoDbManagementEvent], ?],
+                                    replicatedSource: Source[TimedElement[AdmittedRequestSample], ?]
+                                  ): (Seq[TimedEvent], Seq[TimedEvent], Seq[TimedEvent], Seq[TimedEvent]) =
+    val responseSink = Sink.seq[TimedEvent]
+    val consumptionSink = Sink.seq[TimedEvent]
+    val metricSink = Sink.seq[TimedEvent]
+    val outboundSink = Sink.seq[TimedEvent]
+
+    val (rF, cF, mF, oF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(responseSink, consumptionSink, metricSink, outboundSink)((r, c, m, o) => (r, c, m, o)) {
+        implicit b => (respSink, consSink, metrSink, outboundSinkPort) =>
+          import GraphDSL.Implicits.*
+          val table = b.add(DynamoDbTable.componentOfManagedReplicated(config))
+          requestSource ~> table.requestIn
+          managementSource ~> table.managementIn
           replicatedSource ~> table.replicatedIn
           table.responseOut ~> respSink
           table.consumptionOut ~> consSink
@@ -413,5 +452,82 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
       )
       // Throttled writes produce no consumption events.
       consumption.collect { case _: DynamoDbConsumptionEvent => 1 } shouldBe empty
+    }
+
+    "componentOfManagedReplicated applies SwitchBillingMode to replicated-table admission branches" in {
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(1L, 5120L),
+        useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(5120L)),
+        readConsistency = ReadConsistency.StronglyConsistent
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick50 = TimedControlEvent.Tick(SimTime.of(50L))
+      val switchEvent = DynamoDbManagementEvent.SwitchBillingMode(
+        eventTime = SimTime.of(10L),
+        usecase = "switch",
+        newMode = DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+      )
+      val requestTicks =
+        Vector.tabulate(50)(idx => TimedControlEvent.Tick(SimTime.of(idx.toLong + 1L)): TimedElement[DynamoDBRequest])
+      val replicatedTicks =
+        Vector.tabulate(50)(idx => TimedControlEvent.Tick(SimTime.of(idx.toLong + 1L)): TimedElement[AdmittedRequestSample])
+
+      val (responses, _, metrics, _) = runManagedReplicated(
+        config,
+        requestSource = Source(requestTicks :+ GetItemRequest(SimTime.of(50L), usecase = "get-hit")),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](tick1, switchEvent, tick50)),
+        replicatedSource = Source(replicatedTicks)
+      )
+
+      metrics.collect { case _: AdmissionMetricEvent.BillingModeSwitched => 1 } should not be empty
+      responses.collect { case t: ThrottledResponse => t.reason } shouldBe Vector(
+        DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+      )
+    }
+
+    "componentOfManagedReplicated applies UpdateProvisionedCapacity to GSI admission branches" in {
+      val gsiName = "status-index"
+      val config = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(1L, 512L),
+        useCaseBehaviors = Map("gsi-query" -> FixedHeavyGsiQueryBehavior()),
+        readConsistency = ReadConsistency.StronglyConsistent,
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
+        billingMode = DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 1000L,
+          writeCapacityUnits = 100L,
+          globalSecondaryIndexReadCapacityUnits = Map(gsiName -> 1000L)
+        )
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val tick50 = TimedControlEvent.Tick(SimTime.of(50L))
+      val updateEvent = DynamoDbManagementEvent.UpdateProvisionedCapacity(
+        eventTime = SimTime.of(10L),
+        usecase = "reduce-gsi",
+        newCapacity = DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 1000L,
+          writeCapacityUnits = 100L,
+          globalSecondaryIndexReadCapacityUnits = Map(gsiName -> 1L)
+        )
+      )
+      val requestTicks =
+        Vector.tabulate(50)(idx => TimedControlEvent.Tick(SimTime.of(idx.toLong + 1L)): TimedElement[DynamoDBRequest])
+      val replicatedTicks =
+        Vector.tabulate(50)(idx => TimedControlEvent.Tick(SimTime.of(idx.toLong + 1L)): TimedElement[AdmittedRequestSample])
+
+      val (responses, _, metrics, _) = runManagedReplicated(
+        config,
+        requestSource = Source(requestTicks :+ QueryRequest(SimTime.of(50L), usecase = "gsi-query", target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", gsiName))),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](tick1, updateEvent, tick50)),
+        replicatedSource = Source(replicatedTicks)
+      )
+
+      metrics.collect { case _: AdmissionMetricEvent.ProvisionedCapacityChanged => 1 } should not be empty
+      responses.collect { case t: ThrottledResponse => t.reason } shouldBe Vector(
+        DynamoDbThrottleReason.GlobalSecondaryIndexReadProvisionedThroughputExceeded
+      )
     }
   }

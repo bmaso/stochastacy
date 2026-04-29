@@ -2,6 +2,8 @@ package stochastacy.examples.thermostatfleet
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
+import stochastacy.aws.dynamodb.table.{DynamoDbManagementEvent, DynamoDbTable, ReconfigurationSchedule}
+import stochastacy.sim.SimTime
 
 class ThermostatFleetScenarioConfigSpec extends AnyWordSpec with should.Matchers:
 
@@ -93,6 +95,63 @@ class ThermostatFleetScenarioConfigSpec extends AnyWordSpec with should.Matchers
     "reject non-positive itemCollectionSizeLimitBytes when defined" in {
       the[IllegalArgumentException] thrownBy
         ThermostatFleetScenarioConfig.singleRegionDefault.copy(itemCollectionSizeLimitBytes = Some(0L))
+    }
+
+    "accept a valid reconfiguration schedule" in {
+      val schedule = ReconfigurationSchedule(
+        Vector(
+          DynamoDbManagementEvent.SwitchBillingMode(
+            SimTime.of(10L),
+            "switch",
+            DynamoDbTable.BillingMode.Provisioned(20L, 20L)
+          )
+        )
+      )
+
+      noException shouldBe thrownBy {
+        ThermostatFleetScenarioConfig.singleRegionDefault.copy(
+          simulationTicks = 100L,
+          reconfigurationSchedule = Some(schedule)
+        )
+      }
+    }
+
+    "reject an invalid reconfiguration schedule" in {
+      val invalidSchedule = ReconfigurationSchedule(
+        Vector(
+          DynamoDbManagementEvent.UpdateProvisionedCapacity(
+            SimTime.of(10L),
+            "scale-up",
+            DynamoDbTable.BillingMode.Provisioned(20L, 20L)
+          )
+        )
+      )
+
+      val thrown = the[IllegalArgumentException] thrownBy
+        ThermostatFleetScenarioConfig.singleRegionDefault.copy(
+          simulationTicks = 100L,
+          reconfigurationSchedule = Some(invalidSchedule)
+        )
+      thrown.getMessage should include("provisioned billing mode")
+    }
+
+    "accept the same shared schedule shape for multi-region configs" in {
+      val schedule = ReconfigurationSchedule(
+        Vector(
+          DynamoDbManagementEvent.SwitchBillingMode(
+            SimTime.of(10L),
+            "switch",
+            DynamoDbTable.BillingMode.Provisioned(20L, 20L)
+          )
+        )
+      )
+
+      noException shouldBe thrownBy {
+        ThermostatFleetScenarioConfig.multiRegionDefault.copy(
+          simulationTicks = 100L,
+          reconfigurationSchedule = Some(schedule)
+        )
+      }
     }
   }
 

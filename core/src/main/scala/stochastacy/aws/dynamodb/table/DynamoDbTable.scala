@@ -1381,12 +1381,36 @@ object DynamoDbTable:
           )
         }
 
-    val managementProcessor = Flow[TimedElement[DynamoDbManagementEvent]].statefulMapConcat[TimedElement[DynamoDBResponse]] { () =>
+    val managementProcessor = managementProcessorOf(billingModeRef)
+
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val table = b.add(tableGraph)
+      val mgmt = b.add(managementProcessor)
+      val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+
+      table.out0 ~> responseMerge.in(0)
+      mgmt.out ~> responseMerge.in(1)
+
+      new DynamoDbTableManagedShape(
+        requestIn = table.in,
+        managementIn = mgmt.in,
+        responseOut = responseMerge.out,
+        consumptionOut = table.out1,
+        metricOut = table.out2
+      )
+    }
+
+  private def managementProcessorOf(
+                                     billingModeRef: BillingModeRef
+                                   ): Flow[TimedElement[DynamoDbManagementEvent], TimedElement[DynamoDBResponse], NotUsed] =
+    Flow[TimedElement[DynamoDbManagementEvent]].statefulMapConcat[TimedElement[DynamoDBResponse]] { () =>
       {
         case _: TimedControlEvent => Nil
         case event: DynamoDbManagementEvent.SwitchBillingMode =>
           billingModeRef.lastSwitchTick match
-            case Some(lastTick) if event.eventTime.ticks - lastTick < 86400L =>
+            case Some(lastTick) if event.eventTime.ticks - lastTick < ReconfigurationSchedule.BillingModeSwitchCooldownTicks =>
               List(ReconfigurationRejectedResponse(
                 event.eventTime,
                 event.usecase,
@@ -1410,25 +1434,6 @@ object DynamoDbTable:
       }
     }
 
-    GraphDSL.create() { implicit b =>
-      import GraphDSL.Implicits.*
-
-      val table = b.add(tableGraph)
-      val mgmt = b.add(managementProcessor)
-      val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
-
-      table.out0 ~> responseMerge.in(0)
-      mgmt.out ~> responseMerge.in(1)
-
-      new DynamoDbTableManagedShape(
-        requestIn = table.in,
-        managementIn = mgmt.in,
-        responseOut = responseMerge.out,
-        consumptionOut = table.out1,
-        metricOut = table.out2
-      )
-    }
-
   /**
    * Replication-aware factory variant. Produces a graph with the same response/consumption/metric
    * outputs as `componentOf`, plus an inbound port for replicated writes (which bypass admission)
@@ -1438,7 +1443,10 @@ object DynamoDbTable:
    * as in `componentOf`. Index maintenance (write amplification, rWCU accounting) runs from
    * `storage.out3`, so replicated writes also trigger index maintenance at the destination region.
    */
-  def componentOfReplicated(config: Config): Graph[DynamoDbTableReplicatedShape, NotUsed] =
+  private def componentOfReplicatedInternal(
+                                            config: Config,
+                                            billingModeRef: Option[BillingModeRef] = None
+                                          ): Graph[DynamoDbTableReplicatedShape, NotUsed] =
     val indexRuntimes = indexRuntimesFor(config)
     val hasIndexes = config.globalSecondaryIndexes.nonEmpty || config.localSecondaryIndexes.nonEmpty
     val numIndexBranches = config.globalSecondaryIndexes.size + config.localSecondaryIndexes.size
@@ -1494,7 +1502,8 @@ object DynamoDbTable:
             billingMode = config.billingMode,
             indexMaintenanceTargets = indexMaintenanceTargetsFor(config, indexRuntimes),
             gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes)
-          )
+          ),
+          billingModeRef = billingModeRef
         )
       )
 
@@ -1692,6 +1701,8 @@ object DynamoDbTable:
                   )
                 },
               billingMode = config.billingMode
+              ,
+              billingModeRef = billingModeRef
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> gsiStage.in
@@ -1752,6 +1763,8 @@ object DynamoDbTable:
                   )
                 },
               billingMode = config.billingMode
+              ,
+              billingModeRef = billingModeRef
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> lsiStage.in
@@ -1769,4 +1782,31 @@ object DynamoDbTable:
           metricOut = metricMerge.out,
           outboundReplicationOut = outboundWriteFilter.out
         )
+    }
+
+  def componentOfReplicated(config: Config): Graph[DynamoDbTableReplicatedShape, NotUsed] =
+    componentOfReplicatedInternal(config)
+
+  def componentOfManagedReplicated(config: Config): Graph[DynamoDbTableManagedReplicatedShape, NotUsed] =
+    val billingModeRef = new BillingModeRef(config.billingMode)
+
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val replicatedTable = b.add(componentOfReplicatedInternal(config, Some(billingModeRef)))
+      val managementProcessor = b.add(managementProcessorOf(billingModeRef))
+      val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+
+      replicatedTable.responseOut ~> responseMerge.in(0)
+      managementProcessor.out ~> responseMerge.in(1)
+
+      new DynamoDbTableManagedReplicatedShape(
+        requestIn = replicatedTable.requestIn,
+        managementIn = managementProcessor.in,
+        replicatedIn = replicatedTable.replicatedIn,
+        responseOut = responseMerge.out,
+        consumptionOut = replicatedTable.consumptionOut,
+        metricOut = replicatedTable.metricOut,
+        outboundReplicationOut = replicatedTable.outboundReplicationOut
+      )
     }

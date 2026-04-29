@@ -137,3 +137,94 @@ object DynamoDbGlobalTable:
         transferEventsOutlet = transferFilter.out
       )
     }
+
+  def componentOfManaged(config: Config): Graph[DynamoDbGlobalTableManagedShape, NotUsed] =
+    val regions: Vector[String] = config.regions.keys.toVector.sorted
+
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val regionGraphs: Map[String, DynamoDbTableManagedReplicatedShape] =
+        regions.map(r => r -> b.add(DynamoDbTable.componentOfManagedReplicated(config.regions(r)))).toMap
+
+      val managementBroadcast = b.add(Broadcast[TimedElement[DynamoDbManagementEvent]](regions.size))
+
+      val tagFlows: Map[String, org.apache.pekko.stream.FlowShape[
+        TimedElement[AdmittedRequestSample],
+        TimedElement[ReplicationCoordinator.OriginTaggedReplicationEvent]
+      ]] =
+        regions.map { r =>
+          r -> b.add(
+            Flow[TimedElement[AdmittedRequestSample]].map[TimedElement[ReplicationCoordinator.OriginTaggedReplicationEvent]] {
+              case t: TimedControlEvent => t
+              case sample: AdmittedRequestSample => ReplicationCoordinator.OriginTaggedReplicationEvent(r, sample)
+            }
+          )
+        }.toMap
+
+      regions.zipWithIndex.foreach { case (r, idx) =>
+        regionGraphs(r).outboundReplicationOut ~> tagFlows(r).in
+        managementBroadcast.out(idx) ~> regionGraphs(r).managementIn
+      }
+
+      val coordinatorInputOutlet: Outlet[TimedEvent] =
+        if regions.size == 1 then
+          val identity = b.add(Flow[TimedElement[ReplicationCoordinator.OriginTaggedReplicationEvent]].map[TimedEvent](e => e))
+          tagFlows(regions.head).out ~> identity.in
+          identity.out
+        else
+          val taggedOutlets: Vector[Outlet[TimedEvent]] = regions.map { r =>
+            val cast = b.add(Flow[TimedElement[ReplicationCoordinator.OriginTaggedReplicationEvent]].map[TimedEvent](e => e))
+            tagFlows(r).out ~> cast.in
+            cast.out
+          }
+          var accumulator: Outlet[TimedEvent] = taggedOutlets.head
+          for next <- taggedOutlets.tail do
+            val merge = b.add(MergeTimedEventGraph.graphOf(bufferSize = 16))
+            accumulator ~> merge.in0
+            next ~> merge.in1
+            accumulator = merge.out
+          accumulator
+
+      val coerceToTagged = b.add(
+        Flow[TimedEvent].collect[TimedElement[ReplicationCoordinator.OriginTaggedReplicationEvent]] {
+          case e: ReplicationCoordinator.OriginTaggedReplicationEvent => e
+          case t: TimedControlEvent => t
+        }
+      )
+      coordinatorInputOutlet ~> coerceToTagged.in
+
+      val coordinator = b.add(ReplicationCoordinator.flowOf(regions, config.replicationModel))
+      coerceToTagged.out ~> coordinator.in
+
+      val coordinatorBroadcast = b.add(Broadcast[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]](regions.size + 1))
+      coordinator.out ~> coordinatorBroadcast.in
+
+      regions.zipWithIndex.foreach { case (r, idx) =>
+        val perRegionFilter = b.add(
+          Flow[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]].collect[TimedElement[AdmittedRequestSample]] {
+            case t: TimedControlEvent => t
+            case w: ReplicationCoordinator.ReplicatedWriteForRegion if w.destinationRegion == r => w.sample
+          }
+        )
+        coordinatorBroadcast.out(idx) ~> perRegionFilter.in
+        perRegionFilter.out ~> regionGraphs(r).replicatedIn
+      }
+
+      val transferFilter = b.add(
+        Flow[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]].collect[TimedElement[CrossRegionTransferEvent]] {
+          case t: TimedControlEvent => t
+          case ReplicationCoordinator.TransferEventOutput(e) => e
+        }
+      )
+      coordinatorBroadcast.out(regions.size) ~> transferFilter.in
+
+      new DynamoDbGlobalTableManagedShape(
+        regionRequestInlets = regions.map(r => r -> regionGraphs(r).requestIn).toMap,
+        managementIn = managementBroadcast.in,
+        regionResponseOutlets = regions.map(r => r -> regionGraphs(r).responseOut).toMap,
+        regionConsumptionOutlets = regions.map(r => r -> regionGraphs(r).consumptionOut).toMap,
+        regionMetricOutlets = regions.map(r => r -> regionGraphs(r).metricOut).toMap,
+        transferEventsOutlet = transferFilter.out
+      )
+    }

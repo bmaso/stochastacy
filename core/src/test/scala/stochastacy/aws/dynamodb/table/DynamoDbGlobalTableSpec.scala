@@ -30,6 +30,20 @@ class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
     override def putItem(request: PutItemRequest, ctx: SamplerContext[TableState]): PutItemSample =
       FixedPutItemSample(writtenItemBytes)
 
+  private case class FixedHitGetItemBehavior(itemBytes: Long) extends UseCaseSampler[TableState]:
+    override def getItem(request: GetItemRequest, ctx: SamplerContext[TableState]): GetItemSample =
+      GetItemSample(itemBytes = Some(itemBytes))
+
+  private case class FixedGsiQueryBehavior() extends UseCaseSampler[TableState]:
+    override def query(request: QueryRequest, ctx: SamplerContext[TableState]): QuerySample =
+      QuerySample(
+        evaluatedItemCount = 1,
+        evaluatedBytes = 12288L,
+        returnedItemCount = 1,
+        returnedBytes = 64L,
+        logicalPartitionAccess = SingleLogicalPartitionKey("k")
+      )
+
   /** Constant-zero distribution: every sample returns 0 (immediate replication). */
   private def zeroLagDistribution: ContinuousDistribution =
     new ContinuousDistribution:
@@ -61,6 +75,57 @@ class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
     DynamoDbGlobalTable.Config(
       regions = regions.map(r => r -> regionConfig()).toMap,
       replicationModel = replicationModel
+    )
+
+  private def runManagedGlobal(
+                                config: DynamoDbGlobalTable.Config,
+                                requestSources: Map[String, Source[TimedElement[DynamoDBRequest], ?]],
+                                managementSource: Source[TimedElement[DynamoDbManagementEvent], ?]
+                              ): (Map[String, Seq[TimedEvent]], Map[String, Seq[TimedEvent]], Seq[TimedEvent]) =
+    val regions = config.regions.keys.toVector.sorted
+    require(regions.size == 2, s"runManagedGlobal currently supports exactly 2 regions, got ${regions.size}")
+
+    val responseSinkA = Sink.seq[TimedEvent]
+    val responseSinkB = Sink.seq[TimedEvent]
+    val metricSinkA = Sink.seq[TimedEvent]
+    val metricSinkB = Sink.seq[TimedEvent]
+    val transferSink = Sink.seq[TimedEvent]
+
+    val regionA = regions(0)
+    val regionB = regions(1)
+
+    val (responseAF, responseBF, metricAF, metricBF, transferF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(responseSinkA, responseSinkB, metricSinkA, metricSinkB, transferSink)(
+        (ra, rb, ma, mb, t) => (ra, rb, ma, mb, t)
+      ) { implicit builder => (respAS, respBS, metAS, metBS, transferS) =>
+        import GraphDSL.Implicits.*
+        val table = builder.add(DynamoDbGlobalTable.componentOfManaged(config))
+
+        requestSources.getOrElse(regionA, Source.empty[TimedElement[DynamoDBRequest]]) ~> table.regionRequestInlets(regionA)
+        requestSources.getOrElse(regionB, Source.empty[TimedElement[DynamoDBRequest]]) ~> table.regionRequestInlets(regionB)
+        managementSource ~> table.managementIn
+
+        table.regionResponseOutlets(regionA) ~> respAS
+        table.regionResponseOutlets(regionB) ~> respBS
+        table.regionConsumptionOutlets(regionA) ~> builder.add(Sink.ignore)
+        table.regionConsumptionOutlets(regionB) ~> builder.add(Sink.ignore)
+        table.regionMetricOutlets(regionA) ~> metAS
+        table.regionMetricOutlets(regionB) ~> metBS
+        table.transferEventsOutlet ~> transferS
+        ClosedShape
+      }
+    ).run()
+
+    (
+      Map(
+        regionA -> Await.result(responseAF, 5.seconds),
+        regionB -> Await.result(responseBF, 5.seconds)
+      ),
+      Map(
+        regionA -> Await.result(metricAF, 5.seconds),
+        regionB -> Await.result(metricBF, 5.seconds)
+      ),
+      Await.result(transferF, 5.seconds)
     )
 
   "DynamoDbGlobalTable" should {
@@ -388,6 +453,113 @@ class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
           regions = Map.empty,
           replicationModel = model
         )
+      }
+    }
+
+    "componentOfManaged broadcasts a billing-mode switch to all replicas" in {
+      val config = DynamoDbGlobalTable.Config(
+        regions = Map(
+          "us-east-1" -> DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(1L, 5120L),
+            useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(5120L)),
+            readConsistency = ReadConsistency.StronglyConsistent
+          ),
+          "eu-west-1" -> DynamoDbTable.Config(
+            tableName = "orders",
+            stateModel = FixedTableState(1L, 5120L),
+            useCaseBehaviors = Map("get-hit" -> FixedHitGetItemBehavior(5120L)),
+            readConsistency = ReadConsistency.StronglyConsistent
+          )
+        ),
+        replicationModel = ReplicationModel(
+          defaultLagDistribution = Some(zeroLagDistribution),
+          rng = RandomSource.XO_RO_SHI_RO_128_PP.create(111L)
+        )
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val switchEvent = DynamoDbManagementEvent.SwitchBillingMode(
+        SimTime.of(10L),
+        "switch",
+        DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+      )
+      val requestStream =
+        Vector.tabulate(50)(idx => TimedControlEvent.Tick(SimTime.of(idx.toLong + 1L)): TimedElement[DynamoDBRequest]) :+
+          GetItemRequest(SimTime.of(50L), "get-hit")
+
+      val (responsesByRegion, metricsByRegion, _) = runManagedGlobal(
+        config,
+        requestSources = Map(
+          "us-east-1" -> Source(requestStream),
+          "eu-west-1" -> Source(requestStream)
+        ),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](tick1, switchEvent, TimedControlEvent.Tick(SimTime.of(50L))))
+      )
+
+      responsesByRegion.values.foreach { responses =>
+        responses.collect { case t: ThrottledResponse => t.reason } shouldBe Vector(
+          DynamoDbThrottleReason.TableReadProvisionedThroughputExceeded
+        )
+      }
+      metricsByRegion.values.foreach { metrics =>
+        metrics.collect { case _: AdmissionMetricEvent.BillingModeSwitched => 1 } should not be empty
+      }
+    }
+
+    "componentOfManaged broadcasts provisioned-capacity changes to all replicas" in {
+      val gsiName = "status-index"
+      val provisioned = DynamoDbTable.BillingMode.Provisioned(
+        readCapacityUnits = 1000L,
+        writeCapacityUnits = 100L,
+        globalSecondaryIndexReadCapacityUnits = Map(gsiName -> 1000L)
+      )
+      val regionConfigWithGsi = DynamoDbTable.Config(
+        tableName = "orders",
+        stateModel = FixedTableState(1L, 512L),
+        useCaseBehaviors = Map("gsi-query" -> FixedGsiQueryBehavior()),
+        readConsistency = ReadConsistency.StronglyConsistent,
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
+        billingMode = provisioned
+      )
+      val config = DynamoDbGlobalTable.Config(
+        regions = Map("us-east-1" -> regionConfigWithGsi, "eu-west-1" -> regionConfigWithGsi),
+        replicationModel = ReplicationModel(
+          defaultLagDistribution = Some(zeroLagDistribution),
+          rng = RandomSource.XO_RO_SHI_RO_128_PP.create(112L)
+        )
+      )
+
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+      val updateEvent = DynamoDbManagementEvent.UpdateProvisionedCapacity(
+        SimTime.of(10L),
+        "reduce-gsi",
+        DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 1000L,
+          writeCapacityUnits = 100L,
+          globalSecondaryIndexReadCapacityUnits = Map(gsiName -> 1L)
+        )
+      )
+      val requestStream =
+        Vector.tabulate(50)(idx => TimedControlEvent.Tick(SimTime.of(idx.toLong + 1L)): TimedElement[DynamoDBRequest]) :+
+          QueryRequest(SimTime.of(50L), "gsi-query", target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", gsiName))
+
+      val (responsesByRegion, metricsByRegion, _) = runManagedGlobal(
+        config,
+        requestSources = Map(
+          "us-east-1" -> Source(requestStream),
+          "eu-west-1" -> Source(requestStream)
+        ),
+        managementSource = Source(Vector[TimedElement[DynamoDbManagementEvent]](tick1, updateEvent, TimedControlEvent.Tick(SimTime.of(50L))))
+      )
+
+      responsesByRegion.values.foreach { responses =>
+        responses.collect { case t: ThrottledResponse => t.reason } shouldBe Vector(
+          DynamoDbThrottleReason.GlobalSecondaryIndexReadProvisionedThroughputExceeded
+        )
+      }
+      metricsByRegion.values.foreach { metrics =>
+        metrics.collect { case _: AdmissionMetricEvent.ProvisionedCapacityChanged => 1 } should not be empty
       }
     }
   }

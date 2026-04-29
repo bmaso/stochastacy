@@ -280,6 +280,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       ThermostatFleetScenarioConfig.FleetAlertsGsiName,
       ThermostatFleetScenarioConfig.DeviceStatusGsiName
     )
+    val schedule = config.reconfigurationSchedule.filter(_.events.nonEmpty)
 
     val foldSink = Sink.fold[PerRegionAcc, TimedElement[DynamoDbConsumptionEvent]](PerRegionAcc()) {
       (acc, evt) => updatePerRegionAcc(acc, evt, gsiNames, config.pricingRates, regionName = None)
@@ -288,11 +289,20 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     val accF = RunnableGraph.fromGraph(
       GraphDSL.createGraph(foldSink) { implicit b => sink =>
         import GraphDSL.Implicits.*
-        val table = b.add(DynamoDbTable.componentOf(buildTableConfig(config, tableState, behaviors)))
-        Source.fromIterator(() => requestIterator) ~> table.in
-        table.out0 ~> b.add(Sink.ignore)
-        table.out1 ~> sink
-        table.out2 ~> b.add(Sink.ignore)
+        schedule match
+          case Some(reconfigurationSchedule) =>
+            val table = b.add(DynamoDbTable.componentOfManaged(buildTableConfig(config, tableState, behaviors)))
+            Source.fromIterator(() => requestIterator) ~> table.requestIn
+            Source.fromIterator(() => managementEventsFor(config.simulationTicks, reconfigurationSchedule)) ~> table.managementIn
+            table.responseOut ~> b.add(Sink.ignore)
+            table.consumptionOut ~> sink
+            table.metricOut ~> b.add(Sink.ignore)
+          case None =>
+            val table = b.add(DynamoDbTable.componentOf(buildTableConfig(config, tableState, behaviors)))
+            Source.fromIterator(() => requestIterator) ~> table.in
+            table.out0 ~> b.add(Sink.ignore)
+            table.out1 ~> sink
+            table.out2 ~> b.add(Sink.ignore)
         ClosedShape
       }
     ).run()
@@ -371,6 +381,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       regions = perRegionTableConfig,
       replicationModel = replicationModel
     )
+    val schedule = config.reconfigurationSchedule.filter(_.events.nonEmpty)
 
     val gsiNames = Vector(
       ThermostatFleetScenarioConfig.CustomerDevicesGsiName,
@@ -410,21 +421,41 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       GraphDSL.createGraph(taggedConsSink, transferSink)((mc, tf) => (mc, tf)) {
         implicit b => (taggedConsSinkShape, transfersSinkShape) =>
           import GraphDSL.Implicits.*
-          val globalTable = b.add(DynamoDbGlobalTable.componentOf(globalConfig))
-          val consumptionMerge = b.add(Merge[TaggedConsEvent](sortedRegions.size))
+          schedule match
+            case Some(reconfigurationSchedule) =>
+              val globalTable = b.add(DynamoDbGlobalTable.componentOfManaged(globalConfig))
+              val consumptionMerge = b.add(Merge[TaggedConsEvent](sortedRegions.size))
 
-          sortedRegions.zipWithIndex.foreach { case (region, idx) =>
-            val r = region.regionName
-            Source.fromIterator(() => requestStreamIterators(r)) ~> globalTable.regionRequestInlets(r)
-            globalTable.regionResponseOutlets(r) ~> b.add(Sink.ignore)
-            globalTable.regionMetricOutlets(r) ~> b.add(Sink.ignore)
-            val tagger = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (r, e)))
-            globalTable.regionConsumptionOutlets(r) ~> tagger.in
-            tagger.out ~> consumptionMerge.in(idx)
-          }
+              sortedRegions.zipWithIndex.foreach { case (region, idx) =>
+                val r = region.regionName
+                Source.fromIterator(() => requestStreamIterators(r)) ~> globalTable.regionRequestInlets(r)
+                globalTable.regionResponseOutlets(r) ~> b.add(Sink.ignore)
+                globalTable.regionMetricOutlets(r) ~> b.add(Sink.ignore)
+                val tagger = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (r, e)))
+                globalTable.regionConsumptionOutlets(r) ~> tagger.in
+                tagger.out ~> consumptionMerge.in(idx)
+              }
 
-          consumptionMerge.out ~> taggedConsSinkShape
-          globalTable.transferEventsOutlet ~> transfersSinkShape
+              Source.fromIterator(() => managementEventsFor(config.simulationTicks, reconfigurationSchedule)) ~> globalTable.managementIn
+              consumptionMerge.out ~> taggedConsSinkShape
+              globalTable.transferEventsOutlet ~> transfersSinkShape
+
+            case None =>
+              val globalTable = b.add(DynamoDbGlobalTable.componentOf(globalConfig))
+              val consumptionMerge = b.add(Merge[TaggedConsEvent](sortedRegions.size))
+
+              sortedRegions.zipWithIndex.foreach { case (region, idx) =>
+                val r = region.regionName
+                Source.fromIterator(() => requestStreamIterators(r)) ~> globalTable.regionRequestInlets(r)
+                globalTable.regionResponseOutlets(r) ~> b.add(Sink.ignore)
+                globalTable.regionMetricOutlets(r) ~> b.add(Sink.ignore)
+                val tagger = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (r, e)))
+                globalTable.regionConsumptionOutlets(r) ~> tagger.in
+                tagger.out ~> consumptionMerge.in(idx)
+              }
+
+              consumptionMerge.out ~> taggedConsSinkShape
+              globalTable.transferEventsOutlet ~> transfersSinkShape
           ClosedShape
       }
     ).run()
@@ -558,6 +589,16 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         replicatedWriteCapacityUnits = aT.replicatedWriteCapacityUnits + bT.replicatedWriteCapacityUnits
       )
     }.toMap
+
+  private[thermostatfleet] def managementEventsFor(
+                                                    simulationTicks: Long,
+                                                    schedule: ReconfigurationSchedule
+                                                  ): Iterator[TimedElement[DynamoDbManagementEvent]] =
+    val eventsByTick = schedule.events.map(event => event.eventTime.ticks -> event).toMap
+    (1L to simulationTicks).iterator.flatMap { tick =>
+      Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDbManagementEvent]) ++
+        eventsByTick.get(tick).iterator
+    } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(simulationTicks + 1L)): TimedElement[DynamoDbManagementEvent])
 
   // ── Request generation ──────────────────────────────────────────────────────
 

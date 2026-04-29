@@ -1,10 +1,10 @@
 # IPS Hand-Off
 
-Last updated: 2026-04-28 (phase 4 slices 1–4 complete: provisioned mode + management events)
+Last updated: 2026-04-28 (phase 4 slices 1–5 complete: provisioned mode + management events + schedule DSL)
 
 ## Current Position
 
-The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phase 3 (on-demand fidelity) is complete. **Phase 4** (provisioned capacity mode and dynamic reconfiguration) is in progress — **slices 1–4 are shipped**, slices 5–7 remain.
+The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phase 3 (on-demand fidelity) is complete. **Phase 4** (provisioned capacity mode and dynamic reconfiguration) is in progress — **slices 1–5 are shipped**, slices 6–7 remain.
 
 The simulator supports:
 
@@ -28,7 +28,7 @@ The simulator supports:
 - Monte Carlo multi-trial execution
 - JSONL export (raw + 60s/300s windowed), Postgres staging, provisioned Grafana dashboards
 
-### Phase 4 Status (slices 1–4 complete)
+### Phase 4 Status (slices 1–5 complete)
 
 | Slice | Status | Summary |
 |-------|--------|---------|
@@ -36,7 +36,7 @@ The simulator supports:
 | 2. Provisioned Capacity Pricing | **Done** | Capacity-driven pricing path in `DynamoDbPricing` |
 | 3. Management Events + Billing Mode Switch | **Done** | `DynamoDbManagementEvent.SwitchBillingMode`, `componentOfManaged`, `BillingModeRef`, 24h cooldown, `BillingModeSwitched` metric |
 | 4. Provisioned Capacity Change Events | **Done** | `UpdateProvisionedCapacity`, `ProvisionedCapacityChanged` metric, no-cooldown capacity updates |
-| 5. Reconfiguration Schedule DSL | Not started | Ordered `(tick, event)` pairs injected by the trial runner |
+| 5. Reconfiguration Schedule DSL | **Done** | `ReconfigurationSchedule`, thermostat scenario-config support, managed replicated/global table paths, schedule-driven management injection |
 | 6. Utilization Metrics | Not started | Per-tick provisioned RCU/WCU time-series, billing mode timeline |
 | 7. Demo Scenario + Grafana Panels | Not started | Mixed-mode thermostat fleet preset, capacity utilization panels |
 
@@ -119,11 +119,7 @@ Total: 233 core tests + 89 examples tests = 322 tests all passing.
 
 ## Recommended Next Work
 
-### Immediate: Phase 4 Slice 5 — Reconfiguration Schedule DSL
-
-Add a `ReconfigurationSchedule` type — an ordered sequence of `(tick, DynamoDbManagementEvent)` pairs. The single-trial runner consumes the schedule and injects events at the correct ticks, interleaved with normal request traffic. Construction-time validation: mode switches must be separated by ≥ 86,400 ticks; `UpdateProvisionedCapacity` must target a table that will be in provisioned mode at that tick.
-
-### Then: Slice 6 — Utilization Metrics
+### Immediate: Phase 4 Slice 6 — Utilization Metrics
 
 Per-tick `ProvisionedReadCapacityUnits` and `ProvisionedWriteCapacityUnits` time-series metrics for Grafana. A `BillingMode` time-series point per tick (0 = on-demand, 1 = provisioned) for state-timeline panels.
 

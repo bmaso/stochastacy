@@ -43,6 +43,7 @@ final case class ThermostatFleetScenarioConfig(
   burstCapacityModel: Option[DynamoDbTable.BurstCapacityModel] = None,
   adaptiveCapacityModel: Option[DynamoDbTable.AdaptiveCapacityModel] = None,
   dynamicPartitionTopologyModel: Option[DynamoDbTable.DynamicPartitionTopologyModel] = None,
+  reconfigurationSchedule: Option[ReconfigurationSchedule] = None,
   replicationModel: Option[ReplicationModel] = None,
   transferPricingRates: CrossRegionTransferPricingRates = CrossRegionTransferPricingRates(),
   pricingRates: DynamoDbPricingRates = DynamoDbPricingRates.phase1Default
@@ -78,6 +79,11 @@ final case class ThermostatFleetScenarioConfig(
   require(fleetAlertsGsiProjectedNonKeyBytes >= 0L, "fleetAlertsGsiProjectedNonKeyBytes must be non-negative")
   itemCollectionSizeLimitBytes.foreach { limit =>
     require(limit >= 1L, "itemCollectionSizeLimitBytes must be positive when defined")
+  }
+  reconfigurationSchedule.foreach { schedule =>
+    schedule.validateAgainst(billingMode, simulationTicks) match
+      case Left(message) => throw new IllegalArgumentException(message)
+      case Right(_) => ()
   }
 
   def isMultiRegion: Boolean = regions.size > 1

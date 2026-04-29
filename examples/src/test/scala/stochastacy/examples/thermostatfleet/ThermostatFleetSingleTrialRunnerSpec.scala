@@ -5,7 +5,10 @@ import org.apache.pekko.stream.Materializer
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
+import stochastacy.aws.dynamodb.table.{DynamoDbManagementEvent, DynamoDbTable, ReconfigurationSchedule}
 import stochastacy.demo.{DemoMetric, TrialRunConfig}
+import stochastacy.sim.TimedControlEvent
+import stochastacy.sim.SimTime
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext}
@@ -222,5 +225,66 @@ class ThermostatFleetSingleTrialRunnerSpec extends AnyWordSpec with should.Match
       import stochastacy.aws.dynamodb.PutItemRequest
       val puts = requests.collect { case r: PutItemRequest => r }
       puts should not be empty
+    }
+
+    "generate a management stream with ticks and scheduled events" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val schedule = ReconfigurationSchedule(
+        Vector(
+          DynamoDbManagementEvent.SwitchBillingMode(
+            SimTime.of(2L),
+            "switch",
+            DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+          )
+        )
+      )
+
+      val events = runner.managementEventsFor(5L, schedule).toVector
+      events.collect { case tick: TimedControlEvent.Tick => tick }.size shouldBe 6
+      events.collect { case event: DynamoDbManagementEvent.SwitchBillingMode => event.usecase } shouldBe Vector("switch")
+    }
+
+    "single-region scheduled trials should change outcome after the scheduled tick" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val schedule = ReconfigurationSchedule(
+        Vector(
+          DynamoDbManagementEvent.SwitchBillingMode(
+            SimTime.of(2L),
+            "switch",
+            DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+          )
+        )
+      )
+      val scheduledConfig = smallConfig.copy(reconfigurationSchedule = Some(schedule))
+
+      val baseline = Await.result(runner.runTrial(smallConfig, TrialRunConfig(trialId = 0, seed = 24680L)), 30.seconds)
+      val scheduled = Await.result(runner.runTrial(scheduledConfig, TrialRunConfig(trialId = 0, seed = 24680L)), 30.seconds)
+
+      val baselineMap = baseline.summary.map(s => s.metric -> s.value).toMap
+      val scheduledMap = scheduled.summary.map(s => s.metric -> s.value).toMap
+
+      scheduledMap(DemoMetric.FinalStorageBytes) should be < baselineMap(DemoMetric.FinalStorageBytes)
+    }
+
+    "multi-region scheduled trials should change outcome after the scheduled tick" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val schedule = ReconfigurationSchedule(
+        Vector(
+          DynamoDbManagementEvent.SwitchBillingMode(
+            SimTime.of(2L),
+            "switch",
+            DynamoDbTable.BillingMode.Provisioned(1L, 1L)
+          )
+        )
+      )
+      val scheduledConfig = smallMultiRegionConfig.copy(reconfigurationSchedule = Some(schedule))
+
+      val baseline = Await.result(runner.runTrial(smallMultiRegionConfig, TrialRunConfig(trialId = 0, seed = 13579L)), 30.seconds)
+      val scheduled = Await.result(runner.runTrial(scheduledConfig, TrialRunConfig(trialId = 0, seed = 13579L)), 30.seconds)
+
+      val baselineMap = baseline.summary.map(s => s.metric -> s.value).toMap
+      val scheduledMap = scheduled.summary.map(s => s.metric -> s.value).toMap
+
+      scheduledMap(DemoMetric.FinalStorageBytes) should be < baselineMap(DemoMetric.FinalStorageBytes)
     }
   }
