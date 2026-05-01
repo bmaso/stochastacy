@@ -891,10 +891,16 @@ object TableAdmissionStage:
                                       currentAdaptiveMaxWritePerPartition: Option[BigDecimal]
                                     ): AdmissionDecision =
       val indexMaintenanceSummary = shaped.indexMaintenancePlan.map(_.summary)
+      // LSI maintenance WCU is charged from the base table's capacity pool (not a separate pool).
+      // Add LSI plan demands to the base-table throughput demand before the admission check.
+      val gsiTargets: Set[DynamoDbTarget] = config.gsiWriteScopes.map(_.target).toSet
+      val lsiTotalDemand = shaped.indexMaintenancePlan
+        .filterNot(plan => gsiTargets.contains(plan.target))
+        .foldLeft(BigDecimal(0))(_ + _.throughputDemand)
       val baseEvaluation =
         evaluateWriteScope(
           target = config.admissionTarget,
-          throughputDemand = shaped.throughputDemand,
+          throughputDemand = shaped.throughputDemand + lsiTotalDemand,
           resolvedPartitionFootprint = shaped.resolvedPartitionFootprint,
           usageState = usageState,
           burstState = burstState,
@@ -1389,6 +1395,11 @@ object TableAdmissionStage:
                   events ++ gsiTopologyEvents
                 else
                   Vector.empty
+              // Drain pending mode changes: apply any change with eventTick < tick (the incoming
+              // tick). Using tick-1 rather than currentTick covers skipped ticks in sparse streams.
+              // Skip on the very first advance (currentTick == None) — no completed tick yet.
+              if currentTick.nonEmpty then
+                billingModeRef.foreach(_.applyPendingChangesUpTo(tick - 1))
               val billingModeEvents: Vector[TimedEvent] = billingModeRef match
                 case Some(ref) if ref.currentMode != currentBillingMode =>
                   val previousMode = currentBillingMode
@@ -1419,7 +1430,7 @@ object TableAdmissionStage:
                   val consumed = AdmissionMetricEvent.ConsumedCapacitySnapshot(
                     eventTime, "tick-snapshot", completedTickReadUnits, completedTickWriteUnits
                   )
-                  val modeCode = currentBillingMode match
+                  val modeCode = completedTickBillingMode match
                     case _: DynamoDbTable.BillingMode.Provisioned => 1
                     case _ => 0
                   val modeSnapshot = AdmissionMetricEvent.BillingModeSnapshot(
@@ -1484,6 +1495,20 @@ object TableAdmissionStage:
                       case DynamoDbThroughputDimension.Read => currentMaxReadRqUnits
                       case DynamoDbThroughputDimension.Write => currentMaxWriteRqUnits
                   )
+                  // Charge LSI maintenance demand to the base table's per-tick usage accumulator,
+                  // matching the admission check in evaluateWriteAdmissionShaped.
+                  admitted.sample match
+                    case write: AdmittedWriteRequestSample =>
+                      val lsiDemand = write.indexMaintenancePlan
+                        .filterNot(p => config.gsiWriteScopes.map(_.target: DynamoDbTarget).toSet.contains(p.target))
+                        .foldLeft(BigDecimal(0))(_ + _.throughputDemand)
+                      if lsiDemand > 0 then
+                        usageState = usageState.afterInternalWriteAdmission(
+                          throughputDemand = lsiDemand,
+                          resolvedPartitionFootprint = write.resolvedPartitionFootprint,
+                          steadyStateLimit = currentMaxWriteRqUnits
+                        )
+                    case _ =>
                   gsiUsageStates =
                     admitted.gsiWriteAdmissions.foldLeft(gsiUsageStates) { (acc, admission) =>
                       acc.updated(

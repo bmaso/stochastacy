@@ -396,18 +396,30 @@ object OrderTrackingPhase2DemoRunner:
     case class AggState(
       mcAgg: IncrementalMonteCarloAgg,
       windowedAgg: Map[WindowSizeSeconds, IncrementalWindowedAgg],
-      recordCount: Int
+      recordCount: Int,
+      completedTrials: Int
     )
 
     val initState = AggState(
       mcAgg = IncrementalMonteCarloAgg(scenarioConfig.scenarioId),
       windowedAgg = WindowSizeSeconds.phase1Values.map(ws => ws -> IncrementalWindowedAgg(ws)).toMap,
-      recordCount = 0
+      recordCount = 0,
+      completedTrials = 0
     )
 
     def writeRecord(rec: DemoExportRecord): Unit =
       writer.write(Serialization.write(rec))
       writer.newLine()
+
+    val barWidth = 40
+    def printProgress(completed: Int): Unit =
+      val pct    = if trialCount == 0 then 100 else (completed * 100) / trialCount
+      val filled = if trialCount == 0 then barWidth else (completed * barWidth) / trialCount
+      val bar    = "█" * filled + "░" * (barWidth - filled)
+      print(s"\r[$bar] $completed/$trialCount ($pct%)")
+      System.out.flush()
+
+    printProgress(0)
 
     PekkoSource(exec.trialRunConfigs)
       .mapAsync(parallelism)(run => runner.runTrial(scenarioConfig, run))
@@ -421,10 +433,13 @@ object OrderTrackingPhase2DemoRunner:
               )
             }
         perTrialRecs.foreach(writeRecord)
+        val newCompleted = state.completedTrials + 1
+        printProgress(newCompleted)
         state.copy(
           mcAgg = state.mcAgg.addTrial(trial),
           windowedAgg = state.windowedAgg.map { case (ws, wagg) => ws -> wagg.addTrial(trial.timeSeries) },
-          recordCount = state.recordCount + perTrialRecs.size
+          recordCount = state.recordCount + perTrialRecs.size,
+          completedTrials = newCompleted
         )
       }
       .map { finalState =>
@@ -440,9 +455,10 @@ object OrderTrackingPhase2DemoRunner:
         aggRecs.foreach(writeRecord)
         writer.flush()
         writer.close()
+        println()
         s"wrote ${finalState.recordCount + aggRecs.size} records for scenario ${mcResult.scenarioId} to $outputPath"
       }
-      .andThen { case scala.util.Failure(_) => Try(writer.close()) }(ExecutionContext.parasitic)
+      .andThen { case scala.util.Failure(_) => println(); Try(writer.close()) }(ExecutionContext.parasitic)
 
 final case class StagedDemoRecord(
                                    recordType: String,

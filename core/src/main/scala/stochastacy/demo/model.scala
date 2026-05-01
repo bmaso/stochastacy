@@ -29,6 +29,13 @@ enum DemoMetric:
   case TotalRegionEstimatedCost(regionName: String)
   case TotalCrossRegionTransferBytes
   case TotalCrossRegionTransferCost
+  case CumulativeCrossRegionTransferCost
+  // Provisioned capacity mode metrics
+  case ProvisionedReadCapacityUnits
+  case ProvisionedWriteCapacityUnits
+  case BillingModeIndicator
+  case ThrottleCount
+  case AdmittedRequestCount
 
   def exportName: String =
     this match
@@ -59,6 +66,12 @@ enum DemoMetric:
       case DemoMetric.TotalRegionEstimatedCost(r) => s"Region:$r:TotalEstimatedCost"
       case DemoMetric.TotalCrossRegionTransferBytes => "TotalCrossRegionTransferBytes"
       case DemoMetric.TotalCrossRegionTransferCost => "TotalCrossRegionTransferCost"
+      case DemoMetric.CumulativeCrossRegionTransferCost => "CumulativeCrossRegionTransferCost"
+      case DemoMetric.ProvisionedReadCapacityUnits => "ProvisionedReadCapacityUnits"
+      case DemoMetric.ProvisionedWriteCapacityUnits => "ProvisionedWriteCapacityUnits"
+      case DemoMetric.BillingModeIndicator => "BillingModeIndicator"
+      case DemoMetric.ThrottleCount => "ThrottleCount"
+      case DemoMetric.AdmittedRequestCount => "AdmittedRequestCount"
 
   def sortKey: (Int, String) =
     this match
@@ -89,6 +102,12 @@ enum DemoMetric:
       case DemoMetric.TotalRegionEstimatedCost(r) => (24, r)
       case DemoMetric.TotalCrossRegionTransferBytes => (25, "")
       case DemoMetric.TotalCrossRegionTransferCost => (26, "")
+      case DemoMetric.CumulativeCrossRegionTransferCost => (31, "")
+      case DemoMetric.ProvisionedReadCapacityUnits => (27, "")
+      case DemoMetric.ProvisionedWriteCapacityUnits => (28, "")
+      case DemoMetric.BillingModeIndicator => (29, "")
+      case DemoMetric.ThrottleCount => (30, "")
+      case DemoMetric.AdmittedRequestCount => (32, "")
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

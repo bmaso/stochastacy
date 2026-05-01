@@ -27,23 +27,20 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     writeUnits: BigDecimal = BigDecimal(0),
     replicatedWriteUnits: BigDecimal = BigDecimal(0),
     gsiReadUnits: Map[String, BigDecimal] = Map.empty,
-    gsiWriteUnits: Map[String, BigDecimal] = Map.empty
+    gsiWriteUnits: Map[String, BigDecimal] = Map.empty,
+    storageByteDelta: Long = 0L
   )
 
-  /** Per-region streaming fold accumulator. Combines time-series, usage-totals, and time-based-usage
-   *  accumulation in a single pass — avoids collecting all events into memory via Sink.seq. */
+  /** Per-region streaming fold accumulator. Uses perTickBuckets keyed by eventTime.ticks so that
+   *  reads from GSI branches (which carry no Tick events) are attributed to their correct tick
+   *  regardless of arrival order in the merged stream. */
   private case class PerRegionAcc(
     usageTotals: DynamoDbUsageTotals = DynamoDbUsageTotals(),
     tbByteTicksByTarget: Map[DynamoDbTarget, BigInt] = Map.empty,
     tbCurrentBytesByTarget: Map[DynamoDbTarget, Long] = Map.empty,
     tbHasSeenTick: Boolean = false,
-    activeBucket: Option[TSSBucket] = None,
-    currentStorageBytes: Long = 0L,
-    cumReadUnits: BigDecimal = BigDecimal(0),
-    cumWriteUnits: BigDecimal = BigDecimal(0),
-    cumReplWriteUnits: BigDecimal = BigDecimal(0),
-    cumStorageByteTicks: BigInt = BigInt(0),
-    points: Vector[SimulationTimeSeriesPoint] = Vector.empty
+    perTickBuckets: Map[Long, TSSBucket] = Map.empty,
+    currentStorageBytes: Long = 0L
   )
 
   private case class TickBucketAgg(
@@ -69,109 +66,109 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
 
   private val bytesPerGiB = BigDecimal(1024).pow(3)
 
-  private def finalizePerRegionBucket(
+  /** Build per-region time series points from perTickBuckets, iterating in tick order to compute
+   *  cumulative cost. All consumption events are keyed by eventTime.ticks so reads from GSI branches
+   *  are correctly attributed regardless of arrival order in the merged stream. */
+  private def buildPerRegionTimeSeries(
     acc: PerRegionAcc,
     gsiNames: Vector[String],
     pricingRates: DynamoDbPricingRates,
     regionName: Option[String]
-  ): PerRegionAcc =
-    acc.activeBucket match
-      case None => acc
-      case Some(bucket) =>
-        val nextRead = acc.cumReadUnits + bucket.readUnits
-        val nextWrite = acc.cumWriteUnits + bucket.writeUnits
-        val nextReplWrite = acc.cumReplWriteUnits + bucket.replicatedWriteUnits
-        val nextByteTicks = acc.cumStorageByteTicks + BigInt(math.max(0L, acc.currentStorageBytes))
-        val cumulativeCost =
-          (nextRead * pricingRates.readCapacityUnitPrice) +
-            (nextWrite * pricingRates.writeCapacityUnitPrice) +
-            (nextReplWrite * pricingRates.replicatedWriteCapacityUnitPrice) +
-            (BigDecimal(nextByteTicks) * pricingRates.storagePricePerGiBSecond / bytesPerGiB)
+  ): Vector[SimulationTimeSeriesPoint] =
+    val sortedTicks = acc.perTickBuckets.keys.toVector.sorted
+    var cumRead = BigDecimal(0)
+    var cumWrite = BigDecimal(0)
+    var cumReplWrite = BigDecimal(0)
+    var cumStorage = 0L
+    var cumByteTicks = BigInt(0)
 
-        val (readMetric, writeMetric, storageMetric, costMetric, maybeReplMetric) =
-          regionName match
-            case None =>
-              (DemoMetric.ReadCapacityUnits, DemoMetric.WriteCapacityUnits,
-               DemoMetric.StorageBytes, DemoMetric.CumulativeEstimatedCost, None)
-            case Some(r) =>
-              (DemoMetric.RegionReadCapacityUnits(r), DemoMetric.RegionWriteCapacityUnits(r),
-               DemoMetric.RegionStorageBytes(r), DemoMetric.RegionCumulativeEstimatedCost(r),
-               Some(DemoMetric.RegionReplicatedWriteCapacityUnits(r)))
+    val (readMetric, writeMetric, storageMetric, costMetric, maybeReplMetric) =
+      regionName match
+        case None =>
+          (DemoMetric.ReadCapacityUnits, DemoMetric.WriteCapacityUnits,
+           DemoMetric.StorageBytes, DemoMetric.CumulativeEstimatedCost, None)
+        case Some(r) =>
+          (DemoMetric.RegionReadCapacityUnits(r), DemoMetric.RegionWriteCapacityUnits(r),
+           DemoMetric.RegionStorageBytes(r), DemoMetric.RegionCumulativeEstimatedCost(r),
+           Some(DemoMetric.RegionReplicatedWriteCapacityUnits(r)))
 
-        val basePoints = Vector(
-          SimulationTimeSeriesPoint(bucket.tick, readMetric, bucket.readUnits),
-          SimulationTimeSeriesPoint(bucket.tick, writeMetric, bucket.writeUnits)
-        ) ++ maybeReplMetric.map(m => SimulationTimeSeriesPoint(bucket.tick, m, bucket.replicatedWriteUnits)).toVector
+    sortedTicks.flatMap { tick =>
+      val b = acc.perTickBuckets(tick)
+      cumRead += b.readUnits
+      cumWrite += b.writeUnits
+      cumReplWrite += b.replicatedWriteUnits
+      cumStorage += b.storageByteDelta
+      cumByteTicks += BigInt(math.max(0L, cumStorage))
+      val cumulativeCost =
+        (cumRead * pricingRates.readCapacityUnitPrice) +
+          (cumWrite * pricingRates.writeCapacityUnitPrice) +
+          (cumReplWrite * pricingRates.replicatedWriteCapacityUnitPrice) +
+          (BigDecimal(cumByteTicks) * pricingRates.storagePricePerGiBSecond / bytesPerGiB)
 
-        val gsiPoints = gsiNames.sorted.flatMap { indexName =>
-          Vector(
-            SimulationTimeSeriesPoint(bucket.tick, DemoMetric.GsiReadCapacityUnits(indexName),
-              bucket.gsiReadUnits.getOrElse(indexName, BigDecimal(0))),
-            SimulationTimeSeriesPoint(bucket.tick, DemoMetric.GsiWriteCapacityUnits(indexName),
-              bucket.gsiWriteUnits.getOrElse(indexName, BigDecimal(0)))
-          )
-        }
+      val basePoints = Vector(
+        SimulationTimeSeriesPoint(tick, readMetric, b.readUnits),
+        SimulationTimeSeriesPoint(tick, writeMetric, b.writeUnits)
+      ) ++ maybeReplMetric.map(m => SimulationTimeSeriesPoint(tick, m, b.replicatedWriteUnits)).toVector
 
-        acc.copy(
-          activeBucket = None,
-          cumReadUnits = nextRead,
-          cumWriteUnits = nextWrite,
-          cumReplWriteUnits = nextReplWrite,
-          cumStorageByteTicks = nextByteTicks,
-          points = acc.points ++ basePoints ++ gsiPoints ++ Vector(
-            SimulationTimeSeriesPoint(bucket.tick, storageMetric, BigDecimal(math.max(0L, acc.currentStorageBytes))),
-            SimulationTimeSeriesPoint(bucket.tick, costMetric, cumulativeCost)
-          )
+      val gsiPoints = gsiNames.sorted.flatMap { indexName =>
+        Vector(
+          SimulationTimeSeriesPoint(tick, DemoMetric.GsiReadCapacityUnits(indexName),
+            b.gsiReadUnits.getOrElse(indexName, BigDecimal(0))),
+          SimulationTimeSeriesPoint(tick, DemoMetric.GsiWriteCapacityUnits(indexName),
+            b.gsiWriteUnits.getOrElse(indexName, BigDecimal(0)))
         )
+      }
+
+      basePoints ++ gsiPoints ++ Vector(
+        SimulationTimeSeriesPoint(tick, storageMetric, BigDecimal(math.max(0L, cumStorage))),
+        SimulationTimeSeriesPoint(tick, costMetric, cumulativeCost)
+      )
+    }
 
   private def updatePerRegionAcc(
     acc: PerRegionAcc,
-    evt: TimedElement[DynamoDbConsumptionEvent],
-    gsiNames: Vector[String],
-    pricingRates: DynamoDbPricingRates,
-    regionName: Option[String]
+    evt: TimedElement[DynamoDbConsumptionEvent]
   ): PerRegionAcc =
     evt match
       case tick: TimedControlEvent.Tick =>
-        val withFinalized = finalizePerRegionBucket(acc, gsiNames, pricingRates, regionName)
         val tbUpdated =
-          if withFinalized.tbHasSeenTick then
-            val nextByteTicks = withFinalized.tbCurrentBytesByTarget.foldLeft(withFinalized.tbByteTicksByTarget) {
+          if acc.tbHasSeenTick then
+            val nextByteTicks = acc.tbCurrentBytesByTarget.foldLeft(acc.tbByteTicksByTarget) {
               case (m, (target, bytes)) => m.updated(target, m.getOrElse(target, BigInt(0)) + BigInt(bytes))
             }
-            withFinalized.copy(tbByteTicksByTarget = nextByteTicks)
-          else withFinalized
-        tbUpdated.copy(
-          activeBucket = Some(TSSBucket(tick = tick.eventTime.ticks)),
-          tbHasSeenTick = true
-        )
+            acc.copy(tbByteTicksByTarget = nextByteTicks)
+          else acc
+        tbUpdated.copy(tbHasSeenTick = true)
 
       case cons: DynamoDbConsumptionEvent =>
         val acc1 = acc.copy(usageTotals = DynamoDbUsageTotals.accumulate(acc.usageTotals, cons))
+        val t = cons.eventTime.ticks
+        val bucket = acc1.perTickBuckets.getOrElse(t, TSSBucket(tick = t))
         cons match
           case DynamoDbConsumptionEvent.ReadCapacityConsumed(_, _, target, units, _) =>
-            acc1.copy(activeBucket = acc1.activeBucket.map { b =>
-              target match
-                case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
-                  b.copy(readUnits = b.readUnits + units,
-                    gsiReadUnits = b.gsiReadUnits.updated(indexName, b.gsiReadUnits.getOrElse(indexName, BigDecimal(0)) + units))
-                case _ => b.copy(readUnits = b.readUnits + units)
-            })
+            val updatedBucket = target match
+              case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
+                bucket.copy(readUnits = bucket.readUnits + units,
+                  gsiReadUnits = bucket.gsiReadUnits.updated(indexName, bucket.gsiReadUnits.getOrElse(indexName, BigDecimal(0)) + units))
+              case _ => bucket.copy(readUnits = bucket.readUnits + units)
+            acc1.copy(perTickBuckets = acc1.perTickBuckets.updated(t, updatedBucket))
           case DynamoDbConsumptionEvent.WriteCapacityConsumed(_, _, target, units) =>
-            acc1.copy(activeBucket = acc1.activeBucket.map { b =>
-              target match
-                case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
-                  b.copy(writeUnits = b.writeUnits + units,
-                    gsiWriteUnits = b.gsiWriteUnits.updated(indexName, b.gsiWriteUnits.getOrElse(indexName, BigDecimal(0)) + units))
-                case _ => b.copy(writeUnits = b.writeUnits + units)
-            })
+            val updatedBucket = target match
+              case DynamoDbTarget.GlobalSecondaryIndex(_, indexName) =>
+                bucket.copy(writeUnits = bucket.writeUnits + units,
+                  gsiWriteUnits = bucket.gsiWriteUnits.updated(indexName, bucket.gsiWriteUnits.getOrElse(indexName, BigDecimal(0)) + units))
+              case _ => bucket.copy(writeUnits = bucket.writeUnits + units)
+            acc1.copy(perTickBuckets = acc1.perTickBuckets.updated(t, updatedBucket))
           case DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed(_, _, _, units) =>
-            acc1.copy(activeBucket = acc1.activeBucket.map(b => b.copy(replicatedWriteUnits = b.replicatedWriteUnits + units)))
+            acc1.copy(perTickBuckets = acc1.perTickBuckets.updated(t,
+              bucket.copy(replicatedWriteUnits = bucket.replicatedWriteUnits + units)))
           case DynamoDbConsumptionEvent.StorageBytesDelta(_, _, target, bytesDelta) =>
             acc1.copy(
               currentStorageBytes = acc1.currentStorageBytes + bytesDelta,
               tbCurrentBytesByTarget = acc1.tbCurrentBytesByTarget.updated(
-                target, acc1.tbCurrentBytesByTarget.getOrElse(target, 0L) + bytesDelta)
+                target, acc1.tbCurrentBytesByTarget.getOrElse(target, 0L) + bytesDelta),
+              perTickBuckets = acc1.perTickBuckets.updated(t,
+                bucket.copy(storageByteDelta = bucket.storageByteDelta + bytesDelta))
             )
           case _ => acc1
 
@@ -283,7 +280,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     val schedule = config.reconfigurationSchedule.filter(_.events.nonEmpty)
 
     val foldSink = Sink.fold[PerRegionAcc, TimedElement[DynamoDbConsumptionEvent]](PerRegionAcc()) {
-      (acc, evt) => updatePerRegionAcc(acc, evt, gsiNames, config.pricingRates, regionName = None)
+      (acc, evt) => updatePerRegionAcc(acc, evt)
     }
 
     val accF = RunnableGraph.fromGraph(
@@ -308,25 +305,25 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     ).run()
 
     accF.map { rawAcc =>
-      val acc = finalizePerRegionBucket(rawAcc, gsiNames, config.pricingRates, regionName = None)
-      val timeBasedTotals = extractTimeBasedUsage(acc)
+      val timeBasedTotals = extractTimeBasedUsage(rawAcc)
       val costBreakdown = DynamoDbCostBreakdown.price(
-        DynamoDbPricingInputs(usage = acc.usageTotals, timeBasedUsage = timeBasedTotals),
+        DynamoDbPricingInputs(usage = rawAcc.usageTotals, timeBasedUsage = timeBasedTotals),
         config.pricingRates
       )
       val gsiUsage = gsiNames.map { indexName =>
-        indexName -> acc.usageTotals.byTarget.collectFirst {
+        indexName -> rawAcc.usageTotals.byTarget.collectFirst {
           case (DynamoDbTarget.GlobalSecondaryIndex(_, `indexName`), totals) => totals
         }.getOrElse(DynamoDbTargetUsageTotals())
       }.toMap
+      val points = buildPerRegionTimeSeries(rawAcc, gsiNames, config.pricingRates, regionName = None)
 
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = acc.points,
+        timeSeries = points,
         summary = Vector(
-          TrialSummaryValue(DemoMetric.TotalReadCapacityUnits, acc.usageTotals.overall.readCapacityUnits),
-          TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, acc.usageTotals.overall.writeCapacityUnits),
+          TrialSummaryValue(DemoMetric.TotalReadCapacityUnits, rawAcc.usageTotals.overall.readCapacityUnits),
+          TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, rawAcc.usageTotals.overall.writeCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalStorageByteTicks, BigDecimal(timeBasedTotals.overallStorageByteTicks)),
           TrialSummaryValue(DemoMetric.FinalStorageBytes, BigDecimal(timeBasedTotals.endingOverallStorageBytes)),
           TrialSummaryValue(DemoMetric.TotalEstimatedCost, costBreakdown.totalCost)
@@ -395,7 +392,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       (acc, taggedEvt) =>
         val (region, evt) = taggedEvt
         val regionAcc = acc.perRegion.getOrElse(region, PerRegionAcc())
-        val updatedRegion = updatePerRegionAcc(regionAcc, evt, Vector.empty, config.pricingRates, Some(region))
+        val updatedRegion = updatePerRegionAcc(regionAcc, evt)
         val updatedAgg = evt match
           case cons: DynamoDbConsumptionEvent => updateTickBucketAgg(acc.aggByTick, cons)
           case _ => acc.aggByTick
@@ -466,12 +463,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     yield
       val regions = sortedRegions.map(_.regionName)
 
-      val finalPerRegion = mrAcc.perRegion.map { case (r, acc) =>
-        r -> finalizePerRegionBucket(acc, Vector.empty, config.pricingRates, Some(r))
-      }
-
-      val regionUsage = finalPerRegion.map { case (r, acc) => r -> acc.usageTotals }
-      val regionTimeBasedUsage = finalPerRegion.map { case (r, acc) => r -> extractTimeBasedUsage(acc) }
+      val regionUsage = mrAcc.perRegion.map { case (r, acc) => r -> acc.usageTotals }
+      val regionTimeBasedUsage = mrAcc.perRegion.map { case (r, acc) => r -> extractTimeBasedUsage(acc) }
       val regionCost = regions.map { r =>
         r -> DynamoDbCostBreakdown.price(
           DynamoDbPricingInputs(
@@ -488,6 +481,22 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         SimulationTimeSeriesPoint(tick, DemoMetric.CrossRegionTransferBytes(src, dst), BigDecimal(bytes))
       }.toVector
 
+      val transferCostTimeSeries: Vector[SimulationTimeSeriesPoint] = {
+        val sortedTicks = transferAcc.byTickAndLink.keys.map(_._1).toVector.sorted.distinct
+        var cumulativeTotals = CrossRegionTransferUsageTotals()
+        sortedTicks.map { tick =>
+          transferAcc.byTickAndLink.foreach { case ((t, (src, dst)), bytes) =>
+            if t == tick then
+              cumulativeTotals = CrossRegionTransferUsageTotals.accumulate(
+                cumulativeTotals,
+                CrossRegionTransferEvent(SimTime.of(tick), "cost-ts", src, dst, "DynamoDB", bytes)
+              )
+          }
+          val cost = CrossRegionTransferCostBreakdown.price(cumulativeTotals, config.transferPricingRates).totalCost
+          SimulationTimeSeriesPoint(tick, DemoMetric.CumulativeCrossRegionTransferCost, cost)
+        }
+      }
+
       val overallUsage = mergeUsageTotals(regionUsage.values.toVector)
       val overallTimeBasedUsage = mergeTimeBasedUsageTotals(regionTimeBasedUsage.values.toVector)
       val overallCost = DynamoDbCostBreakdown.price(
@@ -497,7 +506,9 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
 
       val aggregateTimeSeries = buildAggTimeSeries(mrAcc.aggByTick, gsiNames, config.pricingRates)
       val perRegionTimeSeries = regions.flatMap { r =>
-        finalPerRegion.get(r).map(_.points).getOrElse(Vector.empty)
+        mrAcc.perRegion.get(r).map(acc =>
+          buildPerRegionTimeSeries(acc, Vector.empty, config.pricingRates, Some(r))
+        ).getOrElse(Vector.empty)
       }
 
       val gsiAggUsage: Map[String, DynamoDbTargetUsageTotals] = gsiNames.map { indexName =>
@@ -550,7 +561,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries,
+        timeSeries = (aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries ++ transferCostTimeSeries)
+          .filter(_.tick <= config.simulationTicks),
         summary = overallSummary ++ perRegionSummary ++ perLinkSummary
       )
 

@@ -1417,13 +1417,17 @@ object DynamoDbTable:
                 "Billing mode switch attempted within the 24-hour cooldown period"
               ))
             case _ =>
-              billingModeRef.currentMode = event.newMode
+              // Enqueue rather than apply immediately: the management stream races ahead of the
+              // request stream in Pekko's fused graph. Enqueueing here lets advanceToShaped apply
+              // the change at the correct tick boundary.
+              billingModeRef.enqueueModeChange(event.eventTime.ticks, event.newMode)
               billingModeRef.lastSwitchTick = Some(event.eventTime.ticks)
               Nil
         case event: DynamoDbManagementEvent.UpdateProvisionedCapacity =>
-          billingModeRef.currentMode match
+          // Validate against the effective mode at the event's tick (includes pending changes).
+          billingModeRef.effectiveModeAt(event.eventTime.ticks) match
             case _: DynamoDbTable.BillingMode.Provisioned =>
-              billingModeRef.currentMode = event.newCapacity
+              billingModeRef.enqueueModeChange(event.eventTime.ticks, event.newCapacity)
               Nil
             case _ =>
               List(ReconfigurationRejectedResponse(

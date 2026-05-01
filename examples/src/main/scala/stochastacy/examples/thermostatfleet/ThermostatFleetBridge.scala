@@ -23,7 +23,9 @@ object ThermostatFleetBridgeCommand:
     trialCount: Int,
     parallelism: Int,
     simulationTicks: Long,
-    mode: String
+    mode: String,
+    initialProvisionedWcu: Long,
+    adjustedProvisionedWcu: Long
   ) extends ThermostatFleetBridgeCommand
 
   final case class Stage(
@@ -37,16 +39,17 @@ object ThermostatFleetBridgeCommand:
   final case class View(
     grafanaBaseUrl: String,
     batchId: String,
-    scenarioId: String
+    scenarioId: String,
+    mode: String
   ) extends ThermostatFleetBridgeCommand
 
 object ThermostatFleetBridgeCli:
   private val GenerateUsage =
-    "usage: ThermostatFleetBridge generate --output <path> --mode <single-region|multi-region> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>]"
+    "usage: ThermostatFleetBridge generate --output <path> --mode <single-region|multi-region|mixed-mode> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>] [--initial-provisioned-wcu <long>] [--adjusted-provisioned-wcu <long>]"
   private val StageUsage =
-    "usage: ThermostatFleetBridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--mode <single-region|multi-region>]"
+    "usage: ThermostatFleetBridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--mode <single-region|multi-region|mixed-mode>]"
   private val ViewUsage =
-    "usage: ThermostatFleetBridge view --batch-id <id> [--mode <single-region|multi-region>] [--grafana-base-url <url>]"
+    "usage: ThermostatFleetBridge view --batch-id <id> [--mode <single-region|multi-region|mixed-mode>] [--grafana-base-url <url>]"
   private val TopLevelUsage =
     s"""usage:
        |  $GenerateUsage
@@ -77,10 +80,13 @@ object ThermostatFleetBridgeCli:
       trialCount: Option[Int],
       parallelism: Option[Int],
       simulationTicks: Option[Long],
-      mode: Option[String]
+      mode: Option[String],
+      initialProvisionedWcu: Option[Long],
+      adjustedProvisionedWcu: Option[Long]
     ): Either[String, ThermostatFleetBridgeCommand.Generate] =
       remaining match
         case Nil =>
+          val mmDefaults = ThermostatFleetMixedModeConfig()
           for
             path <- outputPath.toRight(s"missing required flag: --output\n$GenerateUsage")
             m <- mode.toRight(s"missing required flag: --mode\n$GenerateUsage")
@@ -91,35 +97,47 @@ object ThermostatFleetBridgeCli:
             trialCount = trialCount.getOrElse(defaults.trialCount),
             parallelism = parallelism.getOrElse(defaults.parallelism),
             simulationTicks = simulationTicks.getOrElse(defaults.simulationTicks),
-            mode = m
+            mode = m,
+            initialProvisionedWcu = initialProvisionedWcu.getOrElse(mmDefaults.initialProvisionedWcu),
+            adjustedProvisionedWcu = adjustedProvisionedWcu.getOrElse(mmDefaults.adjustedProvisionedWcu)
           )
 
         case "--output" :: value :: tail =>
           if outputPath.nonEmpty then Left(s"duplicate flag: --output\n$GenerateUsage")
-          else loop(tail, Some(Path.of(value)), batchId, trialCount, parallelism, simulationTicks, mode)
+          else loop(tail, Some(Path.of(value)), batchId, trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu)
 
         case "--batch-id" :: value :: tail =>
           if batchId.nonEmpty then Left(s"duplicate flag: --batch-id\n$GenerateUsage")
-          else loop(tail, outputPath, Some(value), trialCount, parallelism, simulationTicks, mode)
+          else loop(tail, outputPath, Some(value), trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu)
 
         case "--trial-count" :: value :: tail =>
           if trialCount.nonEmpty then Left(s"duplicate flag: --trial-count\n$GenerateUsage")
           else parseIntFlag("--trial-count", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, Some(parsed), parallelism, simulationTicks, mode))
+            loop(tail, outputPath, batchId, Some(parsed), parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu))
 
         case "--parallelism" :: value :: tail =>
           if parallelism.nonEmpty then Left(s"duplicate flag: --parallelism\n$GenerateUsage")
           else parseIntFlag("--parallelism", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, trialCount, Some(parsed), simulationTicks, mode))
+            loop(tail, outputPath, batchId, trialCount, Some(parsed), simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu))
 
         case "--simulation-ticks" :: value :: tail =>
           if simulationTicks.nonEmpty then Left(s"duplicate flag: --simulation-ticks\n$GenerateUsage")
           else parseLongFlag("--simulation-ticks", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, trialCount, parallelism, Some(parsed), mode))
+            loop(tail, outputPath, batchId, trialCount, parallelism, Some(parsed), mode, initialProvisionedWcu, adjustedProvisionedWcu))
 
         case "--mode" :: value :: tail =>
           if mode.nonEmpty then Left(s"duplicate flag: --mode\n$GenerateUsage")
-          else loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, Some(value))
+          else loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, Some(value), initialProvisionedWcu, adjustedProvisionedWcu)
+
+        case "--initial-provisioned-wcu" :: value :: tail =>
+          if initialProvisionedWcu.nonEmpty then Left(s"duplicate flag: --initial-provisioned-wcu\n$GenerateUsage")
+          else parseLongFlag("--initial-provisioned-wcu", value, GenerateUsage).flatMap(parsed =>
+            loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, mode, Some(parsed), adjustedProvisionedWcu))
+
+        case "--adjusted-provisioned-wcu" :: value :: tail =>
+          if adjustedProvisionedWcu.nonEmpty then Left(s"duplicate flag: --adjusted-provisioned-wcu\n$GenerateUsage")
+          else parseLongFlag("--adjusted-provisioned-wcu", value, GenerateUsage).flatMap(parsed =>
+            loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, Some(parsed)))
 
         case flag :: Nil if flag.startsWith("--") =>
           Left(s"missing value for flag: $flag\n$GenerateUsage")
@@ -130,7 +148,7 @@ object ThermostatFleetBridgeCli:
         case value :: _ =>
           Left(s"unexpected argument: $value\n$GenerateUsage")
 
-    loop(args, None, None, None, None, None, None)
+    loop(args, None, None, None, None, None, None, None, None)
 
   private def parseStage(args: List[String]): Either[String, ThermostatFleetBridgeCommand.Stage] =
     def loop(
@@ -158,21 +176,28 @@ object ThermostatFleetBridgeCli:
             ticks <- simulationTicks.toRight(s"missing required flag: --simulation-ticks\n$StageUsage")
           yield
             val resolvedMode = mode.getOrElse("single-region")
-            val defaults = if resolvedMode == "multi-region" then
-              ThermostatFleetScenarioConfig.multiRegionDefault
-            else
-              ThermostatFleetScenarioConfig.singleRegionDefault
+            val (scenarioId, baseSeed, readConsistency, tableName) = resolvedMode match
+              case "mixed-mode" =>
+                val c  = ThermostatFleetMixedModeConfig()
+                val sc = c.toScenarioConfig
+                (c.scenarioId, ThermostatFleetMixedModeDemoRunner.BaseSeed, sc.readConsistency.toString, sc.tableName)
+              case "multi-region" =>
+                val c = ThermostatFleetScenarioConfig.multiRegionDefault
+                (c.scenarioId, ThermostatFleetDemoRunner.BaseSeed, c.readConsistency.toString, c.tableName)
+              case _ =>
+                val c = ThermostatFleetScenarioConfig.singleRegionDefault
+                (c.scenarioId, ThermostatFleetDemoRunner.BaseSeed, c.readConsistency.toString, c.tableName)
             ThermostatFleetBridgeCommand.Stage(
               inputPath = path,
               metadata = BatchMetadata(
                 batchId = id,
-                scenarioId = defaults.scenarioId,
+                scenarioId = scenarioId,
                 trialCount = tc,
                 parallelism = p,
                 simulationTicks = ticks,
-                baseSeed = ThermostatFleetDemoRunner.BaseSeed,
-                readConsistency = defaults.readConsistency.toString,
-                tableName = defaults.tableName,
+                baseSeed = baseSeed,
+                readConsistency = readConsistency,
+                tableName = tableName,
                 sourceJsonlPath = Some(path.toString)
               ),
               dbUrl = jdbcUrl,
@@ -221,14 +246,15 @@ object ThermostatFleetBridgeCli:
         case Nil =>
           batchId.toRight(s"missing required flag: --batch-id\n$ViewUsage").map { id =>
             val resolvedMode = mode.getOrElse("single-region")
-            val scenarioId = if resolvedMode == "multi-region" then
-              ThermostatFleetScenarioConfig.multiRegionDefault.scenarioId
-            else
-              ThermostatFleetScenarioConfig.singleRegionDefault.scenarioId
+            val scenarioId = resolvedMode match
+              case "mixed-mode"   => ThermostatFleetMixedModeConfig().scenarioId
+              case "multi-region" => ThermostatFleetScenarioConfig.multiRegionDefault.scenarioId
+              case _              => ThermostatFleetScenarioConfig.singleRegionDefault.scenarioId
             ThermostatFleetBridgeCommand.View(
               grafanaBaseUrl = grafanaBaseUrl.getOrElse("http://localhost:3000"),
               batchId = id,
-              scenarioId = scenarioId
+              scenarioId = scenarioId,
+              mode = resolvedMode
             )
           }
         case "--grafana-base-url" :: value :: tail =>
@@ -247,8 +273,8 @@ object ThermostatFleetBridgeCli:
     loop(args, None, None, None)
 
   private def validateMode(mode: String, usage: String): Either[String, Unit] =
-    if mode == "single-region" || mode == "multi-region" then Right(())
-    else Left(s"--mode must be 'single-region' or 'multi-region', got: $mode\n$usage")
+    if mode == "single-region" || mode == "multi-region" || mode == "mixed-mode" then Right(())
+    else Left(s"--mode must be 'single-region', 'multi-region', or 'mixed-mode', got: $mode\n$usage")
 
   private def parseIntFlag(name: String, value: String, usage: String): Either[String, Int] =
     Try(value.toInt).toEither.left.map(_ => s"invalid integer for $name: $value\n$usage").flatMap { parsed =>
@@ -422,16 +448,25 @@ object ThermostatFleetGrafanaView:
 
           val outcome =
             try
-              val message = Await.result(
-                ThermostatFleetDemoRunner.generateToFile(
-                  outputPath = generate.outputPath,
-                  trialCount = generate.trialCount,
-                  parallelism = generate.parallelism,
-                  simulationTicks = generate.simulationTicks,
-                  mode = generate.mode
-                ),
-                10.minutes
-              )
+              val generateF =
+                if generate.mode == "mixed-mode" then
+                  ThermostatFleetMixedModeDemoRunner.generateToFile(
+                    outputPath            = generate.outputPath,
+                    trialCount            = generate.trialCount,
+                    parallelism           = generate.parallelism,
+                    simulationTicks       = generate.simulationTicks,
+                    initialProvisionedWcu = generate.initialProvisionedWcu,
+                    adjustedProvisionedWcu = generate.adjustedProvisionedWcu
+                  )
+                else
+                  ThermostatFleetDemoRunner.generateToFile(
+                    outputPath      = generate.outputPath,
+                    trialCount      = generate.trialCount,
+                    parallelism     = generate.parallelism,
+                    simulationTicks = generate.simulationTicks,
+                    mode            = generate.mode
+                  )
+              val message = Await.result(generateF, 10.minutes)
               println(message)
               println(s"generated batch ${generate.batchId} (${generate.mode}) to ${generate.outputPath}")
               Success(())
@@ -475,9 +510,16 @@ object ThermostatFleetGrafanaView:
 
         case view: ThermostatFleetBridgeCommand.View =>
           println(
-            ThermostatFleetGrafanaView.url(
-              grafanaBaseUrl = view.grafanaBaseUrl,
-              batchId = view.batchId,
-              scenarioId = view.scenarioId
-            )
+            if view.mode == "mixed-mode" then
+              ThermostatFleetMixedModeGrafanaView.url(
+                grafanaBaseUrl = view.grafanaBaseUrl,
+                batchId        = view.batchId,
+                scenarioId     = view.scenarioId
+              )
+            else
+              ThermostatFleetGrafanaView.url(
+                grafanaBaseUrl = view.grafanaBaseUrl,
+                batchId        = view.batchId,
+                scenarioId     = view.scenarioId
+              )
           )

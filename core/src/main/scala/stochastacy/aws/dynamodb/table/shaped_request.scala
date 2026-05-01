@@ -109,13 +109,38 @@ private[table] class TopologySnapshotRef(
                                         )
 
 /**
- * A shared mutable reference for the current billing mode. Written by the management event
- * processor in `DynamoDbTable.componentOfManaged` (at the table level) when a valid
- * `SwitchBillingMode` event is received. Read by each admission stage at tick boundaries.
+ * A shared mutable reference for the current billing mode and a tick-ordered queue of
+ * pending mode changes. The management event processor (in `DynamoDbTable.componentOfManaged`)
+ * races ahead of the request stream in Pekko's fused graph, so it enqueues mode changes here
+ * rather than applying them immediately. Each admission stage's `advanceToShaped` drains the
+ * queue up to the completed tick before checking for transitions.
  *
  * Thread-safety: all stages run fused in the same Pekko actor.
  */
 private[table] class BillingModeRef(
   @volatile var currentMode: DynamoDbTable.BillingMode,
   @volatile var lastSwitchTick: Option[Long] = None
-)
+):
+  private val pending: scala.collection.mutable.ArrayBuffer[(Long, DynamoDbTable.BillingMode)] =
+    scala.collection.mutable.ArrayBuffer.empty
+
+  def enqueueModeChange(tick: Long, newMode: DynamoDbTable.BillingMode): Unit =
+    pending += ((tick, newMode))
+
+  /** Returns the effective mode at `tick`, accounting for all pending changes up to that tick. */
+  def effectiveModeAt(tick: Long): DynamoDbTable.BillingMode =
+    pending.filter(_._1 <= tick).lastOption.map(_._2).getOrElse(currentMode)
+
+  /** Applies all pending changes with tick ≤ `completedTick`, updating `currentMode`. */
+  def applyPendingChangesUpTo(completedTick: Long): Unit =
+    var latest: DynamoDbTable.BillingMode = currentMode
+    var anyApplied = false
+    pending.filterInPlace { case (changeTick, mode) =>
+      if changeTick <= completedTick then
+        latest = mode
+        anyApplied = true
+        false
+      else
+        true
+    }
+    if anyApplied then currentMode = latest

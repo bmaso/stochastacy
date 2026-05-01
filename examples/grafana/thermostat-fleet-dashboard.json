@@ -677,7 +677,7 @@
       },
       "id": 8,
       "panels": [],
-      "title": "Per-Region Write Capacity (multi-region only)",
+      "title": "Per-Region Capacity and Cost (multi-region only)",
       "type": "row"
     },
     {
@@ -685,7 +685,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "Windowed write capacity for the selected region. Only populated for multi-region batches.",
+      "description": "Per-region WCU consumption per window (mean across trials). Multi-region only.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -693,12 +693,12 @@
           },
           "custom": {
             "axisBorderShow": false,
-            "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
+            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -706,73 +706,25 @@
               "viz": false
             },
             "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 0,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "unit": "short"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Mean"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#FFFFFF",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 3
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P95"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P5"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -780,16 +732,18 @@
         "x": 0,
         "y": 19
       },
-      "id": 9,
+      "id": 50,
       "options": {
         "legend": {
-          "calcs": [],
+          "calcs": [
+            "last"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
+          "mode": "multi",
           "sort": "none"
         }
       },
@@ -803,11 +757,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "with percentiles as (\n  select\n    window_start_tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_window_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'Region:${regionName}:WriteCapacityUnits'\n    and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  group by window_start_tick\n)\nselect\n  to_timestamp(window_start_tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p5 as \"P5\"\nfrom percentiles\norder by window_start_tick;",
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Region:us-east-1:WriteCapacityUnits' then \"value\" end) as \"us-east-1\",\n  avg(case when metric = 'Region:eu-west-1:WriteCapacityUnits' then \"value\" end) as \"eu-west-1\",\n  avg(case when metric = 'Region:ap-southeast-1:WriteCapacityUnits' then \"value\" end) as \"ap-southeast-1\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in ('Region:us-east-1:WriteCapacityUnits', 'Region:eu-west-1:WriteCapacityUnits', 'Region:ap-southeast-1:WriteCapacityUnits')\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
           "refId": "A"
         }
       ],
-      "title": "Region ${regionName}: Write Capacity Units by Window",
+      "title": "Write Capacity Units by Region",
       "type": "timeseries"
     },
     {
@@ -815,7 +769,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "Windowed read capacity for the selected region. Only populated for multi-region batches.",
+      "description": "Per-region RCU consumption per window (mean across trials). Multi-region only.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -823,12 +777,12 @@
           },
           "custom": {
             "axisBorderShow": false,
-            "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
+            "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -836,73 +790,25 @@
               "viz": false
             },
             "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 0,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
-            "spanNulls": false
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "unit": "short"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Mean"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#FFFFFF",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 3
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P95"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "P5"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#A9A9A9",
-                  "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 1
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -910,16 +816,18 @@
         "x": 12,
         "y": 19
       },
-      "id": 10,
+      "id": 51,
       "options": {
         "legend": {
-          "calcs": [],
+          "calcs": [
+            "last"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
+          "mode": "multi",
           "sort": "none"
         }
       },
@@ -933,11 +841,95 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "with percentiles as (\n  select\n    window_start_tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_window_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'Region:${regionName}:ReadCapacityUnits'\n    and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  group by window_start_tick\n)\nselect\n  to_timestamp(window_start_tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p5 as \"P5\"\nfrom percentiles\norder by window_start_tick;",
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Region:us-east-1:ReadCapacityUnits' then \"value\" end) as \"us-east-1\",\n  avg(case when metric = 'Region:eu-west-1:ReadCapacityUnits' then \"value\" end) as \"eu-west-1\",\n  avg(case when metric = 'Region:ap-southeast-1:ReadCapacityUnits' then \"value\" end) as \"ap-southeast-1\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in ('Region:us-east-1:ReadCapacityUnits', 'Region:eu-west-1:ReadCapacityUnits', 'Region:ap-southeast-1:ReadCapacityUnits')\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
           "refId": "A"
         }
       ],
-      "title": "Region ${regionName}: Read Capacity Units by Window",
+      "title": "Read Capacity Units by Region",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "Per-region cumulative DynamoDB cost over time (mean across trials). Multi-region only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "id": 52,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Region:us-east-1:CumulativeEstimatedCost' then \"value\" end) as \"us-east-1\",\n  avg(case when metric = 'Region:eu-west-1:CumulativeEstimatedCost' then \"value\" end) as \"eu-west-1\",\n  avg(case when metric = 'Region:ap-southeast-1:CumulativeEstimatedCost' then \"value\" end) as \"ap-southeast-1\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in ('Region:us-east-1:CumulativeEstimatedCost', 'Region:eu-west-1:CumulativeEstimatedCost', 'Region:ap-southeast-1:CumulativeEstimatedCost')\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Cumulative Estimated Cost by Region",
       "type": "timeseries"
     },
     {
@@ -946,7 +938,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 27
+        "y": 35
       },
       "id": 11,
       "panels": [],
@@ -1013,7 +1005,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 36
       },
       "id": 12,
       "options": {
@@ -1105,7 +1097,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 36
       },
       "id": 13,
       "options": {
@@ -1143,7 +1135,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 36
+        "y": 44
       },
       "id": 14,
       "panels": [],
@@ -1210,7 +1202,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 45
       },
       "id": 15,
       "options": {
@@ -1302,7 +1294,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 45
       },
       "id": 16,
       "options": {
@@ -1367,7 +1359,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 53
       },
       "id": 17,
       "options": {
@@ -1399,7 +1391,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select\n  metric as \"Direction\",\n  avg(\"value\") as \"Mean Bytes\"\nfrom stochastacy_demo.trial_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric like 'CrossRegionTransfer:%:%:Bytes'\ngroup by metric\norder by metric;",
+          "rawSql": "select\n  split_part(metric, ':', 2) || ' \u2192 ' || split_part(metric, ':', 3) as \"Direction\",\n  avg(\"value\") as \"Mean Bytes\"\nfrom stochastacy_demo.trial_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric like 'CrossRegionTransfer:%:%:Bytes'\ngroup by metric\norder by metric;",
           "refId": "A"
         }
       ],
@@ -1411,7 +1403,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "Per-region write capacity total across all ticks (multi-region only). One bar per region.",
+      "description": "Cumulative cross-region data transfer cost over time (multi-region only). Computed from per-tick transfer bytes and per-source-region pricing rates.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1422,16 +1414,33 @@
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
-            "fillOpacity": 80,
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
             }
           },
           "mappings": [],
-          "unit": "short"
+          "unit": "currencyUSD"
         },
         "overrides": []
       },
@@ -1439,27 +1448,22 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 45
+        "y": 53
       },
-      "id": 18,
+      "id": 99,
       "options": {
-        "barRadius": 0,
-        "barWidth": 0.97,
-        "groupWidth": 0.7,
         "legend": {
-          "calcs": [],
+          "calcs": [
+            "last"
+          ],
           "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
-        "orientation": "auto",
-        "stacking": "none",
         "tooltip": {
           "mode": "single",
           "sort": "none"
-        },
-        "xTickLabelRotation": -45,
-        "xTickLabelSpacing": 200
+        }
       },
       "pluginVersion": "10.4.2",
       "targets": [
@@ -1469,14 +1473,14 @@
             "uid": "stochastacy-postgres"
           },
           "editorMode": "code",
-          "format": "table",
+          "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select\n  split_part(metric, ':', 2) as \"Region\",\n  avg(\"value\") as \"Mean WCU\"\nfrom stochastacy_demo.trial_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric like 'Region:%:TotalWriteCapacityUnits'\ngroup by metric\norder by metric;",
+          "rawSql": "with percentiles as (\n  select\n    window_start_tick,\n    avg(\"value\") as mean,\n    percentile_cont(0.05) within group (order by \"value\") as p5,\n    percentile_cont(0.95) within group (order by \"value\") as p95\n  from stochastacy_demo.trial_window_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'CumulativeCrossRegionTransferCost'\n    and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  group by window_start_tick\n)\nselect\n  to_timestamp(window_start_tick) as \"time\",\n  mean as \"Mean\",\n  p95 as \"P95\",\n  p5 as \"P5\"\nfrom percentiles\norder by window_start_tick;",
           "refId": "A"
         }
       ],
-      "title": "Total Write Capacity Units by Region (mean across trials)",
-      "type": "barchart"
+      "title": "Cumulative Cross-Region Transfer Cost",
+      "type": "timeseries"
     }
   ],
   "refresh": "",
@@ -1710,5 +1714,5 @@
   "timezone": "browser",
   "title": "Thermostat Fleet DynamoDB Demo",
   "uid": "ips-phase3-thermostat-fleet",
-  "version": 1
+  "version": 2
 }

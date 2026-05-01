@@ -1,10 +1,10 @@
 # IPS Hand-Off
 
-Last updated: 2026-04-28 (phase 4 slices 1–6 complete: provisioned mode + management events + schedule DSL + utilization metrics)
+Last updated: 2026-04-28 (phase 4 slices 1–7 complete: provisioned mode + management events + schedule DSL + utilization metrics + mixed-mode demo)
 
 ## Current Position
 
-The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phase 3 (on-demand fidelity) is complete. **Phase 4** (provisioned capacity mode and dynamic reconfiguration) is in progress — **slices 1–6 are shipped**, slice 7 remains.
+The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phase 3 (on-demand fidelity) is complete. **Phase 4** (provisioned capacity mode and dynamic reconfiguration) is complete through **slice 7** — all planned slices are shipped.
 
 The simulator supports:
 
@@ -28,7 +28,7 @@ The simulator supports:
 - Monte Carlo multi-trial execution
 - JSONL export (raw + 60s/300s windowed), Postgres staging, provisioned Grafana dashboards
 
-### Phase 4 Status (slices 1–6 complete)
+### Phase 4 Status (all 7 slices complete)
 
 | Slice | Status | Summary |
 |-------|--------|---------|
@@ -38,7 +38,7 @@ The simulator supports:
 | 4. Provisioned Capacity Change Events | **Done** | `UpdateProvisionedCapacity`, `ProvisionedCapacityChanged` metric, no-cooldown capacity updates |
 | 5. Reconfiguration Schedule DSL | **Done** | `ReconfigurationSchedule`, thermostat scenario-config support, managed replicated/global table paths, schedule-driven management injection |
 | 6. Utilization Metrics | **Done** | `ConsumedCapacitySnapshot`, `ProvisionedCapacityUtilization`, `BillingModeSnapshot` emitted per completed tick from `TableAdmissionStage` |
-| 7. Demo Scenario + Grafana Panels | Not started | Mixed-mode thermostat fleet preset, capacity utilization panels |
+| 7. Demo Scenario + Grafana Panels | **Done** | Mixed-mode thermostat fleet: `ThermostatFleetMixedModeBridge`, 4 new `DemoMetric` cases, mixed-mode Grafana dashboard, "right-sizing trap" narrative |
 
 ## Key Architectural Concepts (Phase 4)
 
@@ -101,7 +101,11 @@ The admission stage distinguishes these by pattern-matching `(previousMode, newM
 - [DynamoDbPricing.scala](core/src/main/scala/stochastacy/aws/dynamodb/pricing/DynamoDbPricing.scala)
 
 ### Demo
-- [ThermostatFleetBridge.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetBridge.scala) — primary demo entry point
+- [ThermostatFleetBridge.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetBridge.scala) — primary demo entry point (single-region and multi-region modes)
+- [ThermostatFleetMixedModeBridge.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeBridge.scala) — mixed billing mode demo ("right-sizing trap" narrative)
+- [ThermostatFleetMixedModeConfig.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeConfig.scala) — config for the mixed-mode scenario (mode switch tick, capacity adjust tick, provisioned WCU values)
+- [ThermostatFleetMixedModeSingleTrialRunner.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeSingleTrialRunner.scala) — two-sink graph producing consumption + metric time series
+- [thermostat-fleet-mixed-mode-dashboard.json](examples/grafana/thermostat-fleet-mixed-mode-dashboard.json) — Grafana dashboard (UID `ips-phase4-mixed-mode`)
 - [OrderTrackingPhase2Demo.scala](examples/src/main/scala/stochastacy/examples/ordertracking/OrderTrackingPhase2Demo.scala) — baseline demo
 
 ## Key Proof Tests
@@ -115,7 +119,7 @@ The admission stage distinguishes these by pattern-matching `(previousMode, newM
 - All storage stage specs (GetItem, PutItem, UpdateItem, DeleteItem, Query, Scan)
 - [TableStorageStagePricingIntegrationSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/pricing/TableStorageStagePricingIntegrationSpec.scala)
 
-Total: 250 core tests + 89 examples tests = 339 tests all passing.
+Total: 250 core tests + 134 examples tests = 384 tests all passing.
 
 ## Key Architectural Concepts (Phase 4 Slice 6)
 
@@ -131,13 +135,42 @@ No snapshot is emitted before the first tick completes (`tickWasCompleted` flag 
 
 All three event types route through `metricFlow` in `componentOfShaped`; `admittedFlow` and `responseFlow` drop them.
 
+## Key Architectural Concepts (Phase 4 Slice 7)
+
+### Mixed-Mode Demo ("The Right-Sizing Trap")
+
+`ThermostatFleetMixedModeBridge` is a standalone demo separate from `ThermostatFleetBridge`. It runs the same thermostat fleet workload in a single region but with a billing mode reconfiguration schedule:
+
+1. **On-demand phase** (ticks 0–400): table runs on-demand, workload includes morning spike ~60 WCU peak
+2. **Provisioned phase** (ticks 400–800): switch to provisioned at 35 WCU (110% of ~30 WCU mean, below the spike peak) — throttles fire during every morning spike
+3. **Adjusted provisioned phase** (ticks 800–1200): scale up to 70 WCU — throttles disappear
+
+### New DemoMetric Cases
+
+Four new `DemoMetric` variants added in `model.scala` (sort keys 27–30):
+- `ProvisionedReadCapacityUnits` — provisioned RCU ceiling per tick (SUM rollup, to match WCU on same scale)
+- `ProvisionedWriteCapacityUnits` — provisioned WCU ceiling per tick (SUM rollup)
+- `BillingModeIndicator` — integer code: 0 = on-demand, 1 = provisioned (LAST rollup, step function)
+- `ThrottleCount` — throttled requests per tick (SUM rollup)
+
+### Two-Sink Graph Pattern
+
+`ThermostatFleetMixedModeSingleTrialRunner` uses `DynamoDbTable.componentOfManaged` and wires two parallel fold sinks in a single `RunnableGraph`:
+- `consumptionOut → ConsAcc` — accumulates RCU/WCU per-tick and cumulative cost (same pattern as other runners)
+- `metricOut → MetricAcc` — accumulates `ProvisionedCapacityUtilization`, `BillingModeSnapshot`, and `RequestThrottled` events keyed by tick
+
+The metric accumulator is `Map[Long, MetricTickData]`, where `MetricTickData` holds optional provisioned RCU/WCU and throttle count. On-demand ticks that produce no metric events simply have no entry in the map; ThrottleCount points are only emitted for ticks that appear in the map.
+
+### Grafana Dashboard
+
+UID `ips-phase4-mixed-mode`, slug `ips-phase4-mixed-mode-dynamodb-demo`. Key panels:
+- **Billing Mode Timeline** — stepAfter timeseries of `BillingModeIndicator`
+- **Throttle Rate** — bar chart of `ThrottleCount`
+- **Write/Read Capacity: Consumed vs. Provisioned** — overlaid lines using a SQL pivot query (two metrics in one query, one row per window tick)
+
 ## Recommended Next Work
 
-### Immediate: Phase 4 Slice 7 — Demo Scenario and Grafana Panels
-
-Wire the three new slice-6 metric events through the demo pipeline into Grafana. Add `DemoMetric` cases for `ConsumedReadCapacityUnits`, `ConsumedWriteCapacityUnits`, `ProvisionedReadCapacityUnits`, `ProvisionedWriteCapacityUnits`, and `BillingModeIndicator`. Add rollup routing and update `ThermostatFleetSingleTrialRunner` to consume the metric outlet. Mixed-mode thermostat fleet preset: on-demand for the first third, switch to provisioned at ~110% of observed mean, optionally adjust at 2/3 mark. New Grafana rows: Capacity Utilization, Billing Mode Timeline, Cost Composition.
-
-### Deferred (from phase 3 follow-ons)
+### Phase 4 is Complete — Deferred follow-ons from phase 3
 
 - **rWCU as distinct capacity bucket** — replicated writes currently bill as WCU; AWS bills as rWCU
 - **Tiered cross-region transfer pricing** — slice 10 uses flat rates; real AWS uses tiered
@@ -146,7 +179,7 @@ Wire the three new slice-6 metric events through the demo pipeline into Grafana.
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
-- `sbt test` runs all 339 tests; `sbt "core/test"` runs the 250 core tests
+- `sbt test` runs all 384 tests; `sbt "core/test"` runs the 250 core tests
 - The canonical planning anchor is [ips-phase4.md](../roadmaps/ips-phase4.md); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
 - Phase-4 slices should be implemented one at a time
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries

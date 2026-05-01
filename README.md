@@ -64,7 +64,7 @@ Each simulation follows a three-step workflow: **generate** (run Monte Carlo tri
 
 ### 1. Order-Tracking Demo
 
-A simple e-commerce order-tracking table with `GetItem`, `PutItem`, and `Scan` use-cases. Demonstrates the baseline DynamoDB on-demand cost model: per-tick RCU/WCU consumption, storage growth, and cumulative cost trajectory across 100 Monte Carlo trials.
+A simple e-commerce order-tracking table with `GetItem`, `PutItem`, and `Scan` use-cases. Demonstrates the baseline DynamoDB on-demand cost model: per-tick RCU/WCU consumption, storage growth, and cumulative cost trajectory across 100 Monte Carlo trials over a 20 minute window.
 
 ```bash
 sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge generate --batch-id order-tracking-001 --output /tmp/order-tracking-001.jsonl --trial-count 100 --parallelism 8 --simulation-ticks 1200'

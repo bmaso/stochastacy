@@ -68,7 +68,13 @@ object TimeWindowRollups:
         points.map(_.value).sum
       case DemoMetric.StorageBytes | DemoMetric.RegionStorageBytes(_) =>
         points.map(_.value).sum / BigDecimal(points.size)
-      case DemoMetric.CumulativeEstimatedCost | DemoMetric.RegionCumulativeEstimatedCost(_) =>
+      case DemoMetric.CumulativeEstimatedCost | DemoMetric.RegionCumulativeEstimatedCost(_) |
+          DemoMetric.CumulativeCrossRegionTransferCost =>
+        points.maxBy(_.tick).value
+      case DemoMetric.ThrottleCount | DemoMetric.AdmittedRequestCount |
+          DemoMetric.ProvisionedWriteCapacityUnits =>
+        points.map(_.value).sum
+      case DemoMetric.ProvisionedReadCapacityUnits | DemoMetric.BillingModeIndicator =>
         points.maxBy(_.tick).value
       case unsupported =>
         throw new IllegalArgumentException(s"windowed time-series rollups are not supported for metric: $unsupported")

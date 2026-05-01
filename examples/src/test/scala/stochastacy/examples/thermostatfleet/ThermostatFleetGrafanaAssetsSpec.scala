@@ -35,9 +35,11 @@ class ThermostatFleetGrafanaAssetsSpec extends AnyWordSpec with should.Matchers:
 
     "include per-region panels" in {
       val json = Files.readString(Path.of("examples/grafana/thermostat-fleet-dashboard.json"))
-      json should include("regionName")
-      json should include("Region:${regionName}:WriteCapacityUnits")
-      json should include("Region:${regionName}:ReadCapacityUnits")
+      json should include("Write Capacity Units by Region")
+      json should include("Read Capacity Units by Region")
+      json should include("Cumulative Estimated Cost by Region")
+      json should include("Region:us-east-1:WriteCapacityUnits")
+      json should include("Region:us-east-1:CumulativeEstimatedCost")
     }
 
     "include GSI pressure panels" in {
@@ -52,7 +54,7 @@ class ThermostatFleetGrafanaAssetsSpec extends AnyWordSpec with should.Matchers:
       json should include("Storage Bytes by Window")
       json should include("Cumulative Estimated Cost by Window")
       json should include("Cross-Region Transfer Bytes")
-      json should include("Total Write Capacity Units by Region")
+      json should include("Cumulative Cross-Region Transfer Cost")
     }
 
     "declare required template variables" in {

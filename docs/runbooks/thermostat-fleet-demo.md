@@ -77,6 +77,49 @@ This simulates a fleet in three regions:
 sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-fleet-mr-001.jsonl --batch-id thermostat-fleet-mr-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 4 --simulation-ticks 1200'
 ```
 
+## Mixed-Mode
+
+### Generate A Batch
+
+```bash
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-fleet-mm-001 --output /tmp/thermostat-fleet-mm-001.jsonl --mode mixed-mode --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+```
+
+This simulates the thermostat fleet in a single region (`us-east-1`) across three billing-mode phases:
+
+1. **On-demand (ticks 1–400):** No capacity ceiling. The fleet consumes approximately 3,800 WCU/tick at the observed mean, rising with fleet growth.
+2. **Provisioned — initial capacity (ticks 400–800):** Billing mode switches to provisioned at 4,000 WCU (≈105% of the observed on-demand mean) and 250 RCU. This level is intentionally set below the 2× morning-spike peak. Throttles begin as soon as the spike ramps up around tick 420 and clear when it subsides around tick 540.
+3. **Provisioned — adjusted capacity (ticks 800–1200):** Provisioned capacity is raised to 12,500 WCU and 100 RCU at the two-thirds mark. This provides headroom above the 2× evening-spike peak (≈7,600 WCU) and eliminates all throttling for the remainder of the simulation.
+
+Optional flags let you override the provisioned levels at the command line:
+
+```bash
+--initial-provisioned-wcu <long>    # default: 4200
+--adjusted-provisioned-wcu <long>   # default: 12500
+```
+
+### Spike Narrative
+
+The chart shows two notable operation features in the provisioned phases:
+
+- **Morning traffic spike (~ticks 420–540):** Every device reports telemetry at 2× the normal rate as users start their day. This is a deterministic triangular peak built into the fleet behavior. Under the 4,000 WCU initial ceiling the peak demand of ≈7,600 WCU cannot be fully admitted, so throttling appears sharply and subsides once the spike rolls off around tick 540. On the Grafana time axis (which treats each tick as one Unix second), this feature appears at approximately the 7-minute mark of the 20-minute simulation window — around 16:07 UTC in the dashboard default epoch.
+
+- **Capacity adjustment (~tick 800):** Provisioned WCU jumps from 4,200 to 12,500. The admission stage immediately opens the ceiling to full demand, producing a visible step-up in consumed WCU and admitted request count. On the Grafana time axis this appears at approximately the 13-minute mark — around 16:13 UTC. Because admitted-request and WCU metrics rise sharply from the provisioned floor to the full demand level, this step-up is visually prominent and may appear as a second "spike" adjacent to the post-adjustment plateau.
+
+A symmetric **evening spike** (ticks 1020–1140) falls entirely within the 12,500 WCU envelope and produces no throttling — it is visible as a smooth rise-and-fall in the WCU and admitted-request charts with no corresponding throttle events.
+
+### Stage A Batch
+
+```bash
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-fleet-mm-001.jsonl --batch-id thermostat-fleet-mm-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+```
+
+### Open The Mixed-Mode Dashboard
+
+```bash
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-fleet-mm-001 --mode mixed-mode'
+```
+
 ## Open The Dashboard
 
 Print the Grafana URL:
