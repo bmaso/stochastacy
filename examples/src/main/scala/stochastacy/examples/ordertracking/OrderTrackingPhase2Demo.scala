@@ -4,7 +4,7 @@ import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
 import org.json4s.*
 import org.json4s.jackson.JsonMethods.parse
-import stochastacy.demo.{DemoExportBundle, DemoExportRecord, DemoJsonlExporter, DemoReportBuilder, FutureMultiTrialExecutor, TrialExecutionConfig}
+import stochastacy.demo.{DemoExportBundle, DemoExportRecord, DemoJsonlExporter, DemoReportBuilder, FutureMultiTrialExecutor, IncrementalMonteCarloAgg, IncrementalWindowedAgg, TimeWindowRollups, TrialExecutionConfig, WindowSizeSeconds}
 
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -362,6 +362,104 @@ object OrderTrackingPhase2DemoRunner:
       case None =>
         rendered
 
+  /**
+   * Memory-bounded generate-to-file path. Processes one trial at a time (respecting parallelism),
+   * serialises per-trial records to the output file immediately so TrialResult objects can be GC'd,
+   * and keeps only compact Welford accumulators for the aggregate — memory is O(ticks × metrics),
+   * independent of trial count.
+   */
+  def generateToFile(
+    outputPath: Path,
+    trialCount: Int,
+    parallelism: Int,
+    simulationTicks: Long
+  )(using ActorSystem, Materializer, ExecutionContext): Future[String] =
+    import org.apache.pekko.stream.scaladsl.{Source => PekkoSource}
+    import org.json4s.jackson.Serialization
+    given org.json4s.DefaultFormats = org.json4s.DefaultFormats
+
+    val scenarioConfig = OrderTrackingScenarioConfig.phase2Default.copy(
+      trialCount = trialCount,
+      parallelism = parallelism,
+      simulationTicks = simulationTicks
+    )
+    val runner = OrderTrackingSingleTrialRunner()
+    val exec = TrialExecutionConfig(trialCount, parallelism, Phase2BaseSeed)
+
+    val writer = new java.io.BufferedWriter(
+      new java.io.OutputStreamWriter(
+        java.nio.file.Files.newOutputStream(outputPath),
+        java.nio.charset.StandardCharsets.UTF_8
+      )
+    )
+
+    case class AggState(
+      mcAgg: IncrementalMonteCarloAgg,
+      windowedAgg: Map[WindowSizeSeconds, IncrementalWindowedAgg],
+      recordCount: Int,
+      completedTrials: Int
+    )
+
+    val initState = AggState(
+      mcAgg = IncrementalMonteCarloAgg(scenarioConfig.scenarioId),
+      windowedAgg = WindowSizeSeconds.phase1Values.map(ws => ws -> IncrementalWindowedAgg(ws)).toMap,
+      recordCount = 0,
+      completedTrials = 0
+    )
+
+    def writeRecord(rec: DemoExportRecord): Unit =
+      writer.write(Serialization.write(rec))
+      writer.newLine()
+
+    val barWidth = 40
+    def printProgress(completed: Int): Unit =
+      val pct    = if trialCount == 0 then 100 else (completed * 100) / trialCount
+      val filled = if trialCount == 0 then barWidth else (completed * barWidth) / trialCount
+      val bar    = "█" * filled + "░" * (barWidth - filled)
+      print(s"\r[$bar] $completed/$trialCount ($pct%)")
+      System.out.flush()
+
+    printProgress(0)
+
+    PekkoSource(exec.trialRunConfigs)
+      .mapAsync(parallelism)(run => runner.runTrial(scenarioConfig, run))
+      .runFold(initState) { (state, trial) =>
+        val perTrialRecs =
+          DemoExportRecord.fromTrialResult(trial) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromWindowedTrialTimeSeries(
+                trial.scenarioId, trial.trialId,
+                TimeWindowRollups.rollupTrialTimeSeries(trial.timeSeries, ws)
+              )
+            }
+        perTrialRecs.foreach(writeRecord)
+        val newCompleted = state.completedTrials + 1
+        printProgress(newCompleted)
+        state.copy(
+          mcAgg = state.mcAgg.addTrial(trial),
+          windowedAgg = state.windowedAgg.map { case (ws, wagg) => ws -> wagg.addTrial(trial.timeSeries) },
+          recordCount = state.recordCount + perTrialRecs.size,
+          completedTrials = newCompleted
+        )
+      }
+      .map { finalState =>
+        val mcResult = finalState.mcAgg.toMonteCarloResult
+        val aggRecs =
+          DemoExportRecord.fromMonteCarloResult(mcResult) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromAggregatedWindowedTimeSeries(
+                mcResult.scenarioId, mcResult.trialCount,
+                finalState.windowedAgg(ws).toAggregatedWindowedPoints
+              )
+            }
+        aggRecs.foreach(writeRecord)
+        writer.flush()
+        writer.close()
+        println()
+        s"wrote ${finalState.recordCount + aggRecs.size} records for scenario ${mcResult.scenarioId} to $outputPath"
+      }
+      .andThen { case scala.util.Failure(_) => println(); Try(writer.close()) }(ExecutionContext.parasitic)
+
 final case class StagedDemoRecord(
                                    recordType: String,
                                    scenarioId: String,
@@ -376,6 +474,8 @@ final case class StagedDemoRecord(
 
 object OrderTrackingPostgresBridge:
   private given Formats = DefaultFormats
+  private val JdbcFlushSize = 1000
+  private val SpinnerChars = Array('|', '/', '-', '\\')
 
   def stage(
              inputPath: Path,
@@ -384,22 +484,74 @@ object OrderTrackingPostgresBridge:
              dbUser: String,
              dbPassword: String
            ): Int =
-    val records = parseJsonl(Files.readString(inputPath), expectedScenarioId = metadata.scenarioId)
-    require(records.nonEmpty, "JSONL input must not be empty")
-
     val connection = DriverManager.getConnection(dbUrl, dbUser, dbPassword)
     try
       connection.setAutoCommit(false)
       insertBatch(connection, metadata)
-      insertRecords(connection, metadata.batchId, records)
+      val count = insertRecordsStreaming(connection, metadata.batchId, metadata.scenarioId, inputPath)
+      require(count > 0, "JSONL input must not be empty")
       connection.commit()
-      records.size
+      count
     catch
       case t: Throwable =>
         Try(connection.rollback())
         throw t
     finally
       connection.close()
+
+  private def insertRecordsStreaming(
+    connection: Connection,
+    batchId: String,
+    expectedScenarioId: String,
+    inputPath: Path
+  ): Int =
+    val sql =
+      """insert into stochastacy_demo.demo_records
+        |(batch_id, record_type, scenario_id, trial_id, tick, window_size_seconds, window_start_tick, metric, statistic, "value")
+        |values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin
+    val stmt = connection.prepareStatement(sql)
+    var count = 0
+    var spinnerIdx = 0
+
+    def flushBatch(): Unit =
+      stmt.executeBatch()
+      print(s"\r${SpinnerChars(spinnerIdx % SpinnerChars.length)} staging...")
+      System.out.flush()
+      spinnerIdx += 1
+
+    print(s"\r${SpinnerChars(0)} staging...")
+    System.out.flush()
+    try
+      val fileSource = Source.fromFile(inputPath.toFile, "UTF-8")
+      try
+        for line <- fileSource.getLines() do
+          val trimmed = line.trim
+          if trimmed.nonEmpty then
+            val record = parseRecord(trimmed)
+            require(
+              record.scenarioId == expectedScenarioId,
+              s"JSONL record has scenarioId '${record.scenarioId}', expected '$expectedScenarioId'"
+            )
+            stmt.setString(1, batchId)
+            stmt.setString(2, record.recordType)
+            stmt.setString(3, record.scenarioId)
+            stmt.setObject(4, record.trialId.map(Int.box).orNull)
+            stmt.setObject(5, record.tick.map(Long.box).orNull)
+            stmt.setObject(6, record.windowSizeSeconds.map(Int.box).orNull)
+            stmt.setObject(7, record.windowStartTick.map(Long.box).orNull)
+            stmt.setString(8, record.metric)
+            stmt.setString(9, record.statistic.orNull)
+            stmt.setBigDecimal(10, record.value.bigDecimal)
+            stmt.addBatch()
+            count += 1
+            if count % JdbcFlushSize == 0 then flushBatch()
+        if count % JdbcFlushSize != 0 then flushBatch()
+      finally
+        fileSource.close()
+      println()
+      count
+    finally
+      stmt.close()
 
   def parseJsonl(
                   jsonl: String,
@@ -521,26 +673,16 @@ object OrderTrackingGrafanaView:
 
           val outcome =
             try
-              val bundle = Await.result(
-                OrderTrackingPhase2DemoRunner.run(
-                  OrderTrackingPhase2DemoOptions(
-                    outputPath = Some(generate.outputPath),
-                    trialCount = generate.trialCount,
-                    parallelism = generate.parallelism,
-                    simulationTicks = generate.simulationTicks
-                  )
-                ),
-                10.minutes
-              )
-              OrderTrackingPhase2DemoRunner.emit(
-                OrderTrackingPhase2DemoOptions(
-                  outputPath = Some(generate.outputPath),
+              val message = Await.result(
+                OrderTrackingPhase2DemoRunner.generateToFile(
+                  outputPath = generate.outputPath,
                   trialCount = generate.trialCount,
                   parallelism = generate.parallelism,
                   simulationTicks = generate.simulationTicks
                 ),
-                bundle
+                10.minutes
               )
+              println(message)
               println(s"generated batch ${generate.batchId} to ${generate.outputPath}")
               Success(())
             catch

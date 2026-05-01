@@ -21,9 +21,9 @@ These events are not billing totals. They are simulation facts that should be st
 - support both tables and future index work without redesign
 - start small for phase 1, but avoid immediate redesign later
 
-## Relationship To `TableStage4`
+## Relationship To `TableStorageStage`
 
-`TableStage4` is the storage-facing data-plane component for DynamoDB table execution.
+`TableStorageStage` is the storage-facing data-plane component for DynamoDB table execution.
 
 Its outputs should conceptually remain split into:
 
@@ -235,11 +235,11 @@ This keeps update and delete accounting aligned with the mutable summary-state m
 
 ## Separation From Pricing
 
-The pricing layer should remain separate from `TableStage4`.
+The pricing layer should remain separate from `TableStorageStage`.
 
 Recommended flow:
 
-1. `TableStage4` emits `DynamoDbConsumptionEvent`
+1. `TableStorageStage` emits `DynamoDbConsumptionEvent`
 2. a usage aggregation layer folds those events into usage totals
 3. pricing translates usage totals into cost estimates
 
@@ -264,7 +264,7 @@ These are additive quantities. Pricing for these can be derived accurately from 
 
 This is the purpose of the usage aggregation layer:
 
-- raw timed consumption events are emitted by `TableStage4`
+- raw timed consumption events are emitted by `TableStorageStage`
 - those events are folded into stable usage totals
 - pricing for countable consumption can be computed from those totals
 

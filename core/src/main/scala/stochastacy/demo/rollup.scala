@@ -61,11 +61,20 @@ object TimeWindowRollups:
                           ): BigDecimal =
     metric match
       case DemoMetric.ReadCapacityUnits | DemoMetric.WriteCapacityUnits |
-          DemoMetric.GsiReadCapacityUnits(_) | DemoMetric.GsiWriteCapacityUnits(_) =>
+          DemoMetric.GsiReadCapacityUnits(_) | DemoMetric.GsiWriteCapacityUnits(_) |
+          DemoMetric.RegionReadCapacityUnits(_) | DemoMetric.RegionWriteCapacityUnits(_) |
+          DemoMetric.RegionReplicatedWriteCapacityUnits(_) |
+          DemoMetric.CrossRegionTransferBytes(_, _) =>
         points.map(_.value).sum
-      case DemoMetric.StorageBytes =>
+      case DemoMetric.StorageBytes | DemoMetric.RegionStorageBytes(_) =>
         points.map(_.value).sum / BigDecimal(points.size)
-      case DemoMetric.CumulativeEstimatedCost =>
+      case DemoMetric.CumulativeEstimatedCost | DemoMetric.RegionCumulativeEstimatedCost(_) |
+          DemoMetric.CumulativeCrossRegionTransferCost =>
+        points.maxBy(_.tick).value
+      case DemoMetric.ThrottleCount | DemoMetric.AdmittedRequestCount |
+          DemoMetric.ProvisionedWriteCapacityUnits =>
+        points.map(_.value).sum
+      case DemoMetric.ProvisionedReadCapacityUnits | DemoMetric.BillingModeIndicator =>
         points.maxBy(_.tick).value
       case unsupported =>
         throw new IllegalArgumentException(s"windowed time-series rollups are not supported for metric: $unsupported")
@@ -85,3 +94,29 @@ object TimeWindowRollups:
       AggregateStatistic.Mean -> mean,
       AggregateStatistic.StdDev -> stddev
     )
+
+/**
+ * Incremental windowed aggregator: folds one trial's timeSeries at a time into Welford accumulators
+ * so that completed TrialResult timeSeries data can be GC'd — state size is O(windows × metrics),
+ * independent of trial count.
+ */
+final case class IncrementalWindowedAgg(
+  windowSize: WindowSizeSeconds,
+  acc: Map[(Long, DemoMetric), WelfordAcc] = Map.empty
+):
+  def addTrial(timeSeries: Vector[SimulationTimeSeriesPoint]): IncrementalWindowedAgg =
+    val windowed = TimeWindowRollups.rollupTrialTimeSeries(timeSeries, windowSize)
+    val newAcc = windowed.foldLeft(acc) { (a, point) =>
+      val key = (point.windowStartTick, point.metric)
+      a.updated(key, a.getOrElse(key, WelfordAcc()).update(point.value))
+    }
+    copy(acc = newAcc)
+
+  def toAggregatedWindowedPoints: Vector[AggregatedWindowedTimeSeriesPoint] =
+    acc.keySet.toVector
+      .sortBy { case (windowStart, metric) => (windowStart, metric.sortKey) }
+      .flatMap { case (windowStart, metric) =>
+        acc((windowStart, metric)).toStatisticPairs.map { case (stat, value) =>
+          AggregatedWindowedTimeSeriesPoint(windowSize.seconds, windowStart, metric, stat, value)
+        }
+      }

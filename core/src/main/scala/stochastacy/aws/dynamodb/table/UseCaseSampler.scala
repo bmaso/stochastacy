@@ -2,6 +2,9 @@ package stochastacy.aws.dynamodb.table
 
 import stochastacy.aws.dynamodb.{DeleteItemRequest, GetItemRequest, PutItemRequest, QueryRequest, ScanRequest, UpdateItemRequest}
 
+/** Bundles table state with the current simulation tick for time-aware samplers. */
+final case class SamplerContext[T <: TableState](state: T, currentTick: Long)
+
 /**
  * This trait describes the stochastic table behavior for requests against a table whose
  * internal state is represented by an instance of `T <: TableState`.
@@ -10,21 +13,21 @@ import stochastacy.aws.dynamodb.{DeleteItemRequest, GetItemRequest, PutItemReque
  * "update" requests to the table.
  */
 trait UseCaseSampler[T <: TableState]:
-  /** @returns a sample representing a `GetItem` hit, or `None` for a miss. */
-  def getItem(request: GetItemRequest, s: T): Option[GetItemSample] =
+  /** @returns a sample representing a `GetItem` hit or miss. */
+  def getItem(request: GetItemRequest, ctx: SamplerContext[T]): GetItemSample =
     throw new UnsupportedOperationException(s"GetItem is not supported for use-case '${request.usecase}'")
 
-  def query(request: QueryRequest, s: T): QuerySample =
+  def query(request: QueryRequest, ctx: SamplerContext[T]): QuerySample =
     throw new UnsupportedOperationException(s"Query is not supported for use-case '${request.usecase}'")
 
-  def scan(request: ScanRequest, s: T): ScanSample =
+  def scan(request: ScanRequest, ctx: SamplerContext[T]): ScanSample =
     throw new UnsupportedOperationException(s"Scan is not supported for use-case '${request.usecase}'")
 
-  def putItem(request: PutItemRequest, s: T): PutItemSample =
+  def putItem(request: PutItemRequest, ctx: SamplerContext[T]): PutItemSample =
     throw new UnsupportedOperationException(s"PutItem is not supported for use-case '${request.usecase}'")
 
-  def updateItem(request: UpdateItemRequest, s: T): UpdateItemSample =
+  def updateItem(request: UpdateItemRequest, ctx: SamplerContext[T]): UpdateItemSample =
     throw new UnsupportedOperationException(s"UpdateItem is not supported for use-case '${request.usecase}'")
 
-  def deleteItem(request: DeleteItemRequest, s: T): DeleteItemSample =
+  def deleteItem(request: DeleteItemRequest, ctx: SamplerContext[T]): DeleteItemSample =
     throw new UnsupportedOperationException(s"DeleteItem is not supported for use-case '${request.usecase}'")

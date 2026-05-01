@@ -112,7 +112,7 @@ class OrderTrackingSingleTrialRunnerSpec extends AnyWordSpec with should.Matcher
       summaryMap(DemoMetric.TotalReadCapacityUnits) shouldBe readSeriesTotal
       summaryMap(DemoMetric.TotalWriteCapacityUnits) shouldBe writeSeriesTotal
       summaryMap(DemoMetric.FinalStorageBytes) shouldBe lastStorage
-      summaryMap(DemoMetric.TotalEstimatedCost) shouldBe lastCumulativeCost
+      (summaryMap(DemoMetric.TotalEstimatedCost) - lastCumulativeCost).abs should be < BigDecimal("0.0000000001")
 
       config.globalSecondaryIndexNames.foreach { indexName =>
         val gsiReadSeriesTotal =

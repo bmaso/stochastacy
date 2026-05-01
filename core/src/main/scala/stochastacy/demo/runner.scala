@@ -15,6 +15,11 @@ final case class TrialExecutionConfig(
   require(trialCount >= 1, "trialCount must be at least 1")
   require(parallelism >= 1, "parallelism must be at least 1")
 
+  def trialRunConfigs: Vector[TrialRunConfig] =
+    Vector.tabulate(trialCount) { trialId =>
+      TrialRunConfig(trialId, baseSeed ^ (0x9E3779B97F4A7C15L * (trialId.toLong + 1L)))
+    }
+
 trait MultiTrialExecutor[C]:
   def runTrials(config: C, exec: TrialExecutionConfig): Future[Vector[TrialResult]]
 

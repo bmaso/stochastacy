@@ -56,6 +56,68 @@ A stochastic data generator, utilizing the Pekko Streaming API.
   - Each request is associated with a use-case, which determines the request latency (wall clock time) and other
     resources consumed by the request
 
+## Running the Example Simulations
+
+Each simulation follows a three-step workflow: **generate** (run Monte Carlo trials, write JSONL), **stage** (load JSONL into Postgres), **view** (print a Grafana URL to open in a browser). Docker must be running (`docker compose up -d`) before staging, and Grafana must be reachable for the view URL to work.
+
+---
+
+### 1. Order-Tracking Demo
+
+A simple e-commerce order-tracking table with `GetItem`, `PutItem`, and `Scan` use-cases. Demonstrates the baseline DynamoDB on-demand cost model: per-tick RCU/WCU consumption, storage growth, and cumulative cost trajectory across 100 Monte Carlo trials over a 20 minute window.
+
+```bash
+sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge generate --batch-id order-tracking-001 --output /tmp/order-tracking-001.jsonl --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge stage --input /tmp/order-tracking-001.jsonl --batch-id order-tracking-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge view --batch-id order-tracking-001'
+```
+
+---
+
+### 2. Thermostat Fleet — Single Region
+
+An IoT thermostat fleet writing telemetry, serving customer-support queries via GSI, and running periodic fleet-dashboard scans. Demonstrates on-demand throttling under load spikes (morning and evening peaks, random alert storms), hot-partition enforcement, burst capacity rescue, GSI write amplification, LSI item-collection size limits, and dynamic partition topology evolution.
+
+```bash
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-sr-001 --output /tmp/thermostat-sr-001.jsonl --mode single-region --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-sr-001.jsonl --batch-id thermostat-sr-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-sr-001 --mode single-region'
+```
+
+---
+
+### 3. Thermostat Fleet — Multi-Region (Global Table)
+
+The same thermostat fleet workload spread across three AWS regions (us-east-1, eu-west-1, ap-southeast-1) as a DynamoDB Global Table. Demonstrates stochastic cross-region replication lag, replicated write capacity unit (rWCU) billing, per-region capacity and cost breakdown, and cross-region data transfer costs.
+
+```bash
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-mr-001 --output /tmp/thermostat-mr-001.jsonl --mode multi-region --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-mr-001.jsonl --batch-id thermostat-mr-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-mr-001 --mode multi-region'
+```
+
+---
+
+### 4. Thermostat Fleet — Mixed Billing Mode
+
+The thermostat fleet in a single region, running first in on-demand mode then switching to provisioned capacity mid-simulation. Demonstrates the **right-sizing trap**: the table is provisioned at 110% of the observed on-demand mean, which is below the morning-spike peak. Throttles spike immediately after the mode switch, then disappear after the provisioned capacity is scaled up at the two-thirds mark. Grafana panels show billing mode timeline, throttle rate, provisioned vs. consumed capacity utilization, and cost composition (consumption-driven on-demand cost vs. reservation-driven provisioned cost).
+
+```bash
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetMixedModeBridge generate --batch-id thermostat-mm-001 --output /tmp/thermostat-mm-001.jsonl --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetMixedModeBridge stage --input /tmp/thermostat-mm-001.jsonl --batch-id thermostat-mm-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetMixedModeBridge view --batch-id thermostat-mm-001'
+```
+
+---
+
 ## DynamoDB Table simulator development curriculum
 
 1. Phase 1 - Table data plane with usecases consisting of `GetItem` and `PutItem` operations 

@@ -35,7 +35,7 @@ class OrderTrackingGrafanaAssetsSpec extends AnyWordSpec with should.Matchers:
       dashboardJson should include("Total Write Capacity Units by Window")
       dashboardJson should include("GSI Read Capacity Units by Window")
       dashboardJson should include("GSI Write Capacity Units by Window")
-      dashboardJson should include("GSI Read Capacity Units Central Range")
-      dashboardJson should include("GSI Write Capacity Units Central Range")
+      dashboardJson should include("Mean expected requests per second: 8.05")
+      dashboardJson should include("pay-per-request style pricing")
     }
   }

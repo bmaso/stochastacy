@@ -30,7 +30,7 @@ Phase 1 is now functionally complete.
 
 The current codebase includes:
 
-- `TableStage4` support for `GetItem`, `PutItem`, `UpdateItem`, and `DeleteItem`
+- `TableStorageStage` support for `GetItem`, `PutItem`, `UpdateItem`, and `DeleteItem`
 - mutable stochastic-summary table state for table-only CRUD behavior
 - raw DynamoDB consumption events and metric events
 - additive usage aggregation
@@ -54,7 +54,7 @@ Remaining work is limited to operator notes, documentation hygiene, and small pr
 
 ### 2. DynamoDB Table Core
 
-- `TableStage4` stable for admitted data-plane requests
+- `TableStorageStage` stable for admitted data-plane requests
 - `GetItem`, `PutItem`, `UpdateItem`, and `DeleteItem` modeled coherently
 - Table state represented clearly enough to support read and write behavior
 - Timing and control-event propagation correct on all outputs
@@ -131,7 +131,7 @@ The delivered phase-1 demo now includes:
 ### 9. More Realistic DynamoDB Behavior
 
 - Richer capacity behavior
-- Throttling and admission stages above `TableStage4`
+- Throttling and admission stages above `TableStorageStage`
 - Burst or adaptive-capacity behavior
 - More precise billing rules
 

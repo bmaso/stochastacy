@@ -8,7 +8,7 @@ The phase-1 demo:
 
 - uses a table-only DynamoDB simulation
 - uses an `order-tracking` scenario
-- exercises all currently implemented Stage 4 operations:
+- exercises all currently implemented TableStorageStage operations:
   - `GetItem`
   - `PutItem`
   - `UpdateItem`

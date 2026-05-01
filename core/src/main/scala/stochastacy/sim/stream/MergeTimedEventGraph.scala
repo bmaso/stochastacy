@@ -196,6 +196,14 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
 
 object MergeTimedEventGraph:
 
+  /**
+   * A `Graph` form of the merger, suitable for use inside a `GraphDSL.create()` block. The
+   * `apply` overloads below are `Source`-shaped factories; this factory returns the underlying
+   * graph stage so callers can wire it into larger graphs that aren't `Source`-shaped.
+   */
+  def graphOf(bufferSize: Int = 10): GraphStage[FanInShape2[TimedEvent, TimedEvent, TimedEvent]] =
+    new MergeTimedEventGraph(bufferSize)
+
   extension [MatT](source1: Source[TimedEvent, MatT])
     def mergeWithTimeEventSource[MatU](source2: Source[TimedEvent, MatU], bufferSize: Int = 10): Source[TimedEvent, (MatT, MatU)] =
       apply(source1, source2, bufferSize)

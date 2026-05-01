@@ -5,6 +5,7 @@ import stochastacy.aws.dynamodb.table.{DynamoDbConsumptionEvent, DynamoDbTarget}
 final case class DynamoDbTargetUsageTotals(
                                             readCapacityUnits: BigDecimal = BigDecimal(0),
                                             writeCapacityUnits: BigDecimal = BigDecimal(0),
+                                            replicatedWriteCapacityUnits: BigDecimal = BigDecimal(0),
                                             storageBytesRead: Long = 0L,
                                             storageBytesWritten: Long = 0L,
                                             storageBytesDeleted: Long = 0L,
@@ -40,6 +41,9 @@ object DynamoDbUsageTotals:
 
       case DynamoDbConsumptionEvent.WriteCapacityConsumed(_, _, _, units) =>
         acc.copy(writeCapacityUnits = acc.writeCapacityUnits + units)
+
+      case DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed(_, _, _, units) =>
+        acc.copy(replicatedWriteCapacityUnits = acc.replicatedWriteCapacityUnits + units)
 
       case DynamoDbConsumptionEvent.StorageBytesRead(_, _, _, bytes) =>
         acc.copy(storageBytesRead = acc.storageBytesRead + bytes)
