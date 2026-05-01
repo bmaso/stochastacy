@@ -180,6 +180,48 @@ class CrossRegionTransferPricingSpec extends AnyWordSpec with should.Matchers:
       // 1 GiB × $0.09 + 1 GiB × $0.06 = $0.15
       breakdown.totalCost shouldBe BigDecimal("0.15")
     }
+
+    "tiered: single source with two destinations aggregates bytes across pairs before applying tiers" in {
+      // Tier: first 1 GiB at $0.10, remainder at $0.05
+      val tiers = Vector(
+        TransferPricingTier(Some(OneGiB), BigDecimal("0.10")),
+        TransferPricingTier(None,         BigDecimal("0.05"))
+      )
+      // us-east-1 sends 3/4 GiB to each of two destinations = 3/2 GiB total, crossing 1 GiB boundary.
+      // Per-pair (wrong) would see 0.75 GiB each, both within tier-1 → $0.15.
+      // Per-source (correct): 1 GiB × $0.10 + 0.5 GiB × $0.05 = $0.125.
+      val totals = Seq(
+        CrossRegionTransferEvent(SimTime.of(1L), "u", "us-east-1", "eu-west-1",      "DynamoDB", OneGiB * 3 / 4),
+        CrossRegionTransferEvent(SimTime.of(1L), "u", "us-east-1", "ap-southeast-1", "DynamoDB", OneGiB * 3 / 4)
+      ).foldLeft(CrossRegionTransferUsageTotals())(CrossRegionTransferUsageTotals.accumulate)
+      val rates = CrossRegionTransferPricingRates(tiersBySourceRegion = Map("us-east-1" -> tiers))
+      val breakdown = CrossRegionTransferCostBreakdown.price(totals, rates)
+
+      breakdown.totalCost shouldBe BigDecimal("0.125")
+      // Pair costs distribute proportionally (equal halves here) and must sum back to totalCost
+      breakdown.costByDirectionalPair.values.foldLeft(BigDecimal(0))(_ + _) shouldBe BigDecimal("0.125")
+    }
+
+    "tiered: two source regions apply tier schedules independently of each other" in {
+      val tiers = Vector(
+        TransferPricingTier(Some(OneGiB), BigDecimal("0.10")),
+        TransferPricingTier(None,         BigDecimal("0.05"))
+      )
+      // us-east-1 → eu-west-1: 1.5 GiB → $0.10 + 0.025 = $0.125
+      // eu-west-1 → us-east-1: 0.5 GiB → $0.05
+      val totals = Seq(
+        CrossRegionTransferEvent(SimTime.of(1L), "u", "us-east-1", "eu-west-1", "DynamoDB", OneGiB + OneGiB / 2),
+        CrossRegionTransferEvent(SimTime.of(1L), "u", "eu-west-1", "us-east-1", "DynamoDB", OneGiB / 2)
+      ).foldLeft(CrossRegionTransferUsageTotals())(CrossRegionTransferUsageTotals.accumulate)
+      val rates = CrossRegionTransferPricingRates(
+        defaultTiers = Some(tiers)
+      )
+      val breakdown = CrossRegionTransferCostBreakdown.price(totals, rates)
+
+      breakdown.totalCost shouldBe BigDecimal("0.175")
+      breakdown.costByDirectionalPair(("us-east-1", "eu-west-1")) shouldBe BigDecimal("0.125")
+      breakdown.costByDirectionalPair(("eu-west-1", "us-east-1")) shouldBe BigDecimal("0.05")
+    }
   }
 
   "CrossRegionTransferPricingRates" should {
