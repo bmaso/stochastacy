@@ -433,6 +433,120 @@ object ThermostatFleetGrafanaView:
   private def encode(value: String): String =
     URLEncoder.encode(value, StandardCharsets.UTF_8)
 
+object ThermostatFleetMixedModeDemoRunner:
+  val BaseSeed: Long = 20260426L
+
+  def generateToFile(
+    outputPath: Path,
+    trialCount: Int,
+    parallelism: Int,
+    simulationTicks: Long,
+    initialProvisionedWcu: Long,
+    adjustedProvisionedWcu: Long
+  )(using ActorSystem, Materializer, ExecutionContext): Future[String] =
+    import org.apache.pekko.stream.scaladsl.{Source => PekkoSource}
+    import org.json4s.jackson.Serialization
+    given org.json4s.DefaultFormats = org.json4s.DefaultFormats
+
+    val modeSwitchTick    = simulationTicks / 3
+    val capacityAdjustTick = simulationTicks * 2 / 3
+    val config = ThermostatFleetMixedModeConfig(
+      trialCount             = trialCount,
+      parallelism            = parallelism,
+      simulationTicks        = simulationTicks,
+      modeSwitchTick         = modeSwitchTick,
+      capacityAdjustTick     = capacityAdjustTick,
+      initialProvisionedWcu  = initialProvisionedWcu,
+      adjustedProvisionedWcu = adjustedProvisionedWcu
+    )
+    val runner = ThermostatFleetMixedModeSingleTrialRunner()
+    val exec   = TrialExecutionConfig(trialCount, parallelism, BaseSeed)
+
+    val writer = new java.io.BufferedWriter(
+      new java.io.OutputStreamWriter(
+        java.nio.file.Files.newOutputStream(outputPath),
+        java.nio.charset.StandardCharsets.UTF_8
+      )
+    )
+
+    case class AggState(
+      mcAgg: IncrementalMonteCarloAgg,
+      windowedAgg: Map[WindowSizeSeconds, IncrementalWindowedAgg],
+      recordCount: Int,
+      completedTrials: Int
+    )
+
+    val initState = AggState(
+      mcAgg = IncrementalMonteCarloAgg(config.scenarioId),
+      windowedAgg = WindowSizeSeconds.phase1Values.map(ws => ws -> IncrementalWindowedAgg(ws)).toMap,
+      recordCount = 0,
+      completedTrials = 0
+    )
+
+    def writeRecord(rec: DemoExportRecord): Unit =
+      writer.write(Serialization.write(rec))
+      writer.newLine()
+
+    val barWidth = 40
+    def printProgress(completed: Int): Unit =
+      val pct    = if trialCount == 0 then 100 else (completed * 100) / trialCount
+      val filled = if trialCount == 0 then barWidth else (completed * barWidth) / trialCount
+      val bar    = "█" * filled + "░" * (barWidth - filled)
+      print(s"\r[$bar] $completed/$trialCount ($pct%)")
+      System.out.flush()
+
+    printProgress(0)
+
+    PekkoSource(exec.trialRunConfigs)
+      .mapAsync(parallelism)(run => runner.runTrial(config, run))
+      .runFold(initState) { (state, trial) =>
+        val perTrialRecs =
+          DemoExportRecord.fromTrialResult(trial) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromWindowedTrialTimeSeries(
+                trial.scenarioId, trial.trialId,
+                TimeWindowRollups.rollupTrialTimeSeries(trial.timeSeries, ws)
+              )
+            }
+        perTrialRecs.foreach(writeRecord)
+        val newCompleted = state.completedTrials + 1
+        printProgress(newCompleted)
+        state.copy(
+          mcAgg = state.mcAgg.addTrial(trial),
+          windowedAgg = state.windowedAgg.map { case (ws, wagg) => ws -> wagg.addTrial(trial.timeSeries) },
+          recordCount = state.recordCount + perTrialRecs.size,
+          completedTrials = newCompleted
+        )
+      }
+      .map { finalState =>
+        val mcResult = finalState.mcAgg.toMonteCarloResult
+        val aggRecs =
+          DemoExportRecord.fromMonteCarloResult(mcResult) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromAggregatedWindowedTimeSeries(
+                mcResult.scenarioId, mcResult.trialCount,
+                finalState.windowedAgg(ws).toAggregatedWindowedPoints
+              )
+            }
+        aggRecs.foreach(writeRecord)
+        writer.flush()
+        writer.close()
+        println()
+        s"wrote ${finalState.recordCount + aggRecs.size} records for scenario ${mcResult.scenarioId} to $outputPath"
+      }
+      .andThen { case scala.util.Failure(_) => println(); scala.util.Try(writer.close()) }(ExecutionContext.parasitic)
+
+object ThermostatFleetMixedModeGrafanaView:
+  private val DashboardUid  = "ips-phase4-mixed-mode"
+  private val DashboardSlug = "thermostat-fleet-mixed-billing-mode-demo"
+
+  def url(grafanaBaseUrl: String, batchId: String, scenarioId: String): String =
+    val base = grafanaBaseUrl.stripSuffix("/")
+    s"$base/d/$DashboardUid/$DashboardSlug?var-batch_id=${encode(batchId)}&var-scenarioId=${encode(scenarioId)}"
+
+  private def encode(value: String): String =
+    URLEncoder.encode(value, StandardCharsets.UTF_8)
+
 @main def ThermostatFleetBridge(args: String*): Unit =
   ThermostatFleetBridgeCli.parseArgs(args) match
     case Left(error) =>
