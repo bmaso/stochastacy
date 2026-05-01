@@ -45,7 +45,8 @@ object DynamoDbTable:
       readCapacityUnits: Long,
       writeCapacityUnits: Long,
       globalSecondaryIndexReadCapacityUnits: Map[String, Long] = Map.empty,
-      globalSecondaryIndexWriteCapacityUnits: Map[String, Long] = Map.empty
+      globalSecondaryIndexWriteCapacityUnits: Map[String, Long] = Map.empty,
+      replicatedWriteCapacityUnits: Option[Long] = None
     ) extends BillingMode:
       require(readCapacityUnits > 0L, "readCapacityUnits must be positive")
       require(writeCapacityUnits > 0L, "writeCapacityUnits must be positive")
@@ -56,6 +57,10 @@ object DynamoDbTable:
       require(
         globalSecondaryIndexWriteCapacityUnits.values.forall(_ > 0L),
         "globalSecondaryIndexWriteCapacityUnits values must be positive"
+      )
+      require(
+        replicatedWriteCapacityUnits.forall(_ > 0L),
+        "replicatedWriteCapacityUnits must be positive when defined"
       )
 
   final case class HotPartitionModel(
@@ -1438,6 +1443,91 @@ object DynamoDbTable:
       }
     }
 
+  // Tagged union used internally by replicatedWriteAdmissionOf. All three cases flow through
+  // Broadcast(2) so each downstream collect can select what it needs without consuming an element
+  // on only one path, which would stall the other.
+  private sealed trait RwcuDecision
+  private final case class RwcuTick(tick: TimedControlEvent)   extends RwcuDecision
+  private final case class RwcuAdmitted(inner: TimedEvent)     extends RwcuDecision
+  private final case class RwcuThrottled(resp: ThrottledResponse) extends RwcuDecision
+
+  // Per-tick token-bucket admission check for incoming replicated writes.
+  // out0 = admitted path (TimedEvent, feeds replicatedInletMerge)
+  // out1 = throttled responses (TimedElement[DynamoDBResponse], feeds responseMerge)
+  // Known inaccuracy: real DynamoDB queues and retries throttled replicated writes; accurate
+  // model (capacity-constrained drain in ReplicationCoordinator) is deferred to slice 6.
+  private def replicatedWriteAdmissionOf(
+    config: Config,
+    billingModeRef: Option[BillingModeRef]
+  ): Graph[FanOutShape2[TimedElement[AdmittedRequestSample], TimedEvent, TimedElement[DynamoDBResponse]], NotUsed] =
+    val Unlimited = BigDecimal(Long.MaxValue)
+
+    GraphDSL.create() { implicit b =>
+      import GraphDSL.Implicits.*
+
+      val decisionFlow = b.add(
+        Flow[TimedElement[AdmittedRequestSample]].statefulMapConcat { () =>
+          var rWcuBudget: BigDecimal = Unlimited
+
+          {
+            case tick: TimedControlEvent.Tick =>
+              val ceiling =
+                billingModeRef
+                  .map(_.effectiveModeAt(tick.eventTime.ticks))
+                  .getOrElse(config.billingMode) match
+                    case p: BillingMode.Provisioned =>
+                      p.replicatedWriteCapacityUnits.map(BigDecimal(_))
+                    case _: BillingMode.OnDemand => None
+              rWcuBudget = ceiling.getOrElse(Unlimited)
+              List(RwcuTick(tick))
+
+            case other: TimedControlEvent =>
+              List(RwcuTick(other))
+
+            case sample: Replicated[?] =>
+              val demand = sample.throughputDemand
+              if rWcuBudget == Unlimited || rWcuBudget >= demand then
+                if rWcuBudget != Unlimited then rWcuBudget -= demand
+                List(RwcuAdmitted(sample))
+              else
+                List(RwcuThrottled(ThrottledResponse(
+                  eventTime = sample.req.eventTime,
+                  usecase   = sample.req.usecase,
+                  operation = DynamoDbOperationKind.fromRequest(sample.req),
+                  target    = sample.admissionTarget,
+                  dimension = DynamoDbThroughputDimension.Write,
+                  reason    = DynamoDbThrottleReason.ReplicatedWriteCapacityExceeded
+                )))
+
+            case other: AdmittedRequestSample =>
+              List(RwcuAdmitted(other))
+          }
+        }
+      )
+
+      val broadcast = b.add(Broadcast[RwcuDecision](2))
+
+      val admittedOut = b.add(
+        Flow[RwcuDecision].collect[TimedEvent] {
+          case RwcuTick(t)     => t
+          case RwcuAdmitted(e) => e
+        }
+      )
+
+      val throttledOut = b.add(
+        Flow[RwcuDecision].collect[TimedElement[DynamoDBResponse]] {
+          case RwcuTick(t)      => t
+          case RwcuThrottled(r) => r
+        }
+      )
+
+      decisionFlow.out ~> broadcast.in
+      broadcast.out(0) ~> admittedOut
+      broadcast.out(1) ~> throttledOut
+
+      new FanOutShape2(decisionFlow.in, admittedOut.out, throttledOut.out)
+    }
+
   /**
    * Replication-aware factory variant. Produces a graph with the same response/consumption/metric
    * outputs as `componentOf`, plus an inbound port for replicated writes (which bypass admission)
@@ -1451,6 +1541,14 @@ object DynamoDbTable:
                                             config: Config,
                                             billingModeRef: Option[BillingModeRef] = None
                                           ): Graph[DynamoDbTableReplicatedShape, NotUsed] =
+    config.billingMode match
+      case p: BillingMode.Provisioned if p.replicatedWriteCapacityUnits.isEmpty =>
+        throw new IllegalArgumentException(
+          s"componentOfReplicated requires BillingMode.Provisioned.replicatedWriteCapacityUnits " +
+          s"to be set for table '${config.tableName}'"
+        )
+      case _ =>
+
     val indexRuntimes = indexRuntimesFor(config)
     val hasIndexes = config.globalSecondaryIndexes.nonEmpty || config.localSecondaryIndexes.nonEmpty
     val numIndexBranches = config.globalSecondaryIndexes.size + config.localSecondaryIndexes.size
@@ -1569,9 +1667,7 @@ object DynamoDbTable:
         }
       )
 
-      val replicatedInProxy = b.add(
-        Flow[TimedElement[AdmittedRequestSample]].map[TimedEvent](e => e)
-      )
+      val rwcuAdmission = b.add(replicatedWriteAdmissionOf(config, billingModeRef))
 
       // Core replication wiring (same regardless of whether indexes are configured).
       // admission.out0 → fork(2): one path to storage (via merge with replicatedIn), one to outbound.
@@ -1579,25 +1675,26 @@ object DynamoDbTable:
       admissionFork.out(0) ~> upcastAdmission.in
       upcastAdmission.out ~> replicatedInletMerge.in0
       admissionFork.out(1) ~> outboundWriteFilter.in
-      replicatedInProxy.out ~> replicatedInletMerge.in1
+      rwcuAdmission.out0 ~> replicatedInletMerge.in1
       replicatedInletMerge.out ~> coerceToAdmitted.in
       coerceToAdmitted.out ~> storage.in
 
       if !hasIndexes then
         // Base-table-only: storage.out3 unused; consumption wired directly from storage.
-        val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2))
+        val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](3))
         val metricMerge = b.add(Merge[TimedElement[TableMetricEvent]](2))
         val ignoreValidatedSamples = b.add(Sink.ignore)
 
         admission.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
         storage.out0 ~> responseMerge.in(1)
+        rwcuAdmission.out1 ~> responseMerge.in(2)
         storage.out3 ~> ignoreValidatedSamples
         admission.out2 ~> admissionMetricFilter ~> metricMerge.in(0)
         storage.out2 ~> metricMerge.in(1)
 
         new DynamoDbTableReplicatedShape(
           requestIn = admission.in,
-          replicatedIn = replicatedInProxy.in,
+          replicatedIn = rwcuAdmission.in,
           responseOut = responseMerge.out,
           consumptionOut = storage.out1,
           metricOut = metricMerge.out,
@@ -1627,8 +1724,8 @@ object DynamoDbTable:
         val maintenance = b.add(indexMaintenanceGraph(indexRuntimes))
         storage.out3 ~> maintenance.in
 
-        // responseMerge: throttled(0) + storage(1) + one inlet per index branch
-        val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](2 + numIndexBranches))
+        // responseMerge: throttled(0) + storage(1) + rwcuThrottled(2) + one inlet per index branch
+        val responseMerge = b.add(Merge[TimedElement[DynamoDBResponse]](3 + numIndexBranches))
         // consumptionMerge: storage(0) + maintenance(1) + one inlet per index branch
         val consumptionMerge = b.add(Merge[TimedElement[DynamoDbConsumptionEvent]](2 + numIndexBranches))
         // metricMerge: admission(0) + storage(1) + maintenance(2) + one inlet per index branch
@@ -1636,6 +1733,7 @@ object DynamoDbTable:
 
         admission.out1 ~> throttledResponseFilter ~> responseMerge.in(0)
         storage.out0 ~> responseMerge.in(1)
+        rwcuAdmission.out1 ~> responseMerge.in(2)
         storage.out1 ~> consumptionMerge.in(0)
         maintenance.out0 ~> consumptionMerge.in(1)
         admission.out2 ~> admissionMetricFilter ~> metricMerge.in(0)
@@ -1643,7 +1741,7 @@ object DynamoDbTable:
         maintenance.out1 ~> metricMerge.in(2)
 
         var broadcastIdx = 1  // requestBroadcast outlet (0 is base table)
-        var respIdx = 2       // responseMerge inlet
+        var respIdx = 3       // responseMerge inlet (0=throttled, 1=storage, 2=rwcuThrottled)
         var consIdx = 2       // consumptionMerge inlet
         var metIdx = 3        // metricMerge inlet
 
@@ -1780,7 +1878,7 @@ object DynamoDbTable:
 
         new DynamoDbTableReplicatedShape(
           requestIn = validationFlow.in,
-          replicatedIn = replicatedInProxy.in,
+          replicatedIn = rwcuAdmission.in,
           responseOut = responseMerge.out,
           consumptionOut = consumptionMerge.out,
           metricOut = metricMerge.out,

@@ -512,7 +512,8 @@ class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
       val provisioned = DynamoDbTable.BillingMode.Provisioned(
         readCapacityUnits = 1000L,
         writeCapacityUnits = 100L,
-        globalSecondaryIndexReadCapacityUnits = Map(gsiName -> 1000L)
+        globalSecondaryIndexReadCapacityUnits = Map(gsiName -> 1000L),
+        replicatedWriteCapacityUnits = Some(1000L)
       )
       val regionConfigWithGsi = DynamoDbTable.Config(
         tableName = "orders",
