@@ -10,7 +10,7 @@ final case class DynamoDbPricingInputs(
 final case class DynamoDbPricingRates(
                                         readCapacityUnitPrice: BigDecimal,
                                         writeCapacityUnitPrice: BigDecimal,
-                                        replicatedWriteCapacityUnitPrice: BigDecimal = BigDecimal("0.00000125"),
+                                        replicatedWriteCapacityUnitPrice: BigDecimal = BigDecimal("0.000000975"),
                                         storagePricePerGiBSecond: BigDecimal
                                       )
 

@@ -125,6 +125,12 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
       breakdown.totalCost shouldBe BigDecimal(12.0)
     }
 
+    "phase1Default rWCU price is lower than WCU price" in {
+      val defaults = DynamoDbPricingRates.phase1Default
+      defaults.replicatedWriteCapacityUnitPrice should be < defaults.writeCapacityUnitPrice
+      defaults.replicatedWriteCapacityUnitPrice shouldBe BigDecimal("0.000000975")
+    }
+
     "return zero cost for zero usage" in {
       val breakdown = DynamoDbCostBreakdown.price(
         inputs = DynamoDbPricingInputs(

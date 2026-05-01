@@ -769,6 +769,90 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
+      "description": "Replicated write capacity units (rWCU) consumed per region per window. rWCU represents inbound replicated writes from other regions and bills at a lower rate than client-originated WCU (~22% cheaper in us-east-1).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "id": 100,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Region:us-east-1:ReplicatedWriteCapacityUnits' then \"value\" end) as \"us-east-1\",\n  avg(case when metric = 'Region:eu-west-1:ReplicatedWriteCapacityUnits' then \"value\" end) as \"eu-west-1\",\n  avg(case when metric = 'Region:ap-southeast-1:ReplicatedWriteCapacityUnits' then \"value\" end) as \"ap-southeast-1\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Region:us-east-1:ReplicatedWriteCapacityUnits',\n    'Region:eu-west-1:ReplicatedWriteCapacityUnits',\n    'Region:ap-southeast-1:ReplicatedWriteCapacityUnits'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Replicated Write Capacity Units by Region",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
       "description": "Per-region RCU consumption per window (mean across trials). Multi-region only.",
       "fieldConfig": {
         "defaults": {
@@ -896,8 +980,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
-        "x": 0,
+        "w": 12,
+        "x": 12,
         "y": 27
       },
       "id": 52,
@@ -929,7 +1013,7 @@
           "refId": "A"
         }
       ],
-      "title": "Cumulative Estimated Cost by Region",
+      "title": "Cumulative Estimated Cost by Region (multi-region only)",
       "type": "timeseries"
     },
     {
