@@ -36,6 +36,7 @@ enum DemoMetric:
   case BillingModeIndicator
   case ThrottleCount
   case AdmittedRequestCount
+  case ReturnedItemCount(operation: String)
 
   def exportName: String =
     this match
@@ -72,6 +73,7 @@ enum DemoMetric:
       case DemoMetric.BillingModeIndicator => "BillingModeIndicator"
       case DemoMetric.ThrottleCount => "ThrottleCount"
       case DemoMetric.AdmittedRequestCount => "AdmittedRequestCount"
+      case DemoMetric.ReturnedItemCount(op) => s"ReturnedItemCount:$op"
 
   def sortKey: (Int, String) =
     this match
@@ -108,6 +110,7 @@ enum DemoMetric:
       case DemoMetric.BillingModeIndicator => (29, "")
       case DemoMetric.ThrottleCount => (30, "")
       case DemoMetric.AdmittedRequestCount => (32, "")
+      case DemoMetric.ReturnedItemCount(op) => (33, op)
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

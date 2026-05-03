@@ -657,4 +657,68 @@ class DynamoDbTableReplicatedSpec extends AnyWordSpec with should.Matchers:
         DynamoDbThrottleReason.ReplicatedWriteCapacityExceeded
       )
     }
+
+    "provisioned mode: replicated write with GSI maintenance plan is admitted within rWCU budget " +
+    "and emits ReplicatedWriteCapacityConsumed for both base-table and GSI targets" in {
+      val gsiName   = "status-index"
+      val gsiTarget = DynamoDbTarget.GlobalSecondaryIndex("orders", gsiName)
+      val config = baseConfig.copy(
+        globalSecondaryIndexes = Vector(DynamoDbTable.GlobalSecondaryIndexDefinition(gsiName)),
+        billingMode = DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 100L,
+          writeCapacityUnits = 100L,
+          replicatedWriteCapacityUnits = Some(10L)
+        )
+      )
+      val tick1 = TimedControlEvent.Tick(SimTime.of(1L))
+
+      val plan = IndexMaintenancePlan(
+        target = gsiTarget,
+        action = IndexMaintenanceAction.InsertEntry,
+        throughputDemand = BigDecimal(1),
+        logicalPartitionAccess = SingleLogicalPartitionKey("pk"),
+        resolvedPartitionFootprint = ResolvedPartitionFootprint(
+          totalPartitionCount = 1,
+          partitionDemandById = SortedMap(0 -> BigDecimal(1))
+        ),
+        newIndexEntryBytes = Some(64L),
+        previousIndexEntryBytes = None,
+        storageBytesDelta = 64L
+      )
+      val replicatedWithPlan = Replicated(AdmittedPutItemSample(
+        req                       = PutItemRequest(SimTime.of(1L), usecase = "rep-put", itemBytes = 512L),
+        executionTarget           = DynamoDbTarget.Table("orders"),
+        admissionTarget           = DynamoDbTarget.Table("orders"),
+        sample                    = FixedPutItemSample(512L),
+        throughputDemand          = BigDecimal(1),
+        resolvedPartitionFootprint = ResolvedPartitionFootprint(1, SortedMap(0 -> BigDecimal(1))),
+        indexMaintenancePlan      = Vector(plan)
+      ))
+
+      val (responses, consumption, _, _) = runReplicated(
+        config,
+        requestSource    = Source.single[TimedElement[DynamoDBRequest]](tick1),
+        replicatedSource = Source(Vector[TimedElement[AdmittedRequestSample]](tick1, replicatedWithPlan))
+      )
+
+      // Write is within the rWCU budget — no throttle.
+      responses.collect { case _: ThrottledResponse => 1 } shouldBe empty
+      responses.collect { case _: PutItemResponse => 1 } should have size 1
+
+      // Base-table replicated write accrues rWCU (not WCU).
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed
+          if e.target == DynamoDbTarget.Table("orders") => 1
+      } should not be empty
+
+      // GSI maintenance from a replicated write also accrues rWCU (not WCU) for the GSI target.
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed
+          if e.target == gsiTarget => 1
+      } should not be empty
+      consumption.collect {
+        case e: DynamoDbConsumptionEvent.WriteCapacityConsumed
+          if e.target == gsiTarget => 1
+      } shouldBe empty
+    }
   }

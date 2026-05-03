@@ -47,7 +47,10 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     consumedWriteUnits: BigDecimal = BigDecimal(0)
   )
 
-  private case class MetricAcc(byTick: Map[Long, MetricTickData] = Map.empty)
+  private case class MetricAcc(
+    byTick: Map[Long, MetricTickData] = Map.empty,
+    retItemByOpAndTick: Map[(String, Long), Long] = Map.empty
+  )
 
   // ── Fold helpers ──────────────────────────────────────────────────────────
 
@@ -126,6 +129,11 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
           consumedReadUnits  = old.consumedReadUnits  + snap.consumedReadUnits,
           consumedWriteUnits = old.consumedWriteUnits + snap.consumedWriteUnits
         )))
+      case ric: StorageMetricEvent.ReturnedItemCount =>
+        val key = (ric.operation.toString, ric.eventTime.ticks)
+        acc.copy(retItemByOpAndTick = acc.retItemByOpAndTick.updated(
+          key, acc.retItemByOpAndTick.getOrElse(key, 0L) + ric.count
+        ))
       case _ => acc
 
   // ── Run trial ─────────────────────────────────────────────────────────────
@@ -209,10 +217,15 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
           SimulationTimeSeriesPoint(tick, DemoMetric.BillingModeIndicator, BigDecimal(modeCode))
         }.toVector
 
+      val retItemTimeSeries: Vector[SimulationTimeSeriesPoint] =
+        metricAcc.retItemByOpAndTick.map { case ((op, tick), count) =>
+          SimulationTimeSeriesPoint(tick, DemoMetric.ReturnedItemCount(op), BigDecimal(count))
+        }.toVector
+
       TrialResult(
         scenarioId = scenarioConfig.scenarioId,
         trialId    = run.trialId,
-        timeSeries = consAcc.points ++ metricTimeSeries ++ billingModeTimeSeries,
+        timeSeries = consAcc.points ++ metricTimeSeries ++ billingModeTimeSeries ++ retItemTimeSeries,
         summary = Vector(
           TrialSummaryValue(DemoMetric.TotalReadCapacityUnits,  consAcc.usageTotals.overall.readCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, consAcc.usageTotals.overall.writeCapacityUnits),

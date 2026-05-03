@@ -380,7 +380,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "Consumed write capacity vs. provisioned write capacity ceiling per window (mean across trials). The gap closes during throttling \u2014 the right-sizing trap is visible as consumed approaching provisioned during the morning spike.",
+      "description": "Consumed write capacity distribution (mean, P50, P75, P95 across trials) vs. provisioned ceiling. Bands span P50\u2192P75 (interquartile upper half) and P75\u2192P95 (tail). The mean (white) floats above the median (P50) when alert-storm trials skew the distribution right. If the provisioned line sits below P95 the simulator throttles in \u223c5% of trials; below P75, in \u223c25%. The right-sizing trap is visible when the mean looks safely below provisioned while P75 or P95 exceeds it.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -401,7 +401,7 @@
               "viz": false
             },
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 0,
             "showPoints": "never",
             "spanNulls": false
@@ -411,6 +411,152 @@
           "unit": "short"
         },
         "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mean WCU"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FFFFFF",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P50"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "P95"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Band P95-P75"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#2E4A7A",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 40
+              },
+              {
+                "id": "custom.fillBelowTo",
+                "value": "P75"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Band P75-P50"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3D6FAD",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 0
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 55
+              },
+              {
+                "id": "custom.fillBelowTo",
+                "value": "P50"
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
           {
             "matcher": {
               "id": "byName",
@@ -425,6 +571,10 @@
                 }
               },
               {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
                 "id": "custom.lineStyle",
                 "value": {
                   "dash": [
@@ -432,21 +582,6 @@
                     4
                   ],
                   "fill": "dash"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Consumed WCU"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#5794F2",
-                  "mode": "fixed"
                 }
               }
             ]
@@ -482,8 +617,19 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'WriteCapacityUnits' then \"value\" end) as \"Consumed WCU\",\n  avg(case when metric = 'ProvisionedWriteCapacityUnits' then \"value\" end) as \"Provisioned WCU\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in ('WriteCapacityUnits', 'ProvisionedWriteCapacityUnits')\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "rawSql": "with perc as (\n  select\n    window_start_tick,\n    avg(\"value\")                                               as mean,\n    percentile_cont(0.50) within group (order by \"value\")     as p50,\n    percentile_cont(0.75) within group (order by \"value\")     as p75,\n    percentile_cont(0.95) within group (order by \"value\")     as p95\n  from stochastacy_demo.trial_window_time_series\n  where batch_id = '${batch_id}'\n    and scenario_id = '${scenarioId}'\n    and metric = 'WriteCapacityUnits'\n    and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n    and window_start_tick <= cast('${simulationTicks}' as bigint)\n  group by window_start_tick\n)\nselect\n  to_timestamp(window_start_tick) as \"time\",\n  mean   as \"Mean WCU\",\n  p50    as \"P50\",\n  p75    as \"P75\",\n  p95    as \"P95\",\n  p95    as \"Band P95-P75\",\n  p75    as \"Band P75-P50\"\nfrom perc\norder by window_start_tick;",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"Provisioned WCU\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'ProvisionedWriteCapacityUnits'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "B"
         }
       ],
       "title": "Write Capacity: Consumed vs. Provisioned",
@@ -860,6 +1006,89 @@
         }
       ],
       "title": "Cumulative Estimated Cost",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "Mean items returned to callers per windowed period, split by operation type (Query vs Scan). In a telemetry-heavy fleet, Scan counts should be visibly lower and less frequent than Query counts. Both series will trend upward as the fleet grows.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"Query\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'ReturnedItemCount:Query'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"Scan\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'ReturnedItemCount:Scan'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "B"
+        }
+      ],
+      "title": "Returned Item Count by Operation (mean across trials)",
       "type": "timeseries"
     }
   ],

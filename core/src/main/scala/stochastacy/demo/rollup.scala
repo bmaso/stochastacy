@@ -76,6 +76,8 @@ object TimeWindowRollups:
         points.map(_.value).sum
       case DemoMetric.ProvisionedReadCapacityUnits | DemoMetric.BillingModeIndicator =>
         points.maxBy(_.tick).value
+      case DemoMetric.ReturnedItemCount(_) =>
+        points.map(_.value).sum
       case unsupported =>
         throw new IllegalArgumentException(s"windowed time-series rollups are not supported for metric: $unsupported")
 

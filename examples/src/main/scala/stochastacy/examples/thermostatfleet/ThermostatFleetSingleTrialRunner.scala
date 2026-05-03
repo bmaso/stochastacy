@@ -62,6 +62,16 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     byTickAndLink: Map[(Long, (String, String)), Long] = Map.empty
   )
 
+  // (operation-string, tick) -> cumulative count
+  private type RetItemAcc = Map[(String, Long), Long]
+
+  private def foldMetricEvent(acc: RetItemAcc, evt: TimedElement[TableMetricEvent]): RetItemAcc =
+    evt match
+      case StorageMetricEvent.ReturnedItemCount(et, _, op, count) =>
+        val key = (op.toString, et.ticks)
+        acc.updated(key, acc.getOrElse(key, 0L) + count)
+      case _ => acc
+
   // ── Fold helpers ─────────────────────────────────────────────────────────
 
   private val bytesPerGiB = BigDecimal(1024).pow(3)
@@ -282,9 +292,10 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     val foldSink = Sink.fold[PerRegionAcc, TimedElement[DynamoDbConsumptionEvent]](PerRegionAcc()) {
       (acc, evt) => updatePerRegionAcc(acc, evt)
     }
+    val retItemFoldSink = Sink.fold[RetItemAcc, TimedElement[TableMetricEvent]](Map.empty)(foldMetricEvent)
 
-    val accF = RunnableGraph.fromGraph(
-      GraphDSL.createGraph(foldSink) { implicit b => sink =>
+    val (accF, retItemAccF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(foldSink, retItemFoldSink)((c, m) => (c, m)) { implicit b => (consSink, metSink) =>
         import GraphDSL.Implicits.*
         schedule match
           case Some(reconfigurationSchedule) =>
@@ -292,19 +303,22 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
             Source.fromIterator(() => requestIterator) ~> table.requestIn
             Source.fromIterator(() => managementEventsFor(config.simulationTicks, reconfigurationSchedule)) ~> table.managementIn
             table.responseOut ~> b.add(Sink.ignore)
-            table.consumptionOut ~> sink
-            table.metricOut ~> b.add(Sink.ignore)
+            table.consumptionOut ~> consSink
+            table.metricOut ~> metSink
           case None =>
             val table = b.add(DynamoDbTable.componentOf(buildTableConfig(config, tableState, behaviors)))
             Source.fromIterator(() => requestIterator) ~> table.in
             table.out0 ~> b.add(Sink.ignore)
-            table.out1 ~> sink
-            table.out2 ~> b.add(Sink.ignore)
+            table.out1 ~> consSink
+            table.out2 ~> metSink
         ClosedShape
       }
     ).run()
 
-    accF.map { rawAcc =>
+    for
+      rawAcc     <- accF
+      retItemAcc <- retItemAccF
+    yield
       val timeBasedTotals = extractTimeBasedUsage(rawAcc)
       val costBreakdown = DynamoDbCostBreakdown.price(
         DynamoDbPricingInputs(usage = rawAcc.usageTotals, timeBasedUsage = timeBasedTotals),
@@ -316,11 +330,15 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         }.getOrElse(DynamoDbTargetUsageTotals())
       }.toMap
       val points = buildPerRegionTimeSeries(rawAcc, gsiNames, config.pricingRates, regionName = None)
+      val retItemPoints: Vector[SimulationTimeSeriesPoint] =
+        retItemAcc.map { case ((op, tick), count) =>
+          SimulationTimeSeriesPoint(tick, DemoMetric.ReturnedItemCount(op), BigDecimal(count))
+        }.toVector
 
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = points,
+        timeSeries = points ++ retItemPoints,
         summary = Vector(
           TrialSummaryValue(DemoMetric.TotalReadCapacityUnits, rawAcc.usageTotals.overall.readCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, rawAcc.usageTotals.overall.writeCapacityUnits),
@@ -335,7 +353,6 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
           )
         }
       )
-    }
 
   // ── Multi-region path ───────────────────────────────────────────────────────
 
@@ -414,10 +431,18 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
           case _ => acc
     }
 
-    val (mrAccF, transferAccF) = RunnableGraph.fromGraph(
-      GraphDSL.createGraph(taggedConsSink, transferSink)((mc, tf) => (mc, tf)) {
-        implicit b => (taggedConsSinkShape, transfersSinkShape) =>
+    type TaggedMetricEvent = (String, TimedElement[TableMetricEvent])
+    val taggedMetricFoldSink = Sink.fold[Map[String, RetItemAcc], TaggedMetricEvent](Map.empty) {
+      (acc, tagged) =>
+        val (region, evt) = tagged
+        acc.updated(region, foldMetricEvent(acc.getOrElse(region, Map.empty), evt))
+    }
+
+    val (mrAccF, transferAccF, retItemRegionAccF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(taggedConsSink, transferSink, taggedMetricFoldSink)((mc, tf, mi) => (mc, tf, mi)) {
+        implicit b => (taggedConsSinkShape, transfersSinkShape, metricSinkShape) =>
           import GraphDSL.Implicits.*
+          val metricMerge = b.add(Merge[TaggedMetricEvent](sortedRegions.size))
           schedule match
             case Some(reconfigurationSchedule) =>
               val globalTable = b.add(DynamoDbGlobalTable.componentOfManaged(globalConfig))
@@ -427,10 +452,12 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
                 val r = region.regionName
                 Source.fromIterator(() => requestStreamIterators(r)) ~> globalTable.regionRequestInlets(r)
                 globalTable.regionResponseOutlets(r) ~> b.add(Sink.ignore)
-                globalTable.regionMetricOutlets(r) ~> b.add(Sink.ignore)
-                val tagger = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (r, e)))
-                globalTable.regionConsumptionOutlets(r) ~> tagger.in
-                tagger.out ~> consumptionMerge.in(idx)
+                val consTagger = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (r, e)))
+                globalTable.regionConsumptionOutlets(r) ~> consTagger.in
+                consTagger.out ~> consumptionMerge.in(idx)
+                val metricTagger = b.add(Flow[TimedElement[TableMetricEvent]].map(e => (r, e)))
+                globalTable.regionMetricOutlets(r) ~> metricTagger.in
+                metricTagger.out ~> metricMerge.in(idx)
               }
 
               Source.fromIterator(() => managementEventsFor(config.simulationTicks, reconfigurationSchedule)) ~> globalTable.managementIn
@@ -445,21 +472,25 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
                 val r = region.regionName
                 Source.fromIterator(() => requestStreamIterators(r)) ~> globalTable.regionRequestInlets(r)
                 globalTable.regionResponseOutlets(r) ~> b.add(Sink.ignore)
-                globalTable.regionMetricOutlets(r) ~> b.add(Sink.ignore)
-                val tagger = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (r, e)))
-                globalTable.regionConsumptionOutlets(r) ~> tagger.in
-                tagger.out ~> consumptionMerge.in(idx)
+                val consTagger = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (r, e)))
+                globalTable.regionConsumptionOutlets(r) ~> consTagger.in
+                consTagger.out ~> consumptionMerge.in(idx)
+                val metricTagger = b.add(Flow[TimedElement[TableMetricEvent]].map(e => (r, e)))
+                globalTable.regionMetricOutlets(r) ~> metricTagger.in
+                metricTagger.out ~> metricMerge.in(idx)
               }
 
               consumptionMerge.out ~> taggedConsSinkShape
               globalTable.transferEventsOutlet ~> transfersSinkShape
+          metricMerge.out ~> metricSinkShape
           ClosedShape
       }
     ).run()
 
     for
-      mrAcc <- mrAccF
-      transferAcc <- transferAccF
+      mrAcc            <- mrAccF
+      transferAcc      <- transferAccF
+      retItemRegionAcc <- retItemRegionAccF
     yield
       val regions = sortedRegions.map(_.regionName)
 
@@ -558,10 +589,21 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
             TrialSummaryValue(DemoMetric.CrossRegionTransferBytes(src, dst), BigDecimal(bytes))
           }
 
+      val aggregateRetItemAcc: RetItemAcc =
+        retItemRegionAcc.values.foldLeft(Map.empty: RetItemAcc) { (agg, regionAcc) =>
+          regionAcc.foldLeft(agg) { case (a, (key, count)) =>
+            a.updated(key, a.getOrElse(key, 0L) + count)
+          }
+        }
+      val retItemPoints: Vector[SimulationTimeSeriesPoint] =
+        aggregateRetItemAcc.map { case ((op, tick), count) =>
+          SimulationTimeSeriesPoint(tick, DemoMetric.ReturnedItemCount(op), BigDecimal(count))
+        }.toVector
+
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = (aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries ++ transferCostTimeSeries)
+        timeSeries = (aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries ++ transferCostTimeSeries ++ retItemPoints)
           .filter(_.tick <= config.simulationTicks),
         summary = overallSummary ++ perRegionSummary ++ perLinkSummary
       )

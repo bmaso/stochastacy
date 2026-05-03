@@ -109,11 +109,16 @@ sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge
 The thermostat fleet in a single region, running first in on-demand mode then switching to provisioned capacity mid-simulation. Demonstrates the **right-sizing trap**: the table is provisioned at 110% of the observed on-demand mean, which is below the morning-spike peak. Throttles spike immediately after the mode switch, then disappear after the provisioned capacity is scaled up at the two-thirds mark. Grafana panels show billing mode timeline, throttle rate, provisioned vs. consumed capacity utilization, and cost composition (consumption-driven on-demand cost vs. reservation-driven provisioned cost).
 
 ```bash
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetMixedModeBridge generate --batch-id thermostat-mm-001 --output /tmp/thermostat-mm-001.jsonl --trial-count 100 --parallelism 8 --simulation-ticks 1200'
-
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetMixedModeBridge stage --input /tmp/thermostat-mm-001.jsonl --batch-id thermostat-mm-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
-
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetMixedModeBridge view --batch-id thermostat-mm-001'
+ # Generate                                                                                                                                                            
+  sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-fleet-mm-001 --output                                 
+  /tmp/thermostat-fleet-mm-001.jsonl --mode mixed-mode --trial-count 100 --parallelism 8 --simulation-ticks 1200'                                                       
+                                                                                                                                                                        
+  # Stage                                                                                                                                                               
+  sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-fleet-mm-001.jsonl --batch-id thermostat-fleet-mm-001  
+  --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200' 
+   
+  # View                                                                                                                                                                
+  sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-fleet-mm-001 --mode mixed-mode'
 ```
 
 ---

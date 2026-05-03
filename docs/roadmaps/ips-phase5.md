@@ -209,7 +209,24 @@ unavailable for Standard-IA tables. Validation at config construction enforces t
 
 ## Phase-5 Implementation Slices
 
-Future phase-5 work should be planned and implemented one slice at a time.
+### Status
+
+| Slice | Status | Summary |
+|-------|--------|---------|
+| 1. rWCU Consumption Event and On-Demand Billing | **Done** | `ReplicatedWriteCapacityConsumed` event; rWCU accumulation in `DynamoDbUsageTotals`; on-demand rWCU pricing path; multi-region demo and dashboard updated |
+| 2. rWCU Provisioned Admission | **Done** | `BillingMode.Provisioned.replicatedWriteCapacityUnits: Option[Long]`; rWCU token-bucket admission in `componentOfReplicated`; `InsufficientReplicatedWriteCapacity` throttle reason; `UpdateProvisionedCapacity` extended for rWCU |
+| 3. Tiered Cross-Region Transfer Pricing | **Done** | `CrossRegionTransferPricingRates` uses tiered schedule; `CrossRegionTransferPricing` accumulates cumulative bytes and applies correct per-tranche rate; AWS default tiers added to demo config |
+| 4. GSI/LSI Support in `componentOfReplicated` | **Done** | Construction-time guard was already absent; verified storage and index-maintenance graph are topology-agnostic; test-completion slice: provisioned-mode + GSI rWCU test added to `DynamoDbTableReplicatedSpec`; multi-region GSI metric assertion added to `ThermostatFleetSingleTrialRunnerSpec` |
+| 5. ReturnedItemCount for Query and Scan | **Done** | `StorageMetricEvent.ReturnedItemCount` emitted unconditionally per admitted Query/Scan; `DemoMetric.ReturnedItemCount(operation)` with SUM rollup; both single-region runner, multi-region runner, and mixed-mode runner collect and emit the metric; "Returned Item Count by Operation" panel added to thermostat-fleet and mixed-mode dashboards; WCU consumed-vs-provisioned panel enhanced with p50/p75/p95 percentile bands |
+| 6. ReplicationLatency Metric | Future | |
+| 7. SystemErrors | Future | |
+| 8. SuccessfulRequestLatency | Future | |
+| 9. Table Class: Standard vs. Standard-IA | Future | |
+| 10. Per-GSI Provisioned Capacity Pricing Accuracy | Future | |
+| 11. Reserved Capacity Discount | Future | |
+| 12. Multi-Region Demo Update | Future | |
+
+---
 
 ### 1. rWCU Consumption Event and On-Demand Billing
 

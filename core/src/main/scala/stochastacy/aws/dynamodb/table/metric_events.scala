@@ -102,6 +102,15 @@ object StorageMetricEvent:
                                              bytes: Long
                                            ) extends StorageMetricEvent
 
+  /** Items returned to the caller from a Query or Scan. Emitted once per admitted request,
+   *  including zero-count results. */
+  final case class ReturnedItemCount(
+                                      eventTime: SimTime,
+                                      usecase: Any,
+                                      operation: DynamoDbOperationKind,
+                                      count: Long
+                                    ) extends StorageMetricEvent
+
   final case class IndexEntryInserted(
                                        eventTime: SimTime,
                                        usecase: Any,

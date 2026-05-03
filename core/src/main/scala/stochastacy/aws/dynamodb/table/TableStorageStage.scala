@@ -328,7 +328,8 @@ object TableStorageStage:
           List(
             StorageMetricEvent.QueryObserved(r.eventTime, r.usecase, r.target),
             StorageMetricEvent.QueryEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
-          ) ++ returnedEvents ++ projectionEvents
+          ) ++ returnedEvents ++ projectionEvents ++
+            List(StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Query, s.returnedItemCount))
 
         case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
           val effectiveSample =
@@ -367,7 +368,8 @@ object TableStorageStage:
           List(
             StorageMetricEvent.ScanObserved(r.eventTime, r.usecase, r.target),
             StorageMetricEvent.ScanEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
-          ) ++ returnedEvents ++ projectionEvents
+          ) ++ returnedEvents ++ projectionEvents ++
+            List(StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, s.returnedItemCount))
 
         case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
           List(

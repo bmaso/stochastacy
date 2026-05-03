@@ -1565,6 +1565,89 @@
       ],
       "title": "Cumulative Cross-Region Transfer Cost",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "Mean items returned to callers per windowed period, split by operation type (Query vs Scan). In a telemetry-heavy fleet, Scan counts should be visibly lower and less frequent than Query counts. Both series will trend upward as the fleet grows.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "id": 101,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"Query\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'ReturnedItemCount:Query'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"Scan\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'ReturnedItemCount:Scan'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "B"
+        }
+      ],
+      "title": "Returned Item Count by Operation (mean across trials)",
+      "type": "timeseries"
     }
   ],
   "refresh": "",
