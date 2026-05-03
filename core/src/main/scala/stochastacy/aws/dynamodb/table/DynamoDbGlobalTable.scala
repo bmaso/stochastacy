@@ -99,10 +99,9 @@ object DynamoDbGlobalTable:
       val coordinator = b.add(ReplicationCoordinator.flowOf(regions, config.replicationModel))
       coerceToTagged.out ~> coordinator.in
 
-      // The coordinator's output is broadcast to N+1 consumers: one per destination region's
-      // replicated-input port (filtering replicated writes destined for that region) plus one
-      // for the transfer-events outlet.
-      val coordinatorBroadcast = b.add(Broadcast[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]](regions.size + 1))
+      // The coordinator's output is broadcast to N+2 consumers: one per destination region's
+      // replicated-input port, one for the transfer-events outlet, one for latency events.
+      val coordinatorBroadcast = b.add(Broadcast[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]](regions.size + 2))
       coordinator.out ~> coordinatorBroadcast.in
 
       // Per-region replicated-write filters: extract writes destined for the given region,
@@ -129,11 +128,41 @@ object DynamoDbGlobalTable:
       )
       coordinatorBroadcast.out(regions.size) ~> transferFilter.in
 
+      // Latency-events flow: extract ReplicationLatencyOutput events (no tick passthrough —
+      // the per-region metric stream already carries ticks).
+      val latencyFlow = b.add(
+        Flow[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]]
+          .collect[TimedElement[TableMetricEvent]] {
+            case ReplicationCoordinator.ReplicationLatencyOutput(_, event) => event
+          }
+      )
+      coordinatorBroadcast.out(regions.size + 1) ~> latencyFlow.in
+
+      // Fan latency events to N per-region sub-flows; merge each with its region's metric stream.
+      val latencyBcast = b.add(Broadcast[TimedElement[TableMetricEvent]](regions.size))
+      latencyFlow.out ~> latencyBcast.in
+
+      val regionMetricMergeOutlets: Map[String, org.apache.pekko.stream.Outlet[TimedElement[TableMetricEvent]]] =
+        regions.zipWithIndex.map { case (r, idx) =>
+          val perRegionLatency = b.add(
+            Flow[TimedElement[TableMetricEvent]].filter {
+              case lat: ReplicationMetricEvent.ReplicationLatency => lat.destinationRegion == r
+              case _ => false
+            }
+          )
+          latencyBcast.out(idx) ~> perRegionLatency.in
+
+          val metricMerge = b.add(org.apache.pekko.stream.scaladsl.Merge[TimedElement[TableMetricEvent]](2))
+          regionGraphs(r).metricOut ~> metricMerge.in(0)
+          perRegionLatency.out     ~> metricMerge.in(1)
+          r -> metricMerge.out
+        }.toMap
+
       new DynamoDbGlobalTableShape(
         regionRequestInlets = regions.map(r => r -> regionGraphs(r).requestIn).toMap,
         regionResponseOutlets = regions.map(r => r -> regionGraphs(r).responseOut).toMap,
         regionConsumptionOutlets = regions.map(r => r -> regionGraphs(r).consumptionOut).toMap,
-        regionMetricOutlets = regions.map(r => r -> regionGraphs(r).metricOut).toMap,
+        regionMetricOutlets = regionMetricMergeOutlets,
         transferEventsOutlet = transferFilter.out
       )
     }
@@ -197,7 +226,7 @@ object DynamoDbGlobalTable:
       val coordinator = b.add(ReplicationCoordinator.flowOf(regions, config.replicationModel))
       coerceToTagged.out ~> coordinator.in
 
-      val coordinatorBroadcast = b.add(Broadcast[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]](regions.size + 1))
+      val coordinatorBroadcast = b.add(Broadcast[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]](regions.size + 2))
       coordinator.out ~> coordinatorBroadcast.in
 
       regions.zipWithIndex.foreach { case (r, idx) =>
@@ -219,12 +248,39 @@ object DynamoDbGlobalTable:
       )
       coordinatorBroadcast.out(regions.size) ~> transferFilter.in
 
+      val latencyFlow = b.add(
+        Flow[TimedElement[ReplicationCoordinator.ReplicationOutputEvent]]
+          .collect[TimedElement[TableMetricEvent]] {
+            case ReplicationCoordinator.ReplicationLatencyOutput(_, event) => event
+          }
+      )
+      coordinatorBroadcast.out(regions.size + 1) ~> latencyFlow.in
+
+      val latencyBcast = b.add(Broadcast[TimedElement[TableMetricEvent]](regions.size))
+      latencyFlow.out ~> latencyBcast.in
+
+      val regionMetricMergeOutlets: Map[String, org.apache.pekko.stream.Outlet[TimedElement[TableMetricEvent]]] =
+        regions.zipWithIndex.map { case (r, idx) =>
+          val perRegionLatency = b.add(
+            Flow[TimedElement[TableMetricEvent]].filter {
+              case lat: ReplicationMetricEvent.ReplicationLatency => lat.destinationRegion == r
+              case _ => false
+            }
+          )
+          latencyBcast.out(idx) ~> perRegionLatency.in
+
+          val metricMerge = b.add(org.apache.pekko.stream.scaladsl.Merge[TimedElement[TableMetricEvent]](2))
+          regionGraphs(r).metricOut ~> metricMerge.in(0)
+          perRegionLatency.out     ~> metricMerge.in(1)
+          r -> metricMerge.out
+        }.toMap
+
       new DynamoDbGlobalTableManagedShape(
         regionRequestInlets = regions.map(r => r -> regionGraphs(r).requestIn).toMap,
         managementIn = managementBroadcast.in,
         regionResponseOutlets = regions.map(r => r -> regionGraphs(r).responseOut).toMap,
         regionConsumptionOutlets = regions.map(r => r -> regionGraphs(r).consumptionOut).toMap,
-        regionMetricOutlets = regions.map(r => r -> regionGraphs(r).metricOut).toMap,
+        regionMetricOutlets = regionMetricMergeOutlets,
         transferEventsOutlet = transferFilter.out
       )
     }
