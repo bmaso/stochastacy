@@ -1,5 +1,6 @@
 package stochastacy.aws.dynamodb.table
 
+import org.apache.commons.rng.UniformRandomProvider
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL}
 import org.apache.pekko.stream.{FanOutShape3, FanOutShape4, Graph}
@@ -93,6 +94,14 @@ object TableStorageStage:
     override val eventTime: SimTime = request.eventTime
     override val usecase: Any = request.usecase
 
+  private[table] final case class StorageSystemError(
+                                                      request: DynamoDBRequest,
+                                                      operation: DynamoDbOperationKind,
+                                                      target: DynamoDbTarget
+                                                    ) extends StorageOutcome:
+    override val eventTime: SimTime = request.eventTime
+    override val usecase: Any = request.usecase
+
   private def itemCollectionContext(
                                      sample: AdmittedRequestSample
                                    ): Option[(Long, Long, LogicalPartitionAccess, Vector[IndexMaintenancePlan])] =
@@ -137,7 +146,9 @@ object TableStorageStage:
   private[table] def componentOfAdmitted(
                                           stateModel: TableState,
                                           indexProjection: Option[DynamoDbTable.IndexProjection] = None,
-                                          itemCollectionSizeLimitBytes: Option[Long] = None
+                                          itemCollectionSizeLimitBytes: Option[Long] = None,
+                                          systemErrorRate: Double = 0.0,
+                                          rng: Option[UniformRandomProvider] = None
                                         ): Graph[
     FanOutShape4[
       TimedElement[AdmittedRequestSample],
@@ -165,8 +176,23 @@ object TableStorageStage:
             validateItemCollectionLimit(sample, itemCollectionSizeLimitBytes) match
               case Left(rejection) => rejection
               case Right(admitted) =>
-                admitted match
-                  case r: Replicated[?] => r.sample match
+                val isSystemError = systemErrorRate > 0.0 && rng.exists(_.nextDouble() < systemErrorRate)
+                if isSystemError then
+                  StorageSystemError(
+                    request = admitted.req,
+                    operation = DynamoDbOperationKind.fromRequest(admitted.req),
+                    target = admitted.executionTarget
+                  )
+                else
+                  admitted match
+                    case r: Replicated[?] => r.sample match
+                      case s: AdmittedPutItemSample =>
+                        stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                      case s: AdmittedUpdateItemSample =>
+                        stateModel.recordSuccessfulUpdate(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                      case s: AdmittedDeleteItemSample =>
+                        stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
+                      case _ => ()
                     case s: AdmittedPutItemSample =>
                       stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
                     case s: AdmittedUpdateItemSample =>
@@ -174,14 +200,7 @@ object TableStorageStage:
                     case s: AdmittedDeleteItemSample =>
                       stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
                     case _ => ()
-                  case s: AdmittedPutItemSample =>
-                    stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
-                  case s: AdmittedUpdateItemSample =>
-                    stateModel.recordSuccessfulUpdate(s.sample.writtenItemBytes, s.sample.previousItemBytes)
-                  case s: AdmittedDeleteItemSample =>
-                    stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
-                  case _ => ()
-                StorageAdmitted(admitted)
+                  StorageAdmitted(admitted)
         }
       )
 
@@ -275,6 +294,13 @@ object TableStorageStage:
               target = rejection.target,
               resultingCollectionBytes = rejection.resultingCollectionBytes,
               limitBytes = rejection.limitBytes
+            )
+          case err: StorageSystemError =>
+            SystemErrorResponse(
+              eventTime = err.eventTime,
+              usecase = err.usecase,
+              operation = err.operation,
+              target = err.target
             )
           case StorageAdmitted(sample) => responseForSample(sample)
         }
@@ -412,6 +438,15 @@ object TableStorageStage:
                 logicalPartitionAccess = rejection.logicalPartitionAccess,
                 resultingCollectionBytes = rejection.resultingCollectionBytes,
                 limitBytes = rejection.limitBytes
+              )
+            )
+          case err: StorageSystemError =>
+            List(
+              StorageMetricEvent.SystemError(
+                eventTime = err.eventTime,
+                usecase = err.usecase,
+                operation = err.operation,
+                target = err.target
               )
             )
           case StorageAdmitted(sample) => metricsForSample(sample)
@@ -618,6 +653,7 @@ object TableStorageStage:
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
           case t: TimedControlEvent => List(t)
           case _: StorageRejection => Nil
+          case _: StorageSystemError => Nil
           case StorageAdmitted(sample) => consumptionForSample(sample)
         }
       )
@@ -630,6 +666,7 @@ object TableStorageStage:
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[AdmittedRequestSample]] {
           case t: TimedControlEvent => List(t)
           case _: StorageRejection => Nil
+          case _: StorageSystemError => Nil
           case StorageAdmitted(sample) => List(sample)
         }
       )

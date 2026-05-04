@@ -72,7 +72,7 @@ object TimeWindowRollups:
           DemoMetric.CumulativeCrossRegionTransferCost =>
         points.maxBy(_.tick).value
       case DemoMetric.ThrottleCount | DemoMetric.AdmittedRequestCount |
-          DemoMetric.ProvisionedWriteCapacityUnits =>
+          DemoMetric.ProvisionedWriteCapacityUnits | DemoMetric.SystemErrorCount =>
         points.map(_.value).sum
       case DemoMetric.ProvisionedReadCapacityUnits | DemoMetric.BillingModeIndicator =>
         points.maxBy(_.tick).value

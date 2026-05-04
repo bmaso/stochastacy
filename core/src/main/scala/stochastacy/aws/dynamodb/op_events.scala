@@ -196,6 +196,18 @@ case class ItemCollectionSizeLimitExceededResponse(
                                                   ) extends DynamoDBResponse
 
 /**
+ * Emitted when the storage layer simulates a transient internal error for an otherwise
+ * admitted request. Parallels real DynamoDB's `InternalServerError`. No capacity is
+ * consumed and no state is mutated. Rate is controlled by `DynamoDbTable.Config.systemErrorRate`.
+ */
+final case class SystemErrorResponse(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  operation: DynamoDbOperationKind,
+  target: stochastacy.aws.dynamodb.table.DynamoDbTarget
+) extends DynamoDBResponse
+
+/**
  * Emitted when a management-API reconfiguration event is rejected. The simulator enforces
  * real DynamoDB constraints (e.g., the 24-hour billing mode switch cooldown) and emits this
  * response instead of applying the change when the constraint is violated.

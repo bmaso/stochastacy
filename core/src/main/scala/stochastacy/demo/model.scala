@@ -38,6 +38,7 @@ enum DemoMetric:
   case AdmittedRequestCount
   case ReturnedItemCount(operation: String)
   case ReplicationLatency(destinationRegion: String)
+  case SystemErrorCount
 
   def exportName: String =
     this match
@@ -76,6 +77,7 @@ enum DemoMetric:
       case DemoMetric.AdmittedRequestCount => "AdmittedRequestCount"
       case DemoMetric.ReturnedItemCount(op) => s"ReturnedItemCount:$op"
       case DemoMetric.ReplicationLatency(r) => s"Region:$r:ReplicationLatencyMs"
+      case DemoMetric.SystemErrorCount => "SystemErrorCount"
 
   def sortKey: (Int, String) =
     this match
@@ -114,6 +116,7 @@ enum DemoMetric:
       case DemoMetric.AdmittedRequestCount => (32, "")
       case DemoMetric.ReturnedItemCount(op) => (33, op)
       case DemoMetric.ReplicationLatency(r) => (34, r)
+      case DemoMetric.SystemErrorCount => (35, "")
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

@@ -205,3 +205,11 @@ object StorageMetricEvent:
                                                     resultingCollectionBytes: Long,
                                                     limitBytes: Long
                                                   ) extends StorageMetricEvent
+
+  /** A storage-layer system error was simulated for this admitted request. */
+  final case class SystemError(
+    eventTime: SimTime,
+    usecase: Any,
+    operation: DynamoDbOperationKind,
+    target: DynamoDbTarget
+  ) extends StorageMetricEvent

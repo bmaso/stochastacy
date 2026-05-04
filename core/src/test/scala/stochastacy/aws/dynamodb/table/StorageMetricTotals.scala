@@ -115,3 +115,6 @@ object StorageMetricTotals:
 
       case _: StorageMetricEvent.ItemCollectionSizeLimitExceeded =>
         acc
+
+      case _: StorageMetricEvent.SystemError =>
+        acc

@@ -235,7 +235,8 @@ object DynamoDbTable:
                            burstCapacityModel: Option[BurstCapacityModel] = None,
                            adaptiveCapacityModel: Option[AdaptiveCapacityModel] = None,
                            dynamicPartitionTopologyModel: Option[DynamicPartitionTopologyModel] = None,
-                           itemCollectionSizeLimitBytes: Option[Long] = None
+                           itemCollectionSizeLimitBytes: Option[Long] = None,
+                           systemErrorRate: Double = 0.0
                          ):
     Config.validate(this)
 
@@ -449,6 +450,11 @@ object DynamoDbTable:
           s"itemCollectionSizeLimitBytes for table '${config.tableName}' must be positive when defined, got $limit"
         )
       }
+
+      require(
+        config.systemErrorRate >= 0.0 && config.systemErrorRate < 1.0,
+        s"systemErrorRate for table '${config.tableName}' must be in [0.0, 1.0), got ${config.systemErrorRate}"
+      )
 
   private enum RouteBranch:
     case BaseTable
@@ -802,7 +808,8 @@ object DynamoDbTable:
                            indexMaintenanceRuntimes: Vector[InternalIndexRuntime] = Vector.empty,
                            gsiWriteScopes: Vector[TableAdmissionStage.GsiWriteScopeConfig] = Vector.empty,
                            itemCollectionSizeLimitBytes: Option[Long] = None,
-                           billingModeRef: Option[BillingModeRef] = None
+                           billingModeRef: Option[BillingModeRef] = None,
+                           systemErrorRate: Double = 0.0
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -841,11 +848,17 @@ object DynamoDbTable:
           billingModeRef = billingModeRef
         )
       )
+      val storageRng: Option[org.apache.commons.rng.UniformRandomProvider] =
+        if systemErrorRate > 0.0 then
+          Some(org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create())
+        else None
       val storage = b.add(
         TableStorageStage.componentOfAdmitted(
           stateModel = stateModel,
           indexProjection = indexProjection,
-          itemCollectionSizeLimitBytes = itemCollectionSizeLimitBytes
+          itemCollectionSizeLimitBytes = itemCollectionSizeLimitBytes,
+          systemErrorRate = systemErrorRate,
+          rng = storageRng
         )
       )
       val throttledResponseFilter = b.add(
@@ -947,7 +960,8 @@ object DynamoDbTable:
         indexMaintenanceTargets = indexMaintenanceTargetsFor(config, indexRuntimes),
         indexMaintenanceRuntimes = indexRuntimes,
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
-        itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes
+        itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
+        systemErrorRate = config.systemErrorRate
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -1052,7 +1066,8 @@ object DynamoDbTable:
                     maxPartitionCount = dynamic.maxGlobalSecondaryIndexPartitionCounts.get(indexDefinition.indexName)
                   )
                 },
-              billingMode = config.billingMode
+              billingMode = config.billingMode,
+              systemErrorRate = config.systemErrorRate
             )
           )
 
@@ -1116,7 +1131,8 @@ object DynamoDbTable:
                     maxPartitionCount = dynamic.maxTablePartitionCount
                   )
                 },
-              billingMode = config.billingMode
+              billingMode = config.billingMode,
+              systemErrorRate = config.systemErrorRate
             )
           )
 
@@ -1196,7 +1212,8 @@ object DynamoDbTable:
         indexMaintenanceRuntimes = indexRuntimes,
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
         itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
-        billingModeRef = Some(billingModeRef)
+        billingModeRef = Some(billingModeRef),
+        systemErrorRate = config.systemErrorRate
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -1301,7 +1318,8 @@ object DynamoDbTable:
                     )
                   },
                 billingMode = config.billingMode,
-                billingModeRef = Some(billingModeRef)
+                billingModeRef = Some(billingModeRef),
+                systemErrorRate = config.systemErrorRate
               )
             )
 
@@ -1366,7 +1384,8 @@ object DynamoDbTable:
                     )
                   },
                 billingMode = config.billingMode,
-                billingModeRef = Some(billingModeRef)
+                billingModeRef = Some(billingModeRef),
+                systemErrorRate = config.systemErrorRate
               )
             )
 
@@ -1609,11 +1628,17 @@ object DynamoDbTable:
         )
       )
 
+      val replicatedStorageRng: Option[org.apache.commons.rng.UniformRandomProvider] =
+        if config.systemErrorRate > 0.0 then
+          Some(org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create())
+        else None
       val storage = b.add(
         TableStorageStage.componentOfAdmitted(
           stateModel = config.stateModel,
           indexProjection = None,
-          itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes
+          itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
+          systemErrorRate = config.systemErrorRate,
+          rng = replicatedStorageRng
         )
       )
 
@@ -1802,9 +1827,9 @@ object DynamoDbTable:
                     maxPartitionCount = dynamic.maxGlobalSecondaryIndexPartitionCounts.get(indexDefinition.indexName)
                   )
                 },
-              billingMode = config.billingMode
-              ,
-              billingModeRef = billingModeRef
+              billingMode = config.billingMode,
+              billingModeRef = billingModeRef,
+              systemErrorRate = config.systemErrorRate
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> gsiStage.in
@@ -1864,9 +1889,9 @@ object DynamoDbTable:
                     maxPartitionCount = dynamic.maxTablePartitionCount
                   )
                 },
-              billingMode = config.billingMode
-              ,
-              billingModeRef = billingModeRef
+              billingMode = config.billingMode,
+              billingModeRef = billingModeRef,
+              systemErrorRate = config.systemErrorRate
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> lsiStage.in
