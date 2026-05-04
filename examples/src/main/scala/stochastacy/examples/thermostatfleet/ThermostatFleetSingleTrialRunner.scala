@@ -82,6 +82,29 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         acc.updated(lat.eventTime.ticks, math.max(prev, lat.lagMs))
       case _ => acc
 
+  // (operation-string, tick) -> raw latency samples (ms) collected within the tick
+  private type LatencySampleAcc = Map[(String, Long), Vector[Double]]
+
+  private def foldLatencySampleEvent(acc: LatencySampleAcc, evt: TimedElement[TableMetricEvent]): LatencySampleAcc =
+    evt match
+      case lat: StorageMetricEvent.SuccessfulRequestLatency =>
+        val key = (lat.operation.toString, lat.eventTime.ticks)
+        acc.updated(key, acc.getOrElse(key, Vector.empty) :+ lat.latencyMs)
+      case _ => acc
+
+  private def latencyPercentileTimeSeries(latSampleAcc: LatencySampleAcc): Vector[SimulationTimeSeriesPoint] =
+    latSampleAcc.flatMap { case ((op, tick), samples) =>
+      val sorted = samples.sorted
+      val p50 = sorted((sorted.size * 0.50).toInt.min(sorted.size - 1))
+      val p95 = sorted((sorted.size * 0.95).toInt.min(sorted.size - 1))
+      val p99 = sorted((sorted.size * 0.99).toInt.min(sorted.size - 1))
+      Vector(
+        SimulationTimeSeriesPoint(tick, DemoMetric.LatencyP50(op), BigDecimal.decimal(p50)),
+        SimulationTimeSeriesPoint(tick, DemoMetric.LatencyP95(op), BigDecimal.decimal(p95)),
+        SimulationTimeSeriesPoint(tick, DemoMetric.LatencyP99(op), BigDecimal.decimal(p99))
+      )
+    }.toVector
+
   // ── Fold helpers ─────────────────────────────────────────────────────────
 
   private val bytesPerGiB = BigDecimal(1024).pow(3)
@@ -93,6 +116,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     acc: PerRegionAcc,
     gsiNames: Vector[String],
     pricingRates: DynamoDbPricingRates,
+    tableClass: DynamoDbTable.TableClass,
     regionName: Option[String]
   ): Vector[SimulationTimeSeriesPoint] =
     val sortedTicks = acc.perTickBuckets.keys.toVector.sorted
@@ -119,11 +143,12 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       cumReplWrite += b.replicatedWriteUnits
       cumStorage += b.storageByteDelta
       cumByteTicks += BigInt(math.max(0L, cumStorage))
+      val r = pricingRates.forClass(tableClass)
       val cumulativeCost =
-        (cumRead * pricingRates.readCapacityUnitPrice) +
-          (cumWrite * pricingRates.writeCapacityUnitPrice) +
-          (cumReplWrite * pricingRates.replicatedWriteCapacityUnitPrice) +
-          (BigDecimal(cumByteTicks) * pricingRates.storagePricePerGiBSecond / bytesPerGiB)
+        (cumRead * r.readCapacityUnitPrice) +
+          (cumWrite * r.writeCapacityUnitPrice) +
+          (cumReplWrite * r.replicatedWriteCapacityUnitPrice) +
+          (BigDecimal(cumByteTicks) * r.storagePricePerGiBSecond / bytesPerGiB)
 
       val basePoints = Vector(
         SimulationTimeSeriesPoint(tick, readMetric, b.readUnits),
@@ -237,7 +262,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
   private def buildAggTimeSeries(
     aggByTick: Map[Long, TickBucketAgg],
     gsiNames: Vector[String],
-    pricingRates: DynamoDbPricingRates
+    pricingRates: DynamoDbPricingRates,
+    tableClass: DynamoDbTable.TableClass
   ): Vector[SimulationTimeSeriesPoint] =
     val sortedTicks = aggByTick.keys.toVector.sorted
     var cumRead = BigDecimal(0)
@@ -252,11 +278,12 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       cumReplWrite += agg.replWriteUnits
       cumStorage += agg.storageDelta
       cumByteTicks += BigInt(math.max(0L, cumStorage))
+      val r = pricingRates.forClass(tableClass)
       val cumCost =
-        (cumRead * pricingRates.readCapacityUnitPrice) +
-          (cumWrite * pricingRates.writeCapacityUnitPrice) +
-          (cumReplWrite * pricingRates.replicatedWriteCapacityUnitPrice) +
-          (BigDecimal(cumByteTicks) * pricingRates.storagePricePerGiBSecond / bytesPerGiB)
+        (cumRead * r.readCapacityUnitPrice) +
+          (cumWrite * r.writeCapacityUnitPrice) +
+          (cumReplWrite * r.replicatedWriteCapacityUnitPrice) +
+          (BigDecimal(cumByteTicks) * r.storagePricePerGiBSecond / bytesPerGiB)
       Vector(
         SimulationTimeSeriesPoint(tick, DemoMetric.ReadCapacityUnits, agg.readUnits),
         SimulationTimeSeriesPoint(tick, DemoMetric.WriteCapacityUnits, agg.writeUnits),
@@ -303,10 +330,12 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       (acc, evt) => updatePerRegionAcc(acc, evt)
     }
     val retItemFoldSink = Sink.fold[RetItemAcc, TimedElement[TableMetricEvent]](Map.empty)(foldMetricEvent)
+    val latSampleFoldSink = Sink.fold[LatencySampleAcc, TimedElement[TableMetricEvent]](Map.empty)(foldLatencySampleEvent)
 
-    val (accF, retItemAccF) = RunnableGraph.fromGraph(
-      GraphDSL.createGraph(foldSink, retItemFoldSink)((c, m) => (c, m)) { implicit b => (consSink, metSink) =>
+    val (accF, retItemAccF, latSampleAccF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(foldSink, retItemFoldSink, latSampleFoldSink)((c, m, l) => (c, m, l)) { implicit b => (consSink, metSink, latSink) =>
         import GraphDSL.Implicits.*
+        val metricBcast = b.add(org.apache.pekko.stream.scaladsl.Broadcast[TimedElement[TableMetricEvent]](2))
         schedule match
           case Some(reconfigurationSchedule) =>
             val table = b.add(DynamoDbTable.componentOfManaged(buildTableConfig(config, tableState, behaviors)))
@@ -314,32 +343,36 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
             Source.fromIterator(() => managementEventsFor(config.simulationTicks, reconfigurationSchedule)) ~> table.managementIn
             table.responseOut ~> b.add(Sink.ignore)
             table.consumptionOut ~> consSink
-            table.metricOut ~> metSink
+            table.metricOut ~> metricBcast.in
           case None =>
             val table = b.add(DynamoDbTable.componentOf(buildTableConfig(config, tableState, behaviors)))
             Source.fromIterator(() => requestIterator) ~> table.in
             table.out0 ~> b.add(Sink.ignore)
             table.out1 ~> consSink
-            table.out2 ~> metSink
+            table.out2 ~> metricBcast.in
+        metricBcast.out(0) ~> metSink
+        metricBcast.out(1) ~> latSink
         ClosedShape
       }
     ).run()
 
     for
-      rawAcc     <- accF
-      retItemAcc <- retItemAccF
+      rawAcc       <- accF
+      retItemAcc   <- retItemAccF
+      latSampleAcc <- latSampleAccF
     yield
       val timeBasedTotals = extractTimeBasedUsage(rawAcc)
       val costBreakdown = DynamoDbCostBreakdown.price(
         DynamoDbPricingInputs(usage = rawAcc.usageTotals, timeBasedUsage = timeBasedTotals),
-        config.pricingRates
+        config.pricingRates,
+        config.tableClass
       )
       val gsiUsage = gsiNames.map { indexName =>
         indexName -> rawAcc.usageTotals.byTarget.collectFirst {
           case (DynamoDbTarget.GlobalSecondaryIndex(_, `indexName`), totals) => totals
         }.getOrElse(DynamoDbTargetUsageTotals())
       }.toMap
-      val points = buildPerRegionTimeSeries(rawAcc, gsiNames, config.pricingRates, regionName = None)
+      val points = buildPerRegionTimeSeries(rawAcc, gsiNames, config.pricingRates, config.tableClass, regionName = None)
       val retItemPoints: Vector[SimulationTimeSeriesPoint] =
         retItemAcc.map { case ((op, tick), count) =>
           SimulationTimeSeriesPoint(tick, DemoMetric.ReturnedItemCount(op), BigDecimal(count))
@@ -348,7 +381,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = points ++ retItemPoints,
+        timeSeries = points ++ retItemPoints ++ latencyPercentileTimeSeries(latSampleAcc),
         summary = Vector(
           TrialSummaryValue(DemoMetric.TotalReadCapacityUnits, rawAcc.usageTotals.overall.readCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, rawAcc.usageTotals.overall.writeCapacityUnits),
@@ -454,11 +487,17 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         acc.updated(region, foldLatencyEvent(acc.getOrElse(region, Map.empty), evt))
     }
 
-    val (mrAccF, transferAccF, retItemRegionAccF, latencyRegionAccF) = RunnableGraph.fromGraph(
-      GraphDSL.createGraph(taggedConsSink, transferSink, taggedMetricFoldSink, taggedLatencyFoldSink)(
-        (mc, tf, mi, la) => (mc, tf, mi, la)
+    val taggedLatencySampleFoldSink = Sink.fold[Map[String, LatencySampleAcc], TaggedMetricEvent](Map.empty) {
+      (acc, tagged) =>
+        val (region, evt) = tagged
+        acc.updated(region, foldLatencySampleEvent(acc.getOrElse(region, Map.empty), evt))
+    }
+
+    val (mrAccF, transferAccF, retItemRegionAccF, latencyRegionAccF, latencySampleRegionAccF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(taggedConsSink, transferSink, taggedMetricFoldSink, taggedLatencyFoldSink, taggedLatencySampleFoldSink)(
+        (mc, tf, mi, la, ls) => (mc, tf, mi, la, ls)
       ) {
-        implicit b => (taggedConsSinkShape, transfersSinkShape, metricSinkShape, latencySinkShape) =>
+        implicit b => (taggedConsSinkShape, transfersSinkShape, metricSinkShape, latencySinkShape, latencySampleSinkShape) =>
           import GraphDSL.Implicits.*
           val metricMerge = b.add(Merge[TaggedMetricEvent](sortedRegions.size))
           schedule match
@@ -500,19 +539,21 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
 
               consumptionMerge.out ~> taggedConsSinkShape
               globalTable.transferEventsOutlet ~> transfersSinkShape
-          val metricBcast = b.add(org.apache.pekko.stream.scaladsl.Broadcast[TaggedMetricEvent](2))
+          val metricBcast = b.add(org.apache.pekko.stream.scaladsl.Broadcast[TaggedMetricEvent](3))
           metricMerge.out ~> metricBcast.in
           metricBcast.out(0) ~> metricSinkShape
           metricBcast.out(1) ~> latencySinkShape
+          metricBcast.out(2) ~> latencySampleSinkShape
           ClosedShape
       }
     ).run()
 
     for
-      mrAcc            <- mrAccF
-      transferAcc      <- transferAccF
-      retItemRegionAcc <- retItemRegionAccF
-      latencyRegionAcc <- latencyRegionAccF
+      mrAcc                 <- mrAccF
+      transferAcc           <- transferAccF
+      retItemRegionAcc      <- retItemRegionAccF
+      latencyRegionAcc      <- latencyRegionAccF
+      latencySampleRegionAcc <- latencySampleRegionAccF
     yield
       val regions = sortedRegions.map(_.regionName)
 
@@ -524,7 +565,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
             usage = regionUsage.getOrElse(r, DynamoDbUsageTotals()),
             timeBasedUsage = regionTimeBasedUsage.getOrElse(r, DynamoDbTimeBasedUsageTotals())
           ),
-          config.pricingRates
+          config.pricingRates,
+          config.tableClass
         )
       }.toMap
 
@@ -554,13 +596,14 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       val overallTimeBasedUsage = mergeTimeBasedUsageTotals(regionTimeBasedUsage.values.toVector)
       val overallCost = DynamoDbCostBreakdown.price(
         DynamoDbPricingInputs(usage = overallUsage, timeBasedUsage = overallTimeBasedUsage),
-        config.pricingRates
+        config.pricingRates,
+        config.tableClass
       )
 
-      val aggregateTimeSeries = buildAggTimeSeries(mrAcc.aggByTick, gsiNames, config.pricingRates)
+      val aggregateTimeSeries = buildAggTimeSeries(mrAcc.aggByTick, gsiNames, config.pricingRates, config.tableClass)
       val perRegionTimeSeries = regions.flatMap { r =>
         mrAcc.perRegion.get(r).map(acc =>
-          buildPerRegionTimeSeries(acc, Vector.empty, config.pricingRates, Some(r))
+          buildPerRegionTimeSeries(acc, Vector.empty, config.pricingRates, config.tableClass, Some(r))
         ).getOrElse(Vector.empty)
       }
 
@@ -629,10 +672,18 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
           }.toVector
         }
 
+      val aggregateLatencySampleAcc: LatencySampleAcc =
+        latencySampleRegionAcc.values.foldLeft(Map.empty: LatencySampleAcc) { (agg, regionAcc) =>
+          regionAcc.foldLeft(agg) { case (a, (key, samples)) =>
+            a.updated(key, a.getOrElse(key, Vector.empty) ++ samples)
+          }
+        }
+      val requestLatencyPoints = latencyPercentileTimeSeries(aggregateLatencySampleAcc)
+
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = (aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries ++ transferCostTimeSeries ++ retItemPoints ++ latencyPoints)
+        timeSeries = (aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries ++ transferCostTimeSeries ++ retItemPoints ++ latencyPoints ++ requestLatencyPoints)
           .filter(_.tick <= config.simulationTicks),
         summary = overallSummary ++ perRegionSummary ++ perLinkSummary
       )
@@ -808,7 +859,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       hotPartitionModel = config.hotPartitionModel,
       burstCapacityModel = config.burstCapacityModel,
       adaptiveCapacityModel = config.adaptiveCapacityModel,
-      dynamicPartitionTopologyModel = config.dynamicPartitionTopologyModel
+      dynamicPartitionTopologyModel = config.dynamicPartitionTopologyModel,
+      tableClass = config.tableClass
     )
 
   private def buildDefaultReplicationModel(seed: Long): ReplicationModel =

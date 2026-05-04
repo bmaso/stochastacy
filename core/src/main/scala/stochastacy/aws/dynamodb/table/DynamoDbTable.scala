@@ -93,6 +93,26 @@ object DynamoDbTable:
       "globalSecondaryIndexPerPartitionMaxWriteRequestUnitsPerSecond values must be positive"
     )
 
+  final case class LatencyParams(mu: Double, sigma: Double):
+    require(sigma > 0.0, s"sigma must be positive, got $sigma")
+
+  final case class LatencyModel(params: Map[DynamoDbOperationKind, LatencyParams])
+
+  object LatencyModel:
+    val awsDefault: LatencyModel = LatencyModel(Map(
+      DynamoDbOperationKind.GetItem    -> LatencyParams(math.log(2.0),  0.5),
+      DynamoDbOperationKind.PutItem    -> LatencyParams(math.log(2.5),  0.5),
+      DynamoDbOperationKind.UpdateItem -> LatencyParams(math.log(2.5),  0.5),
+      DynamoDbOperationKind.DeleteItem -> LatencyParams(math.log(2.5),  0.5),
+      DynamoDbOperationKind.Query      -> LatencyParams(math.log(5.0),  0.6),
+      DynamoDbOperationKind.Scan       -> LatencyParams(math.log(10.0), 0.7)
+    ))
+
+  sealed trait TableClass
+  object TableClass:
+    case object Standard extends TableClass
+    case object StandardInfrequentAccess extends TableClass
+
   final case class BurstCapacityModel(
                                        enabled: Boolean = true,
                                        retentionWindowSeconds: Int = 300,
@@ -236,7 +256,9 @@ object DynamoDbTable:
                            adaptiveCapacityModel: Option[AdaptiveCapacityModel] = None,
                            dynamicPartitionTopologyModel: Option[DynamicPartitionTopologyModel] = None,
                            itemCollectionSizeLimitBytes: Option[Long] = None,
-                           systemErrorRate: Double = 0.0
+                           systemErrorRate: Double = 0.0,
+                           latencyModel: LatencyModel = LatencyModel.awsDefault,
+                           tableClass: TableClass = TableClass.Standard
                          ):
     Config.validate(this)
 
@@ -809,7 +831,8 @@ object DynamoDbTable:
                            gsiWriteScopes: Vector[TableAdmissionStage.GsiWriteScopeConfig] = Vector.empty,
                            itemCollectionSizeLimitBytes: Option[Long] = None,
                            billingModeRef: Option[BillingModeRef] = None,
-                           systemErrorRate: Double = 0.0
+                           systemErrorRate: Double = 0.0,
+                           latencyModel: LatencyModel = LatencyModel.awsDefault
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -852,13 +875,18 @@ object DynamoDbTable:
         if systemErrorRate > 0.0 then
           Some(org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create())
         else None
+      val latencyRng = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(
+        executionTarget.hashCode.toLong ^ 0xBADC0FFEE0DDF00DL
+      )
       val storage = b.add(
         TableStorageStage.componentOfAdmitted(
           stateModel = stateModel,
           indexProjection = indexProjection,
           itemCollectionSizeLimitBytes = itemCollectionSizeLimitBytes,
           systemErrorRate = systemErrorRate,
-          rng = storageRng
+          rng = storageRng,
+          latencyModel = latencyModel,
+          latencyRng = latencyRng
         )
       )
       val throttledResponseFilter = b.add(
@@ -961,7 +989,8 @@ object DynamoDbTable:
         indexMaintenanceRuntimes = indexRuntimes,
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
         itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
-        systemErrorRate = config.systemErrorRate
+        systemErrorRate = config.systemErrorRate,
+        latencyModel = config.latencyModel
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -1067,7 +1096,8 @@ object DynamoDbTable:
                   )
                 },
               billingMode = config.billingMode,
-              systemErrorRate = config.systemErrorRate
+              systemErrorRate = config.systemErrorRate,
+              latencyModel = config.latencyModel
             )
           )
 
@@ -1132,7 +1162,8 @@ object DynamoDbTable:
                   )
                 },
               billingMode = config.billingMode,
-              systemErrorRate = config.systemErrorRate
+              systemErrorRate = config.systemErrorRate,
+              latencyModel = config.latencyModel
             )
           )
 
@@ -1213,7 +1244,8 @@ object DynamoDbTable:
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
         itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
         billingModeRef = Some(billingModeRef),
-        systemErrorRate = config.systemErrorRate
+        systemErrorRate = config.systemErrorRate,
+        latencyModel = config.latencyModel
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -1319,7 +1351,8 @@ object DynamoDbTable:
                   },
                 billingMode = config.billingMode,
                 billingModeRef = Some(billingModeRef),
-                systemErrorRate = config.systemErrorRate
+                systemErrorRate = config.systemErrorRate,
+                latencyModel = config.latencyModel
               )
             )
 
@@ -1385,7 +1418,8 @@ object DynamoDbTable:
                   },
                 billingMode = config.billingMode,
                 billingModeRef = Some(billingModeRef),
-                systemErrorRate = config.systemErrorRate
+                systemErrorRate = config.systemErrorRate,
+                latencyModel = config.latencyModel
               )
             )
 
@@ -1632,13 +1666,18 @@ object DynamoDbTable:
         if config.systemErrorRate > 0.0 then
           Some(org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create())
         else None
+      val replicatedLatencyRng = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(
+        config.tableName.hashCode.toLong ^ 0xBADC0FFEE0DDF00DL
+      )
       val storage = b.add(
         TableStorageStage.componentOfAdmitted(
           stateModel = config.stateModel,
           indexProjection = None,
           itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
           systemErrorRate = config.systemErrorRate,
-          rng = replicatedStorageRng
+          rng = replicatedStorageRng,
+          latencyModel = config.latencyModel,
+          latencyRng = replicatedLatencyRng
         )
       )
 
@@ -1829,7 +1868,8 @@ object DynamoDbTable:
                 },
               billingMode = config.billingMode,
               billingModeRef = billingModeRef,
-              systemErrorRate = config.systemErrorRate
+              systemErrorRate = config.systemErrorRate,
+              latencyModel = config.latencyModel
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> gsiStage.in
@@ -1891,7 +1931,8 @@ object DynamoDbTable:
                 },
               billingMode = config.billingMode,
               billingModeRef = billingModeRef,
-              systemErrorRate = config.systemErrorRate
+              systemErrorRate = config.systemErrorRate,
+              latencyModel = config.latencyModel
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> lsiStage.in

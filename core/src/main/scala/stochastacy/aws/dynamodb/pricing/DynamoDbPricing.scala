@@ -1,5 +1,6 @@
 package stochastacy.aws.dynamodb.pricing
 
+import stochastacy.aws.dynamodb.table.DynamoDbTable
 import stochastacy.aws.dynamodb.usage.{DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 
 final case class DynamoDbPricingInputs(
@@ -7,30 +8,49 @@ final case class DynamoDbPricingInputs(
                                         timeBasedUsage: DynamoDbTimeBasedUsageTotals
                                       )
 
-final case class DynamoDbPricingRates(
-                                        readCapacityUnitPrice: BigDecimal,
-                                        writeCapacityUnitPrice: BigDecimal,
-                                        replicatedWriteCapacityUnitPrice: BigDecimal = BigDecimal("0.000000975"),
-                                        storagePricePerGiBSecond: BigDecimal
-                                      )
-
 object DynamoDbPricingRates:
   private val SecondsPerHour = BigDecimal(3600)
   private val SecondsPerDay = SecondsPerHour * BigDecimal(24)
   private val SecondsPer30DayMonth = SecondsPerDay * BigDecimal(30)
 
+  final case class RateSet(
+    readCapacityUnitPrice: BigDecimal,
+    writeCapacityUnitPrice: BigDecimal,
+    replicatedWriteCapacityUnitPrice: BigDecimal = BigDecimal("0.000000975"),
+    storagePricePerGiBSecond: BigDecimal
+  )
+
   /**
-   * Phase-1 default rates are intentionally simple and estimate-oriented.
-   *
-   * Storage pricing uses GiB-seconds:
-   * one simulation tick is treated as one second, and 1024^3 bytes are treated as one GiB.
+   * AWS-calibrated Standard table class defaults.
+   * Storage pricing uses GiB-seconds: one simulation tick = one second, 1024^3 bytes = one GiB.
    */
+  val awsDefaultStandard: RateSet = RateSet(
+    readCapacityUnitPrice    = BigDecimal("0.00000025"),
+    writeCapacityUnitPrice   = BigDecimal("0.00000125"),
+    storagePricePerGiBSecond = BigDecimal("0.25") / SecondsPer30DayMonth
+  )
+
+  // Standard-IA: higher storage rate, lower throughput rate (per Phase 5 roadmap spec)
+  val awsDefaultStandardIa: RateSet = RateSet(
+    readCapacityUnitPrice            = BigDecimal("0.000000125"),
+    writeCapacityUnitPrice           = BigDecimal("0.000000625"),
+    replicatedWriteCapacityUnitPrice = BigDecimal("0.0000004875"),
+    storagePricePerGiBSecond         = BigDecimal("0.50") / SecondsPer30DayMonth
+  )
+
   val phase1Default: DynamoDbPricingRates =
     DynamoDbPricingRates(
-      readCapacityUnitPrice = BigDecimal("0.00000025"),
-      writeCapacityUnitPrice = BigDecimal("0.00000125"),
-      storagePricePerGiBSecond = BigDecimal("0.25") / SecondsPer30DayMonth
+      standard                 = awsDefaultStandard,
+      standardInfrequentAccess = awsDefaultStandardIa
     )
+
+final case class DynamoDbPricingRates(
+  standard: DynamoDbPricingRates.RateSet,
+  standardInfrequentAccess: DynamoDbPricingRates.RateSet = DynamoDbPricingRates.awsDefaultStandardIa
+):
+  def forClass(tc: DynamoDbTable.TableClass): DynamoDbPricingRates.RateSet = tc match
+    case DynamoDbTable.TableClass.Standard                 => standard
+    case DynamoDbTable.TableClass.StandardInfrequentAccess => standardInfrequentAccess
 
 final case class DynamoDbCostBreakdown(
                                         readCapacityCost: BigDecimal,
@@ -45,20 +65,23 @@ object DynamoDbCostBreakdown:
 
   def price(
              inputs: DynamoDbPricingInputs,
-             rates: DynamoDbPricingRates = DynamoDbPricingRates.phase1Default
+             rates: DynamoDbPricingRates = DynamoDbPricingRates.phase1Default,
+             tableClass: DynamoDbTable.TableClass = DynamoDbTable.TableClass.Standard
            ): DynamoDbCostBreakdown =
+    val r = rates.forClass(tableClass)
+
     val readCapacityCost =
-      inputs.usage.overall.readCapacityUnits * rates.readCapacityUnitPrice
+      inputs.usage.overall.readCapacityUnits * r.readCapacityUnitPrice
 
     val writeCapacityCost =
-      inputs.usage.overall.writeCapacityUnits * rates.writeCapacityUnitPrice
+      inputs.usage.overall.writeCapacityUnits * r.writeCapacityUnitPrice
 
     val replicatedWriteCapacityCost =
-      inputs.usage.overall.replicatedWriteCapacityUnits * rates.replicatedWriteCapacityUnitPrice
+      inputs.usage.overall.replicatedWriteCapacityUnits * r.replicatedWriteCapacityUnitPrice
 
     val storageCost =
       BigDecimal(inputs.timeBasedUsage.overallStorageByteTicks) *
-        rates.storagePricePerGiBSecond / BytesPerGiB
+        r.storagePricePerGiBSecond / BytesPerGiB
 
     DynamoDbCostBreakdown(
       readCapacityCost = readCapacityCost,

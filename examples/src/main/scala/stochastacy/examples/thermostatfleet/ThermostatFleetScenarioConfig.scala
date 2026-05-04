@@ -46,7 +46,8 @@ final case class ThermostatFleetScenarioConfig(
   reconfigurationSchedule: Option[ReconfigurationSchedule] = None,
   replicationModel: Option[ReplicationModel] = None,
   transferPricingRates: CrossRegionTransferPricingRates = CrossRegionTransferPricingRates(),
-  pricingRates: DynamoDbPricingRates = DynamoDbPricingRates.phase1Default
+  pricingRates: DynamoDbPricingRates = DynamoDbPricingRates.phase1Default,
+  tableClass: DynamoDbTable.TableClass = DynamoDbTable.TableClass.Standard
 ):
   require(scenarioId.nonEmpty, "scenarioId must be non-empty")
   require(simulationTicks >= 1L, "simulationTicks must be at least 1")

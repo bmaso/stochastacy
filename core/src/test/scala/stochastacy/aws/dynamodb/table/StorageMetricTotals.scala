@@ -118,3 +118,6 @@ object StorageMetricTotals:
 
       case _: StorageMetricEvent.SystemError =>
         acc
+
+      case _: StorageMetricEvent.SuccessfulRequestLatency =>
+        acc

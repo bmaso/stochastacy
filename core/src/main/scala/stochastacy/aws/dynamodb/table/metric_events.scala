@@ -213,3 +213,12 @@ object StorageMetricEvent:
     operation: DynamoDbOperationKind,
     target: DynamoDbTarget
   ) extends StorageMetricEvent
+
+  /** Latency of a successfully admitted operation, sampled from a log-normal distribution. */
+  final case class SuccessfulRequestLatency(
+    eventTime: SimTime,
+    usecase: Any,
+    operation: DynamoDbOperationKind,
+    target: DynamoDbTarget,
+    latencyMs: Double
+  ) extends StorageMetricEvent

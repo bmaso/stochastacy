@@ -80,6 +80,8 @@ object TimeWindowRollups:
         points.map(_.value).sum
       case DemoMetric.ReplicationLatency(_) =>
         points.map(_.value).maxOption.getOrElse(BigDecimal(0))
+      case DemoMetric.LatencyP50(_) | DemoMetric.LatencyP95(_) | DemoMetric.LatencyP99(_) =>
+        points.map(_.value).maxOption.getOrElse(BigDecimal(0))
       case unsupported =>
         throw new IllegalArgumentException(s"windowed time-series rollups are not supported for metric: $unsupported")
 

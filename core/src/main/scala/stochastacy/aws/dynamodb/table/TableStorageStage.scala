@@ -1,6 +1,7 @@
 package stochastacy.aws.dynamodb.table
 
 import org.apache.commons.rng.UniformRandomProvider
+import org.apache.commons.statistics.distribution.{ContinuousDistribution, LogNormalDistribution}
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL}
 import org.apache.pekko.stream.{FanOutShape3, FanOutShape4, Graph}
@@ -148,7 +149,9 @@ object TableStorageStage:
                                           indexProjection: Option[DynamoDbTable.IndexProjection] = None,
                                           itemCollectionSizeLimitBytes: Option[Long] = None,
                                           systemErrorRate: Double = 0.0,
-                                          rng: Option[UniformRandomProvider] = None
+                                          rng: Option[UniformRandomProvider] = None,
+                                          latencyModel: DynamoDbTable.LatencyModel = DynamoDbTable.LatencyModel.awsDefault,
+                                          latencyRng: UniformRandomProvider = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(0L)
                                         ): Graph[
     FanOutShape4[
       TimedElement[AdmittedRequestSample],
@@ -306,16 +309,26 @@ object TableStorageStage:
         }
       )
 
+      val latSamplers: Map[DynamoDbOperationKind, ContinuousDistribution.Sampler] =
+        latencyModel.params.map { case (op, params) =>
+          op -> LogNormalDistribution.of(params.mu, params.sigma).createSampler(latencyRng)
+        }
+
+      def sampleLatencyMs(op: DynamoDbOperationKind): Double =
+        latSamplers.get(op).map(_.sample()).getOrElse(0.0)
+
       def metricsForSample(sample: AdmittedRequestSample): List[StorageMetricEvent] = sample match
         case r: Replicated[?] => metricsForSample(r.sample)
-        case AdmittedGetItemSample(r, _, _, _, s, _, _) =>
+        case AdmittedGetItemSample(r, executionTarget, _, _, s, _, _) =>
           val returnedEvents =
             s.itemBytes.toList.map { itemBytes =>
               StorageMetricEvent.GetItemReturned(r.eventTime, r.usecase, itemBytes)
             }
           List(
             StorageMetricEvent.GetItemObserved(r.eventTime, r.usecase)
-          ) ++ returnedEvents
+          ) ++ returnedEvents ++ List(
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.GetItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.GetItem))
+          )
 
         case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
           val effectiveSample =
@@ -355,7 +368,10 @@ object TableStorageStage:
             StorageMetricEvent.QueryObserved(r.eventTime, r.usecase, r.target),
             StorageMetricEvent.QueryEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
           ) ++ returnedEvents ++ projectionEvents ++
-            List(StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Query, s.returnedItemCount))
+            List(
+              StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Query, s.returnedItemCount),
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.Query, executionTarget, sampleLatencyMs(DynamoDbOperationKind.Query))
+            )
 
         case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
           val effectiveSample =
@@ -395,25 +411,30 @@ object TableStorageStage:
             StorageMetricEvent.ScanObserved(r.eventTime, r.usecase, r.target),
             StorageMetricEvent.ScanEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
           ) ++ returnedEvents ++ projectionEvents ++
-            List(StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, s.returnedItemCount))
+            List(
+              StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, s.returnedItemCount),
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, executionTarget, sampleLatencyMs(DynamoDbOperationKind.Scan))
+            )
 
-        case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
+        case AdmittedPutItemSample(r, executionTarget, _, s, _, _, _) =>
           List(
             StorageMetricEvent.PutItemObserved(r.eventTime, r.usecase),
             StorageMetricEvent.PutItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.PutItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.PutItem))
           )
 
-        case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
+        case AdmittedUpdateItemSample(r, executionTarget, _, s, _, _, _) =>
           List(
             StorageMetricEvent.UpdateItemObserved(r.eventTime, r.usecase),
             StorageMetricEvent.UpdateItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.UpdateItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.UpdateItem))
           )
 
-        case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
+        case AdmittedDeleteItemSample(r, executionTarget, _, s, _, _, _) =>
           val deleteEvents =
             s.deletedItemBytes.toList.map { bytes =>
               StorageMetricEvent.DeleteItemDeleted(r.eventTime, r.usecase, bytes)
@@ -422,7 +443,8 @@ object TableStorageStage:
             StorageMetricEvent.DeleteItemObserved(r.eventTime, r.usecase)
           ) ++ deleteEvents ++ List(
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.DeleteItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.DeleteItem))
           )
 
       val metricFlow = b.add(

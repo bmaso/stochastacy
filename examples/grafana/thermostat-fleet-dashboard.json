@@ -1732,6 +1732,43 @@
       ],
       "title": "Replication Latency (ms) by Destination Region",
       "type": "timeseries"
+    },
+    {
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 77
+      },
+      "id": 103,
+      "options": {
+        "legend": {
+          "calcs": ["last"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'LatencyP50:PutItem' then \"value\" end) as \"P50\",\n  avg(case when metric = 'LatencyP95:PutItem' then \"value\" end) as \"P95\",\n  avg(case when metric = 'LatencyP99:PutItem' then \"value\" end) as \"P99\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in ('LatencyP50:PutItem', 'LatencyP95:PutItem', 'LatencyP99:PutItem')\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "PutItem Latency Percentiles (ms, mean across trials)",
+      "type": "timeseries"
     }
   ],
   "refresh": "",
