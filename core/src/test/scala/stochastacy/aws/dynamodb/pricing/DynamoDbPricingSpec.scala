@@ -235,3 +235,87 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
       breakdown.writeCapacityCost shouldBe BigDecimal(100) * DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice
     }
   }
+
+  "DynamoDbCostBreakdown (reserved capacity billing)" should {
+    val rc = ReservedCapacity(
+      reservedReadCapacityUnits       = 50L,
+      reservedWriteCapacityUnits      = 50L,
+      discountedReadCapacityUnitPrice  = BigDecimal("0.000000125"),  // 50% of standard $0.00000025
+      discountedWriteCapacityUnitPrice = BigDecimal("0.000000625")   // 50% of standard $0.00000125
+    )
+    val ratesWithReserved = DynamoDbPricingRates.phase1Default.copy(reservedCapacity = Some(rc))
+
+    "all provisioned capacity within reserved threshold bills entirely at discounted rate" in {
+      // base = 40 RCU (< reserved 50), zero GSI → all discounted
+      val inputs = DynamoDbPricingInputs(
+        usage = DynamoDbUsageTotals(),
+        timeBasedUsage = DynamoDbTimeBasedUsageTotals(),
+        provisionedCapacity = Some(ProvisionedCapacityData(
+          totalProvisionedReadCapacityUnitTicks  = BigInt(40) * 3600,
+          totalProvisionedWriteCapacityUnitTicks = BigInt(0),
+          discountedReadCapacityUnitTicks        = BigInt(40) * 3600,
+          standardReadCapacityUnitTicks          = BigInt(0)
+        ))
+      )
+      val breakdown = DynamoDbCostBreakdown.price(inputs, ratesWithReserved)
+      breakdown.readCapacityCost shouldBe BigDecimal(40) * rc.discountedReadCapacityUnitPrice
+    }
+
+    "provisioned capacity straddling the reserved threshold splits correctly" in {
+      // base = 80 RCU, reserved = 50 → 50 discounted + 30 standard
+      val inputs = DynamoDbPricingInputs(
+        usage = DynamoDbUsageTotals(),
+        timeBasedUsage = DynamoDbTimeBasedUsageTotals(),
+        provisionedCapacity = Some(ProvisionedCapacityData(
+          totalProvisionedReadCapacityUnitTicks  = BigInt(80) * 3600,
+          totalProvisionedWriteCapacityUnitTicks = BigInt(0),
+          discountedReadCapacityUnitTicks        = BigInt(50) * 3600,
+          standardReadCapacityUnitTicks          = BigInt(30) * 3600
+        ))
+      )
+      val breakdown = DynamoDbCostBreakdown.price(inputs, ratesWithReserved)
+      val expected =
+        BigDecimal(50) * rc.discountedReadCapacityUnitPrice +
+        BigDecimal(30) * DynamoDbPricingRates.awsDefaultStandard.readCapacityUnitPrice
+      breakdown.readCapacityCost shouldBe expected
+    }
+
+    "GSI ticks in standardReadCapacityUnitTicks bill at standard rate even when base is within reserved" in {
+      // base = 40 RCU (< reserved 50), GSI = 20 RCU → discounted = 40, standard = 20 (GSI)
+      val inputs = DynamoDbPricingInputs(
+        usage = DynamoDbUsageTotals(),
+        timeBasedUsage = DynamoDbTimeBasedUsageTotals(),
+        provisionedCapacity = Some(ProvisionedCapacityData(
+          totalProvisionedReadCapacityUnitTicks  = BigInt(60) * 3600,  // base + GSI
+          totalProvisionedWriteCapacityUnitTicks = BigInt(0),
+          discountedReadCapacityUnitTicks        = BigInt(40) * 3600,  // base only
+          standardReadCapacityUnitTicks          = BigInt(20) * 3600   // GSI only
+        ))
+      )
+      val breakdown = DynamoDbCostBreakdown.price(inputs, ratesWithReserved)
+      val expected =
+        BigDecimal(40) * rc.discountedReadCapacityUnitPrice +
+        BigDecimal(20) * DynamoDbPricingRates.awsDefaultStandard.readCapacityUnitPrice
+      breakdown.readCapacityCost shouldBe expected
+    }
+
+    "rejects Standard-IA table class with reserved capacity" in {
+      val inputs = DynamoDbPricingInputs(
+        usage = DynamoDbUsageTotals(),
+        timeBasedUsage = DynamoDbTimeBasedUsageTotals(),
+        provisionedCapacity = Some(ProvisionedCapacityData(BigInt(100), BigInt(100)))
+      )
+      an[IllegalArgumentException] should be thrownBy
+        DynamoDbCostBreakdown.price(inputs, ratesWithReserved, DynamoDbTable.TableClass.StandardInfrequentAccess)
+    }
+
+    "rejects on-demand billing mode (no provisionedCapacity) with reserved capacity" in {
+      val inputs = DynamoDbPricingInputs(
+        usage = DynamoDbUsageTotals(),
+        timeBasedUsage = DynamoDbTimeBasedUsageTotals()
+        // provisionedCapacity = None → on-demand
+      )
+      an[IllegalArgumentException] should be thrownBy
+        DynamoDbCostBreakdown.price(inputs, ratesWithReserved)
+    }
+  }

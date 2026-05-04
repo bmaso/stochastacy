@@ -6,7 +6,7 @@ import org.apache.pekko.stream.Materializer
 import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
 import org.apache.pekko.stream.ClosedShape
 import stochastacy.aws.dynamodb.*
-import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates, ProvisionedCapacityData}
+import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates, ProvisionedCapacityData, ReservedCapacity}
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.dynamodb.usage.{DynamoDbTargetTimeBasedUsageTotals, DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 import stochastacy.demo.*
@@ -52,7 +52,11 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     retItemByOpAndTick: Map[(String, Long), Long] = Map.empty,
     latencySamplesByOpAndTick: Map[(String, Long), Vector[Double]] = Map.empty,
     totalProvisionedRcuTicks: BigInt = BigInt(0),
-    totalProvisionedWcuTicks: BigInt = BigInt(0)
+    totalProvisionedWcuTicks: BigInt = BigInt(0),
+    discountedRcuTicks: BigInt = BigInt(0),
+    standardRcuTicks: BigInt = BigInt(0),
+    discountedWcuTicks: BigInt = BigInt(0),
+    standardWcuTicks: BigInt = BigInt(0)
   )
 
   // ── Fold helpers ──────────────────────────────────────────────────────────
@@ -106,18 +110,33 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
 
       case _ => acc
 
-  private def updateMetricAcc(acc: MetricAcc, evt: TimedElement[TableMetricEvent]): MetricAcc =
+  private def updateMetricAcc(acc: MetricAcc, evt: TimedElement[TableMetricEvent], reservedCapacity: Option[ReservedCapacity]): MetricAcc =
     evt match
       case util: AdmissionMetricEvent.ProvisionedCapacityUtilization =>
         val t   = util.eventTime.ticks
         val old = acc.byTick.getOrElse(t, MetricTickData())
+        // In the mixed-mode demo, GSI provisioned capacity = 0, so total == base-table.
+        // Per-tick split is required for correctness when capacity changes mid-simulation.
+        val baseRcu = util.provisionedReadCapacityUnits
+        val baseWcu = util.provisionedWriteCapacityUnits
+        val (discRcu, stdRcu, discWcu, stdWcu) = reservedCapacity.fold {
+          (BigInt(0), BigInt(baseRcu), BigInt(0), BigInt(baseWcu))
+        } { rc =>
+          val dr = BigInt(math.min(baseRcu, rc.reservedReadCapacityUnits))
+          val dw = BigInt(math.min(baseWcu, rc.reservedWriteCapacityUnits))
+          (dr, BigInt(baseRcu) - dr, dw, BigInt(baseWcu) - dw)
+        }
         acc.copy(
           byTick = acc.byTick.updated(t, old.copy(
             provisionedRcu = Some(util.provisionedReadCapacityUnits),
             provisionedWcu = Some(util.provisionedWriteCapacityUnits)
           )),
           totalProvisionedRcuTicks = acc.totalProvisionedRcuTicks + BigInt(util.provisionedReadCapacityUnits),
-          totalProvisionedWcuTicks = acc.totalProvisionedWcuTicks + BigInt(util.provisionedWriteCapacityUnits)
+          totalProvisionedWcuTicks = acc.totalProvisionedWcuTicks + BigInt(util.provisionedWriteCapacityUnits),
+          discountedRcuTicks = acc.discountedRcuTicks + discRcu,
+          standardRcuTicks   = acc.standardRcuTicks   + stdRcu,
+          discountedWcuTicks = acc.discountedWcuTicks + discWcu,
+          standardWcuTicks   = acc.standardWcuTicks   + stdWcu
         )
       case snap: AdmissionMetricEvent.BillingModeSnapshot =>
         val t   = snap.eventTime.ticks
@@ -172,8 +191,9 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     val consFoldSink: Sink[TimedElement[DynamoDbConsumptionEvent], Future[ConsAcc]] =
       Sink.fold(ConsAcc()) { (acc, evt) => updateConsAcc(acc, evt, scenarioConfig.pricingRates, scenarioConfig.tableClass) }
 
+    val rc = scenarioConfig.pricingRates.reservedCapacity
     val metricFoldSink: Sink[TimedElement[TableMetricEvent], Future[MetricAcc]] =
-      Sink.fold(MetricAcc()) { (acc, evt) => updateMetricAcc(acc, evt) }
+      Sink.fold(MetricAcc()) { (acc, evt) => updateMetricAcc(acc, evt, rc) }
 
     val (consAccF, metricAccF) = RunnableGraph.fromGraph(
       GraphDSL.createGraph(consFoldSink, metricFoldSink)((a, b) => (a, b)) {
@@ -203,7 +223,11 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
         Option.when(metricAcc.totalProvisionedRcuTicks > 0 || metricAcc.totalProvisionedWcuTicks > 0)(
           ProvisionedCapacityData(
             totalProvisionedReadCapacityUnitTicks  = metricAcc.totalProvisionedRcuTicks,
-            totalProvisionedWriteCapacityUnitTicks = metricAcc.totalProvisionedWcuTicks
+            totalProvisionedWriteCapacityUnitTicks = metricAcc.totalProvisionedWcuTicks,
+            discountedReadCapacityUnitTicks  = metricAcc.discountedRcuTicks,
+            standardReadCapacityUnitTicks    = metricAcc.standardRcuTicks,
+            discountedWriteCapacityUnitTicks = metricAcc.discountedWcuTicks,
+            standardWriteCapacityUnitTicks   = metricAcc.standardWcuTicks
           )
         )
       val costBreakdown = DynamoDbCostBreakdown.price(

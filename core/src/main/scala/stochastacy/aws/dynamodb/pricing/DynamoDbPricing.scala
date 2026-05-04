@@ -3,9 +3,24 @@ package stochastacy.aws.dynamodb.pricing
 import stochastacy.aws.dynamodb.table.DynamoDbTable
 import stochastacy.aws.dynamodb.usage.{DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 
+final case class ReservedCapacity(
+  reservedReadCapacityUnits: Long,
+  reservedWriteCapacityUnits: Long,
+  discountedReadCapacityUnitPrice: BigDecimal,
+  discountedWriteCapacityUnitPrice: BigDecimal
+):
+  require(reservedReadCapacityUnits > 0L, "reservedReadCapacityUnits must be positive")
+  require(reservedWriteCapacityUnits > 0L, "reservedWriteCapacityUnits must be positive")
+  require(discountedReadCapacityUnitPrice >= 0, "discountedReadCapacityUnitPrice must be non-negative")
+  require(discountedWriteCapacityUnitPrice >= 0, "discountedWriteCapacityUnitPrice must be non-negative")
+
 final case class ProvisionedCapacityData(
   totalProvisionedReadCapacityUnitTicks: BigInt,
-  totalProvisionedWriteCapacityUnitTicks: BigInt
+  totalProvisionedWriteCapacityUnitTicks: BigInt,
+  discountedReadCapacityUnitTicks: BigInt = BigInt(0),
+  standardReadCapacityUnitTicks: BigInt = BigInt(0),
+  discountedWriteCapacityUnitTicks: BigInt = BigInt(0),
+  standardWriteCapacityUnitTicks: BigInt = BigInt(0)
 )
 
 final case class DynamoDbPricingInputs(
@@ -52,7 +67,8 @@ object DynamoDbPricingRates:
 
 final case class DynamoDbPricingRates(
   standard: DynamoDbPricingRates.RateSet,
-  standardInfrequentAccess: DynamoDbPricingRates.RateSet = DynamoDbPricingRates.awsDefaultStandardIa
+  standardInfrequentAccess: DynamoDbPricingRates.RateSet = DynamoDbPricingRates.awsDefaultStandardIa,
+  reservedCapacity: Option[ReservedCapacity] = None
 ):
   def forClass(tc: DynamoDbTable.TableClass): DynamoDbPricingRates.RateSet = tc match
     case DynamoDbTable.TableClass.Standard                 => standard
@@ -74,12 +90,31 @@ object DynamoDbCostBreakdown:
              rates: DynamoDbPricingRates = DynamoDbPricingRates.phase1Default,
              tableClass: DynamoDbTable.TableClass = DynamoDbTable.TableClass.Standard
            ): DynamoDbCostBreakdown =
+    require(
+      rates.reservedCapacity.isEmpty || tableClass == DynamoDbTable.TableClass.Standard,
+      "Reserved capacity is unavailable for Standard-IA tables"
+    )
+    require(
+      rates.reservedCapacity.isEmpty || inputs.provisionedCapacity.isDefined,
+      "Reserved capacity requires provisioned billing mode; no provisionedCapacity data was supplied"
+    )
+
     val r = rates.forClass(tableClass)
 
     val (readCapacityCost, writeCapacityCost) = inputs.provisionedCapacity match
       case Some(pc) =>
-        (BigDecimal(pc.totalProvisionedReadCapacityUnitTicks)  * r.readCapacityUnitPrice  / BigDecimal(3600),
-         BigDecimal(pc.totalProvisionedWriteCapacityUnitTicks) * r.writeCapacityUnitPrice / BigDecimal(3600))
+        rates.reservedCapacity match
+          case Some(rc) =>
+            val readCost =
+              BigDecimal(pc.discountedReadCapacityUnitTicks) * rc.discountedReadCapacityUnitPrice / BigDecimal(3600) +
+              BigDecimal(pc.standardReadCapacityUnitTicks)   * r.readCapacityUnitPrice             / BigDecimal(3600)
+            val writeCost =
+              BigDecimal(pc.discountedWriteCapacityUnitTicks) * rc.discountedWriteCapacityUnitPrice / BigDecimal(3600) +
+              BigDecimal(pc.standardWriteCapacityUnitTicks)   * r.writeCapacityUnitPrice             / BigDecimal(3600)
+            (readCost, writeCost)
+          case None =>
+            (BigDecimal(pc.totalProvisionedReadCapacityUnitTicks)  * r.readCapacityUnitPrice  / BigDecimal(3600),
+             BigDecimal(pc.totalProvisionedWriteCapacityUnitTicks) * r.writeCapacityUnitPrice / BigDecimal(3600))
       case None =>
         (inputs.usage.overall.readCapacityUnits  * r.readCapacityUnitPrice,
          inputs.usage.overall.writeCapacityUnits * r.writeCapacityUnitPrice)

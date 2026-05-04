@@ -53,3 +53,5 @@ object StorageConsumptionTotals:
           storageBytesDelta = acc.storageBytesDelta + bytesDelta,
           targets = acc.targets + target
         )
+
+      case _: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed => acc
