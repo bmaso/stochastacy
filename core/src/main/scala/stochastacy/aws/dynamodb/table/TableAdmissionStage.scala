@@ -1438,10 +1438,12 @@ object TableAdmissionStage:
                   )
                   val utilization = completedTickBillingMode match
                     case p: DynamoDbTable.BillingMode.Provisioned =>
+                      val totalRcu = p.readCapacityUnits + p.globalSecondaryIndexReadCapacityUnits.values.sum
+                      val totalWcu = p.writeCapacityUnits + p.globalSecondaryIndexWriteCapacityUnits.values.sum
                       Vector(AdmissionMetricEvent.ProvisionedCapacityUtilization(
                         eventTime, "tick-snapshot",
                         completedTickReadUnits, completedTickWriteUnits,
-                        p.readCapacityUnits, p.writeCapacityUnits
+                        totalRcu, totalWcu
                       ))
                     case _ => Vector.empty
                   Vector(consumed, modeSnapshot) ++ utilization

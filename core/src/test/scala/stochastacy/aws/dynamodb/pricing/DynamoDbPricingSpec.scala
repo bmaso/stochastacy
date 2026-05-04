@@ -202,3 +202,36 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
       iaCost.totalCost should be > standardCost.totalCost
     }
   }
+
+  "DynamoDbCostBreakdown (provisioned billing)" should {
+    "bill provisioned-capacity-ticks at per-second rate: non-uniform GSI capacity produces exact-sum cost" in {
+      // base=10 WCU, GSI-A=20 WCU, GSI-B=5 WCU → total=35 WCU
+      // Run for 3600 ticks (= 1 simulated hour at 1 tick/second)
+      val provisionedWcuTicks = BigInt(35) * 3600
+      val inputs = DynamoDbPricingInputs(
+        usage = DynamoDbUsageTotals(),
+        timeBasedUsage = DynamoDbTimeBasedUsageTotals(),
+        provisionedCapacity = Some(ProvisionedCapacityData(
+          totalProvisionedReadCapacityUnitTicks  = BigInt(0),
+          totalProvisionedWriteCapacityUnitTicks = provisionedWcuTicks
+        ))
+      )
+      val breakdown = DynamoDbCostBreakdown.price(inputs, DynamoDbPricingRates.phase1Default)
+
+      // (35 WCU × 3600 ticks) / 3600 × writePrice = 35 × writePrice
+      val expected = BigDecimal(35) * DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice
+      breakdown.writeCapacityCost shouldBe expected
+      // must not be 10 × 3 × writePrice (old per-entity approximation with 3 entities)
+      breakdown.writeCapacityCost should not be BigDecimal(30) * DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice
+    }
+
+    "fall back to consumed-unit on-demand billing when no provisionedCapacity is supplied" in {
+      val inputs = DynamoDbPricingInputs(
+        usage = DynamoDbUsageTotals(overall = DynamoDbTargetUsageTotals(writeCapacityUnits = BigDecimal(100))),
+        timeBasedUsage = DynamoDbTimeBasedUsageTotals()
+        // provisionedCapacity defaults to None → on-demand billing
+      )
+      val breakdown = DynamoDbCostBreakdown.price(inputs, DynamoDbPricingRates.phase1Default)
+      breakdown.writeCapacityCost shouldBe BigDecimal(100) * DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice
+    }
+  }

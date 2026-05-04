@@ -1323,6 +1323,38 @@ class TableAdmissionStageSpec extends AnyWordSpec with should.Matchers:
       utilization.head.provisionedWriteCapacityUnits shouldBe 100L
     }
 
+    "emit ProvisionedCapacityUtilization with total provisioned capacity summing base-table and all GSIs" in {
+      val gsiReadMap  = Map("gsi-a" -> 20L, "gsi-b" -> 5L)
+      val gsiWriteMap = Map("gsi-a" -> 15L, "gsi-b" -> 10L)
+      val requests = Source(Vector[TimedElement[DynamoDBRequest]](
+        GetItemRequest(eventTime = SimTime.of(1L), usecase = "get"),
+        GetItemRequest(eventTime = SimTime.of(2L), usecase = "get")
+      ))
+
+      val (_, _, metricFuture) = runStage(
+        requests,
+        TableAdmissionStage.Config(
+          executionTarget = DynamoDbTarget.Table("t"),
+          admissionTarget = DynamoDbTarget.Table("t"),
+          useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(4096L)),
+          stateModel = FixedTableState(1L, 4096L),
+          readConsistency = ReadConsistency.StronglyConsistent,
+          billingMode = DynamoDbTable.BillingMode.Provisioned(
+            readCapacityUnits  = 10L,
+            writeCapacityUnits = 10L,
+            globalSecondaryIndexReadCapacityUnits  = gsiReadMap,
+            globalSecondaryIndexWriteCapacityUnits = gsiWriteMap
+          )
+        )
+      )
+
+      val metrics = Await.result(metricFuture, 3.seconds)
+      val utilization = metrics.collect { case m: AdmissionMetricEvent.ProvisionedCapacityUtilization => m }
+      utilization should have size 1
+      utilization.head.provisionedReadCapacityUnits  shouldBe (10L + 20L + 5L)   // base + gsi-a + gsi-b
+      utilization.head.provisionedWriteCapacityUnits shouldBe (10L + 15L + 10L)  // base + gsi-a + gsi-b
+    }
+
     "emit no snapshot events before the first tick completes" in {
       val requests = Source(Vector[TimedElement[DynamoDBRequest]](
         GetItemRequest(eventTime = SimTime.of(1L), usecase = "get")

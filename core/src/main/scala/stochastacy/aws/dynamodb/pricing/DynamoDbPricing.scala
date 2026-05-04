@@ -3,10 +3,16 @@ package stochastacy.aws.dynamodb.pricing
 import stochastacy.aws.dynamodb.table.DynamoDbTable
 import stochastacy.aws.dynamodb.usage.{DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 
+final case class ProvisionedCapacityData(
+  totalProvisionedReadCapacityUnitTicks: BigInt,
+  totalProvisionedWriteCapacityUnitTicks: BigInt
+)
+
 final case class DynamoDbPricingInputs(
-                                        usage: DynamoDbUsageTotals,
-                                        timeBasedUsage: DynamoDbTimeBasedUsageTotals
-                                      )
+  usage: DynamoDbUsageTotals,
+  timeBasedUsage: DynamoDbTimeBasedUsageTotals,
+  provisionedCapacity: Option[ProvisionedCapacityData] = None
+)
 
 object DynamoDbPricingRates:
   private val SecondsPerHour = BigDecimal(3600)
@@ -70,11 +76,13 @@ object DynamoDbCostBreakdown:
            ): DynamoDbCostBreakdown =
     val r = rates.forClass(tableClass)
 
-    val readCapacityCost =
-      inputs.usage.overall.readCapacityUnits * r.readCapacityUnitPrice
-
-    val writeCapacityCost =
-      inputs.usage.overall.writeCapacityUnits * r.writeCapacityUnitPrice
+    val (readCapacityCost, writeCapacityCost) = inputs.provisionedCapacity match
+      case Some(pc) =>
+        (BigDecimal(pc.totalProvisionedReadCapacityUnitTicks)  * r.readCapacityUnitPrice  / BigDecimal(3600),
+         BigDecimal(pc.totalProvisionedWriteCapacityUnitTicks) * r.writeCapacityUnitPrice / BigDecimal(3600))
+      case None =>
+        (inputs.usage.overall.readCapacityUnits  * r.readCapacityUnitPrice,
+         inputs.usage.overall.writeCapacityUnits * r.writeCapacityUnitPrice)
 
     val replicatedWriteCapacityCost =
       inputs.usage.overall.replicatedWriteCapacityUnits * r.replicatedWriteCapacityUnitPrice

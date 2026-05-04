@@ -6,7 +6,7 @@ import org.apache.pekko.stream.Materializer
 import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
 import org.apache.pekko.stream.ClosedShape
 import stochastacy.aws.dynamodb.*
-import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates}
+import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates, ProvisionedCapacityData}
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.dynamodb.usage.{DynamoDbTargetTimeBasedUsageTotals, DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 import stochastacy.demo.*
@@ -50,7 +50,9 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
   private case class MetricAcc(
     byTick: Map[Long, MetricTickData] = Map.empty,
     retItemByOpAndTick: Map[(String, Long), Long] = Map.empty,
-    latencySamplesByOpAndTick: Map[(String, Long), Vector[Double]] = Map.empty
+    latencySamplesByOpAndTick: Map[(String, Long), Vector[Double]] = Map.empty,
+    totalProvisionedRcuTicks: BigInt = BigInt(0),
+    totalProvisionedWcuTicks: BigInt = BigInt(0)
   )
 
   // ── Fold helpers ──────────────────────────────────────────────────────────
@@ -109,10 +111,14 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
       case util: AdmissionMetricEvent.ProvisionedCapacityUtilization =>
         val t   = util.eventTime.ticks
         val old = acc.byTick.getOrElse(t, MetricTickData())
-        acc.copy(byTick = acc.byTick.updated(t, old.copy(
-          provisionedRcu = Some(util.provisionedReadCapacityUnits),
-          provisionedWcu = Some(util.provisionedWriteCapacityUnits)
-        )))
+        acc.copy(
+          byTick = acc.byTick.updated(t, old.copy(
+            provisionedRcu = Some(util.provisionedReadCapacityUnits),
+            provisionedWcu = Some(util.provisionedWriteCapacityUnits)
+          )),
+          totalProvisionedRcuTicks = acc.totalProvisionedRcuTicks + BigInt(util.provisionedReadCapacityUnits),
+          totalProvisionedWcuTicks = acc.totalProvisionedWcuTicks + BigInt(util.provisionedWriteCapacityUnits)
+        )
       case snap: AdmissionMetricEvent.BillingModeSnapshot =>
         val t   = snap.eventTime.ticks
         val old = acc.byTick.getOrElse(t, MetricTickData())
@@ -160,11 +166,6 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     val behaviors: Map[Any, UseCaseSampler[TableState]] = Map(scenarioConfig.scenarioId -> behavior)
 
     val tableConfig = buildTableConfig(scenarioConfig, tableState, behaviors)
-    // In provisioned mode each GSI has its own capacity pool. ProvisionedCapacityUtilization only
-    // carries the base-table rate, so multiply by (1 + numGsis) to get the total provisioned
-    // capacity that is comparable to the all-inclusive WriteCapacityUnits / ReadCapacityUnits
-    // consumed metrics (which include base-table + all GSI maintenance writes).
-    val numGsis = tableConfig.globalSecondaryIndexes.size
     val requestIterator    = delegate.generateRequestsForRegion(scenarioConfig, region, requestRng)
     val managementIterator = delegate.managementEventsFor(scenarioConfig.simulationTicks, schedule)
 
@@ -198,8 +199,19 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
         overallStorageByteTicks    = consAcc.cumStorageByteTicks,
         endingOverallStorageBytes  = math.max(0L, consAcc.currentStorageBytes)
       )
+      val provisionedCapacity =
+        Option.when(metricAcc.totalProvisionedRcuTicks > 0 || metricAcc.totalProvisionedWcuTicks > 0)(
+          ProvisionedCapacityData(
+            totalProvisionedReadCapacityUnitTicks  = metricAcc.totalProvisionedRcuTicks,
+            totalProvisionedWriteCapacityUnitTicks = metricAcc.totalProvisionedWcuTicks
+          )
+        )
       val costBreakdown = DynamoDbCostBreakdown.price(
-        DynamoDbPricingInputs(usage = consAcc.usageTotals, timeBasedUsage = timeBasedUsage),
+        DynamoDbPricingInputs(
+          usage = consAcc.usageTotals,
+          timeBasedUsage = timeBasedUsage,
+          provisionedCapacity = provisionedCapacity
+        ),
         scenarioConfig.pricingRates,
         scenarioConfig.tableClass
       )
