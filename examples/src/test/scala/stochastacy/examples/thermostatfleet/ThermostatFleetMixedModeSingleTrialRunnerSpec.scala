@@ -5,7 +5,7 @@ import org.apache.pekko.stream.Materializer
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.pricing.{DynamoDbPricingRates, ReservedCapacity}
+import stochastacy.aws.dynamodb.pricing.{DynamoDbPricingRates, PricingSchedule, ReservedCapacity}
 import stochastacy.demo.{DemoMetric, TrialRunConfig}
 
 import scala.concurrent.duration.*
@@ -180,7 +180,7 @@ class ThermostatFleetMixedModeSingleTrialRunnerSpec
       val runner = ThermostatFleetMixedModeSingleTrialRunner()
       val run    = TrialRunConfig(trialId = 1, seed = 42L)
       val withoutReserved = Await.result(runner.runTrial(baseConfig, run), 30.seconds)
-      val withReserved    = Await.result(runner.runTrial(baseConfig.copy(pricingRates = reservedRates), run), 30.seconds)
+      val withReserved    = Await.result(runner.runTrial(baseConfig.copy(pricingSchedule = PricingSchedule.uniform(reservedRates)), run), 30.seconds)
 
       val costWithout = withoutReserved.summary.find(_.metric == DemoMetric.TotalEstimatedCost).get.value
       val costWith    = withReserved.summary.find(_.metric == DemoMetric.TotalEstimatedCost).get.value

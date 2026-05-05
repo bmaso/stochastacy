@@ -1,6 +1,6 @@
 package stochastacy.examples.thermostatfleet
 
-import stochastacy.aws.dynamodb.pricing.DynamoDbPricingRates
+import stochastacy.aws.dynamodb.pricing.PricingSchedule
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.sim.SimTime
 
@@ -15,7 +15,7 @@ final case class ThermostatFleetMixedModeConfig(
   initialProvisionedWcu: Long = 125L,
   adjustedProvisionedRcu: Long = 100L,
   adjustedProvisionedWcu: Long = 333L,
-  pricingRates: DynamoDbPricingRates = DynamoDbPricingRates.phase1Default
+  pricingSchedule: PricingSchedule = PricingSchedule.default
 ):
   require(scenarioId.nonEmpty, "scenarioId must be non-empty")
   require(simulationTicks >= 1L, "simulationTicks must be at least 1")
@@ -52,5 +52,5 @@ final case class ThermostatFleetMixedModeConfig(
       parallelism = parallelism,
       billingMode = DynamoDbTable.BillingMode.OnDemand(),
       reconfigurationSchedule = Some(schedule),
-      pricingRates = pricingRates
+      pricingSchedule = pricingSchedule
     )

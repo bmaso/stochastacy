@@ -1,6 +1,6 @@
 package stochastacy.examples.thermostatfleet
 
-import stochastacy.aws.dynamodb.pricing.DynamoDbPricingRates
+import stochastacy.aws.dynamodb.pricing.PricingSchedule
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.transfer.{CrossRegionTransferPricingRates, TransferPricingTier}
 
@@ -46,7 +46,7 @@ final case class ThermostatFleetScenarioConfig(
   reconfigurationSchedule: Option[ReconfigurationSchedule] = None,
   replicationModel: Option[ReplicationModel] = None,
   transferPricingRates: CrossRegionTransferPricingRates = CrossRegionTransferPricingRates(),
-  pricingRates: DynamoDbPricingRates = DynamoDbPricingRates.phase1Default,
+  pricingSchedule: PricingSchedule = PricingSchedule.default,
   tableClass: DynamoDbTable.TableClass = DynamoDbTable.TableClass.Standard
 ):
   require(scenarioId.nonEmpty, "scenarioId must be non-empty")

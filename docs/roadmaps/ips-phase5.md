@@ -224,6 +224,7 @@ unavailable for Standard-IA tables. Validation at config construction enforces t
 | 9. Table Class: Standard vs. Standard-IA | Future | |
 | 10. Per-GSI Provisioned Capacity Pricing Accuracy | Future | |
 | 11. Reserved Capacity Discount | Future | |
+| 11b. Regional Pricing | Future | |
 | 12. Multi-Region Demo Update | Future | |
 
 ---
@@ -413,6 +414,53 @@ Standard-IA table class is an error.
 
 Tests: confirm correct rate-split when provisioned capacity straddles the reserved threshold;
 confirm reserved-only and standard-only edge cases; confirm validation rejects invalid combos.
+
+### 11b. Regional Pricing
+
+DynamoDB pricing rates vary by AWS region. `DynamoDbPricingRates` currently carries a single
+rate set with no regional dimension; a simulation parameterized to match a specific customer
+deployment region, or one that models a multi-region workload, cannot express the fact that
+on-demand and provisioned rates differ across regions.
+
+Introduce a `PricingSchedule` abstraction that maps `(region: String, tick: Long)` to a
+`DynamoDbPricingRates` instance. The lookup contract: use the most-recently published rates at
+or before the given tick for the given region; fall back to a default rate set when no
+region-specific entry exists. The interface:
+
+```
+trait PricingSchedule:
+  def ratesAt(region: String, tick: Long): DynamoDbPricingRates
+```
+
+The default implementation is `StaticPricingSchedule(rates: Map[String, DynamoDbPricingRates],
+fallback: DynamoDbPricingRates)`. It ignores the tick parameter and performs a map lookup by
+region, returning `fallback` for any region not in the map. Callers that do not need regional
+differentiation can pass an empty map and supply the fallback directly; single-region callers
+are unaffected.
+
+Reserved capacity rates (the discounted per-unit price resulting from a 1- or 3-year upfront
+commitment) are region-specific: a reservation purchased in `us-east-1` discounts capacity only
+in that region. This is expressed naturally through `PricingSchedule` — each region's
+`DynamoDbPricingRates` instance carries its own `ReservedCapacity` sub-config with the
+region-specific discounted rates. No structural changes to `ReservedCapacity` are required.
+
+`ThermostatFleetScenarioConfig` gains a `pricingSchedule: PricingSchedule` field (defaulting to
+a `StaticPricingSchedule` wrapping `DynamoDbPricingRates.phase1Default` as the fallback). The
+single-trial runners resolve rates via the schedule at trial completion — `ratesAt(region,
+finalTick)` — before passing them to the pricing inputs. The mixed-mode runner's existing
+`pricingRates: DynamoDbPricingRates` field on `ThermostatFleetMixedModeConfig` is replaced by a
+`pricingSchedule` field; callers that were passing a custom `DynamoDbPricingRates` wrap it in
+`StaticPricingSchedule` with an empty region map.
+
+**Deferred:** Dynamic rate lookup sourced from the AWS Price List API or a locally cached
+snapshot. The `PricingSchedule` interface is designed to accommodate this: a future
+implementation fetches the published per-region rate tables at simulation start and constructs a
+tick-keyed schedule. The default `StaticPricingSchedule` remains correct for all current use
+cases and for callers that prefer to control pricing inputs directly.
+
+Tests: confirm that a two-region simulation resolves distinct rates for each region; confirm
+that a region absent from the schedule uses the fallback; confirm that reserved capacity
+configured for one region does not affect pricing computed for another.
 
 ### 12. Multi-Region Demo Update
 

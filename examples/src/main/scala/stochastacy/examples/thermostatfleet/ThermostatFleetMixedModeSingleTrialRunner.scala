@@ -188,10 +188,14 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     val requestIterator    = delegate.generateRequestsForRegion(scenarioConfig, region, requestRng)
     val managementIterator = delegate.managementEventsFor(scenarioConfig.simulationTicks, schedule)
 
-    val consFoldSink: Sink[TimedElement[DynamoDbConsumptionEvent], Future[ConsAcc]] =
-      Sink.fold(ConsAcc()) { (acc, evt) => updateConsAcc(acc, evt, scenarioConfig.pricingRates, scenarioConfig.tableClass) }
+    val rates = scenarioConfig.pricingSchedule.ratesAt(
+      scenarioConfig.regions.head.regionName,
+      scenarioConfig.simulationTicks
+    )
+    val rc = rates.reservedCapacity
 
-    val rc = scenarioConfig.pricingRates.reservedCapacity
+    val consFoldSink: Sink[TimedElement[DynamoDbConsumptionEvent], Future[ConsAcc]] =
+      Sink.fold(ConsAcc()) { (acc, evt) => updateConsAcc(acc, evt, rates, scenarioConfig.tableClass) }
     val metricFoldSink: Sink[TimedElement[TableMetricEvent], Future[MetricAcc]] =
       Sink.fold(MetricAcc()) { (acc, evt) => updateMetricAcc(acc, evt, rc) }
 
@@ -213,7 +217,7 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
       rawConsAcc  <- consAccF
       metricAcc   <- metricAccF
     yield
-      val consAcc = finalizeBucket(rawConsAcc, scenarioConfig.pricingRates, scenarioConfig.tableClass)
+      val consAcc = finalizeBucket(rawConsAcc, rates, scenarioConfig.tableClass)
 
       val timeBasedUsage = DynamoDbTimeBasedUsageTotals(
         overallStorageByteTicks    = consAcc.cumStorageByteTicks,
@@ -236,7 +240,7 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
           timeBasedUsage = timeBasedUsage,
           provisionedCapacity = provisionedCapacity
         ),
-        scenarioConfig.pricingRates,
+        rates,
         scenarioConfig.tableClass
       )
 

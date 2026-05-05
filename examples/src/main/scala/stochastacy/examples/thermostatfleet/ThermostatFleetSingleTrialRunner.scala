@@ -7,7 +7,7 @@ import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, Materializer}
 import org.apache.pekko.stream.scaladsl.{Flow, GraphDSL, Merge, RunnableGraph, Sink, Source}
 import stochastacy.aws.dynamodb.*
-import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates}
+import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates, PricingSchedule}
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.dynamodb.usage.{DynamoDbTargetTimeBasedUsageTotals, DynamoDbTargetUsageTotals, DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 import stochastacy.aws.transfer.{CrossRegionTransferCostBreakdown, CrossRegionTransferEvent, CrossRegionTransferUsageTotals}
@@ -356,6 +356,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       }
     ).run()
 
+    val rates = config.pricingSchedule.ratesAt(region.regionName, config.simulationTicks)
+
     for
       rawAcc       <- accF
       retItemAcc   <- retItemAccF
@@ -364,7 +366,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       val timeBasedTotals = extractTimeBasedUsage(rawAcc)
       val costBreakdown = DynamoDbCostBreakdown.price(
         DynamoDbPricingInputs(usage = rawAcc.usageTotals, timeBasedUsage = timeBasedTotals),
-        config.pricingRates,
+        rates,
         config.tableClass
       )
       val gsiUsage = gsiNames.map { indexName =>
@@ -372,7 +374,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
           case (DynamoDbTarget.GlobalSecondaryIndex(_, `indexName`), totals) => totals
         }.getOrElse(DynamoDbTargetUsageTotals())
       }.toMap
-      val points = buildPerRegionTimeSeries(rawAcc, gsiNames, config.pricingRates, config.tableClass, regionName = None)
+      val points = buildPerRegionTimeSeries(rawAcc, gsiNames, rates, config.tableClass, regionName = None)
       val retItemPoints: Vector[SimulationTimeSeriesPoint] =
         retItemAcc.map { case ((op, tick), count) =>
           SimulationTimeSeriesPoint(tick, DemoMetric.ReturnedItemCount(op), BigDecimal(count))
@@ -548,6 +550,11 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       }
     ).run()
 
+    val regionRates: Map[String, DynamoDbPricingRates] =
+      sortedRegions.map(r => r.regionName ->
+        config.pricingSchedule.ratesAt(r.regionName, config.simulationTicks)
+      ).toMap
+
     for
       mrAcc                 <- mrAccF
       transferAcc           <- transferAccF
@@ -565,7 +572,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
             usage = regionUsage.getOrElse(r, DynamoDbUsageTotals()),
             timeBasedUsage = regionTimeBasedUsage.getOrElse(r, DynamoDbTimeBasedUsageTotals())
           ),
-          config.pricingRates,
+          regionRates(r),
           config.tableClass
         )
       }.toMap
@@ -596,14 +603,14 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       val overallTimeBasedUsage = mergeTimeBasedUsageTotals(regionTimeBasedUsage.values.toVector)
       val overallCost = DynamoDbCostBreakdown.price(
         DynamoDbPricingInputs(usage = overallUsage, timeBasedUsage = overallTimeBasedUsage),
-        config.pricingRates,
+        config.pricingSchedule.defaultRates,
         config.tableClass
       )
 
-      val aggregateTimeSeries = buildAggTimeSeries(mrAcc.aggByTick, gsiNames, config.pricingRates, config.tableClass)
+      val aggregateTimeSeries = buildAggTimeSeries(mrAcc.aggByTick, gsiNames, config.pricingSchedule.defaultRates, config.tableClass)
       val perRegionTimeSeries = regions.flatMap { r =>
         mrAcc.perRegion.get(r).map(acc =>
-          buildPerRegionTimeSeries(acc, Vector.empty, config.pricingRates, config.tableClass, Some(r))
+          buildPerRegionTimeSeries(acc, Vector.empty, regionRates(r), config.tableClass, Some(r))
         ).getOrElse(Vector.empty)
       }
 
