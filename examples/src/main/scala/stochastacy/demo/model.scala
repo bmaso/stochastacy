@@ -45,6 +45,7 @@ enum DemoMetric:
   case LatencyP50(operation: String)
   case LatencyP95(operation: String)
   case LatencyP99(operation: String)
+  case EstimatedItemCount
 
   def exportName: String =
     this match
@@ -90,6 +91,7 @@ enum DemoMetric:
       case DemoMetric.LatencyP50(op) => s"LatencyP50:$op"
       case DemoMetric.LatencyP95(op) => s"LatencyP95:$op"
       case DemoMetric.LatencyP99(op) => s"LatencyP99:$op"
+      case DemoMetric.EstimatedItemCount => "EstimatedItemCount"
 
   def sortKey: (Int, String) =
     this match
@@ -135,6 +137,7 @@ enum DemoMetric:
       case DemoMetric.LatencyP50(op) => (36, op)
       case DemoMetric.LatencyP95(op) => (37, op)
       case DemoMetric.LatencyP99(op) => (38, op)
+      case DemoMetric.EstimatedItemCount => (42, "")
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

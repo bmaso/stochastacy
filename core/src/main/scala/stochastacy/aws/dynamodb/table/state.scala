@@ -5,6 +5,7 @@ trait TableState:
   def totalItemBytes: Long
   def recordSuccessfulWrite(writtenItemBytes: Long, previousItemBytes: Option[Long]): Unit
   def recordSuccessfulDelete(deletedItemBytes: Option[Long]): Unit
+  def recordTtlExpiry(expiredItemCount: Long, freedBytes: Long): Unit
 
   def recordSuccessfulPut(writtenItemBytes: Long, previousItemBytes: Option[Long]): Unit =
     recordSuccessfulWrite(writtenItemBytes, previousItemBytes)
@@ -41,6 +42,10 @@ class SummaryTableState(
       currentItemCount = currentItemCount - 1L
       currentTotalItemBytes = currentTotalItemBytes - bytes
     }
+
+  override def recordTtlExpiry(expiredItemCount: Long, freedBytes: Long): Unit =
+    currentItemCount = math.max(0L, currentItemCount - expiredItemCount)
+    currentTotalItemBytes = math.max(0L, currentTotalItemBytes - freedBytes)
 
 object SummaryTableState:
   def apply(

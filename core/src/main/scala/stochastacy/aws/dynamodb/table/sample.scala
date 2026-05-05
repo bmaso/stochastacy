@@ -161,3 +161,13 @@ trait DeleteItemSample:
   def storageBytesDelta: Long = -deletedItemBytes.getOrElse(0L)
 
   def itemCountDelta: Long = if deletedExistingItem then -1L else 0L
+
+final case class TtlExpirySample(
+  expiredItemCount: Long,
+  baseTableBytesFreed: Long,
+  gsiStorageFreed: Map[String, Long],
+  lsiStorageFreed: Map[String, Long]
+)
+
+object TtlExpirySample:
+  val empty: TtlExpirySample = TtlExpirySample(0L, 0L, Map.empty, Map.empty)

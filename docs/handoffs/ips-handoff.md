@@ -218,7 +218,7 @@ The "Write Capacity: Consumed vs. Provisioned" panel shows mean, P50, P75, and P
 - [ThermostatFleetMixedModeSingleTrialRunnerSpec.scala](examples/src/test/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeSingleTrialRunnerSpec.scala) — reserved capacity test uses `PricingSchedule.uniform(reservedRates)`
 - All storage stage specs (GetItem, PutItem, UpdateItem, DeleteItem, Query, Scan)
 
-Total: 276 core tests + 142 examples tests = 418 tests all passing.
+Total: 288 core tests + 142 examples tests = 430 tests all passing.
 
 ## Recommended Next Work
 
@@ -227,8 +227,8 @@ multi-service demo. The full ThermoFleet demo requires API Gateway, Lambda, SQS,
 S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises it. See
 [ips-phase6.md](../roadmaps/ips-phase6.md) for the full spec.
 
-1. **Read consistency RCU accounting** — verify/complete 0.5 RCU for eventually-consistent vs. 1.0 RCU for strongly-consistent reads.
-2. **TTL** — ring-buffer write history in `SummaryTableState`; deletion at tick T equals writes at tick T − ttlPeriod; algorithm is advisory and likely to be iterated.
+1. **Read consistency RCU accounting** — DONE (verified): `TableThroughputMath` already applies 0.5× for eventually-consistent reads.
+2. **TTL** — DONE: `TtlSampler`/`SimpleTtlSampler` ring-buffer; `TtlExpiry` StorageOutcome at tick boundaries; `TtlItemsExpired`+`EstimatedItemCount` metrics; `StorageBytesDelta` cascade for GSI/LSI; `DynamoDbTable.Config.ttlSampler`; 12 new tests.
 3. **Reactive auto-scaling** — external `DynamoDbAutoScaler` component; policy-driven `UpdateProvisionedCapacity` events with reaction delay; feedback-arc design requires a dedicated discussion before implementation.
 4. **Multi-table simulation framework** — composable runner for N parallel table instances with shared tick clock and per-table namespaced metrics.
 5. **DynamoDB capstone demo** — four-table ThermoFleet-inspired simulation (Device Registry, Telemetry, Commands, Alerts); workload scenarios: steady state, morning rush, polar vortex, combined peak; Grafana dashboard answering the key provisioned-vs-on-demand breakeven question.
@@ -239,7 +239,7 @@ S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
-- `sbt test` runs all 418 tests; `sbt "core/test"` runs the 276 core tests
+- `sbt test` runs all 430 tests; `sbt "core/test"` runs the 288 core tests
 - The canonical planning anchors are [ips-phase5.md](../roadmaps/ips-phase5.md) (complete) and [ips-phase4.md](../roadmaps/ips-phase4.md) (complete); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
 - Implement one slice at a time; use plan mode for new slices
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries

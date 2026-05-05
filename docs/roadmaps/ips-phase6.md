@@ -30,8 +30,8 @@ multi-service simulation.
 
 | Slice | Status | Summary |
 |-------|--------|---------|
-| 1. Read Consistency RCU Accounting | Planned | Verify/complete 0.5 RCU for eventually-consistent reads vs. 1.0 RCU for strongly-consistent reads |
-| 2. TTL | Planned | Ring-buffer write history; tick-accurate deletion rate derived from past write volume |
+| 1. Read Consistency RCU Accounting | Done | Already implemented: `TableThroughputMath.readCapacityUnitsFor` applies 0.5× for eventual consistency; tests verify 2× difference |
+| 2. TTL | Done | `TtlSampler` / `SimpleTtlSampler` ring-buffer; `TtlExpiry` StorageOutcome; `TtlItemsExpired` + `EstimatedItemCount` metrics; `StorageBytesDelta` cascade; `DynamoDbTable.Config.ttlSampler`; 12 new tests |
 | 3. Reactive Auto-Scaling | Planned | External `DynamoDbAutoScaler` component; policy-driven `UpdateProvisionedCapacity` events with reaction delay |
 | 4. Multi-Table Simulation Framework | Planned | Composable runner for N parallel table instances with shared tick clock and unified TrialResult |
 | 5. DynamoDB Capstone Demo | Planned | Four-table ThermoFleet-inspired workload; all Phase 6 features exercised; Grafana dashboard |
@@ -62,42 +62,84 @@ path may use strongly-consistent reads (a device must not miss a pending command
 
 ### 2. TTL
 
-**Goal:** Accurate storage-cost modeling for tables with time-to-live expiry.
+**Goal:** Model DynamoDB TTL expiry so that table storage self-attenuates over time in
+proportion to past write volume, rather than growing monotonically. Storage costs should
+reflect the live item population, not cumulative writes. This enables the demo question:
+"how much does TTL period affect steady-state storage cost?"
 
-DynamoDB TTL asynchronously deletes items whose TTL attribute has passed. For simulation
-purposes, deletions are applied deterministically: the number of items deleted at tick T equals
-the number of items written at tick T − `ttlPeriodTicks`. This is accurate for any traffic
-shape because it tracks the actual write history rather than assuming a steady-state rate.
+---
 
-**Note:** The algorithm described here is advisory. The exact formulation — bucket granularity,
-interaction with partition count evolution, behavior when `ttlPeriodTicks > simulationTicks`,
-and handling of TTL jitter (real AWS TTL deletions have up to 48-hour lag) — is likely to be
-iterated on during implementation. The core invariant that must hold: deletion volume at tick T
-is a function of write volume at tick T − ttlPeriod, not of current table size.
+**Current behaviors inconsistent with the goal:**
 
-**Implementation sketch:**
+1. **No TTL field in config.** `DynamoDbTable.Config` has no TTL-related field. There is no
+   TTL code anywhere in the codebase.
 
-New config type:
-```
-DynamoDbTable.TtlModel(
-  ttlPeriodTicks: Long,
-  historyBucketTicks: Int = 60   // aggregate writes into N-tick buckets to bound memory
-)
-```
+2. **`SummaryTableState` only mutates via explicit admitted operations.** `currentItemCount`
+   and `currentTotalItemBytes` are updated only by `recordSuccessfulWrite` and
+   `recordSuccessfulDelete`, called from `TableStorageStage` in response to admitted `PutItem`,
+   `UpdateItem`, and `DeleteItem` requests. There is no automatic expiration path — items
+   persist indefinitely unless explicitly deleted by a use-case sampler.
 
-`SummaryTableState` gains a ring buffer of write-count buckets with capacity
-`ceil(ttlPeriodTicks / historyBucketTicks)`. At each tick boundary:
-1. Record writes-this-tick into the current bucket.
-2. Compute expired items: write count from the bucket that is exactly `ttlPeriodTicks` ago.
-3. Subtract from `estimatedItemCount` and `estimatedStorageBytes`.
-4. Advance the ring buffer.
+3. **`StorageBytesDelta` consumption events are only emitted by explicit writes and deletes.**
+   `DynamoDbTimeBasedUsageTotals` accumulates byte-ticks by integrating `StorageBytesDelta`
+   events tick by tick. TTL-driven deletions emit no such events today, so the time-based
+   storage accumulator — and therefore the storage cost calculation — is completely blind to
+   TTL expiry.
 
-Edge case: if `ttlPeriodTicks > simulationTicks`, the look-back bucket never exists → zero
-deletions within the run. This is correct: items written during the simulation have not yet
-aged out.
+4. **Without TTL, long simulations produce unboundedly growing storage.** Any simulation with
+   high write volume and no explicit deletes in the use-case sampler will have monotonically
+   growing `currentItemCount` and `currentTotalItemBytes`, making storage cost projections
+   unrealistic for any table with a real retention policy.
 
-New `DemoMetric` cases: `TtlDeletesPerTick` (rate), `EstimatedItemCount` (level) — giving the
-demo dashboard visibility into storage stabilization over time.
+5. **Item count is internal state only — not observable in dashboards.** No `DemoMetric` case
+   exposes the current live item count. Without a new metric, TTL-driven storage attenuation
+   would be invisible in the Grafana dashboard even after implementation.
+
+---
+
+**How stochastacy will behave once the slice is implemented:**
+
+**Sampler-driven TTL expiry.** The sampler is already the source of truth for write volume and
+item sizes — it generated the writes, so it inherently knows the write history. Rather than a
+ring buffer in `SummaryTableState`, the history structure belongs in the sampler, which
+produces a `TtlExpirySample` at each tick. `TableStorageStage` (or a parallel TTL path)
+consumes these samples and emits `StorageBytesDelta` consumption events for each affected
+target. This keeps all stochastic decisions in the sampler layer, consistent with the project's
+design principle.
+
+**Intermediate modifications are accounted for.** Between tick T−ttlPeriod (when items were
+written) and tick T (when TTL fires), two things can happen:
+
+- *Explicit deletes*: Some fraction of those items have already been deleted before TTL fires.
+  The sampler models the delete rate and applies a stochastic survival probability to the
+  cohort written at tick T−ttlPeriod. The expiry count at tick T is reduced accordingly.
+- *Updates*: Items that were written and then updated before TTL fires still expire, but the
+  bytes freed reflect the updated size, not the original write size. The sampler estimates the
+  byte size at expiry time using the update rate and size distribution rather than assuming it
+  equals the original write size.
+
+**TTL expiry cascades to GSIs and LSIs.** When DynamoDB TTL deletes an item it is a cascading
+deletion: the base table item is freed, and every GSI and LSI projection of that item is also
+deleted. The `TtlExpirySample` carries per-target storage deltas — one for the base table, one
+per GSI, one per LSI — computed from the projection type and the sampler's estimate of
+projected attribute sizes. These drive separate `StorageBytesDelta` events for each affected
+`DynamoDbTarget`, mirroring the fan-out pattern the index maintenance graph already uses for
+explicit deletes.
+
+**Edge case:** If `ttlPeriodTicks > simulationTicks`, the look-back history never reaches the
+write cohort and no deletions fire within the run. This is correct: items written during the
+simulation have not yet aged out.
+
+**New config and metrics.** `DynamoDbTable.Config` gains `ttlModel: Option[DynamoDbTable.TtlModel]`
+(defaulting to `None` — all existing behavior unchanged). New `DemoMetric` cases — at minimum
+`EstimatedItemCount` (a level metric showing current live item count per tick) — make the
+storage stabilization curve visible in the dashboard.
+
+**Note:** The exact formulation of the survival probability model, the byte-size-at-expiry
+estimate, the history bucket granularity, and the handling of TTL jitter (real AWS TTL
+deletions can lag up to 48 hours) are all likely to be iterated on during implementation. The
+core invariant that must hold: expiry volume at tick T is a function of write volume at tick
+T−ttlPeriod and the intermediate modification rates — not a function of current table size.
 
 ---
 

@@ -62,6 +62,15 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     byTickAndLink: Map[(Long, (String, String)), Long] = Map.empty
   )
 
+  // tick -> estimated live item count (last observed value per tick)
+  private type EstItemCountAcc = Map[Long, Long]
+
+  private def foldEstItemCountEvent(acc: EstItemCountAcc, evt: TimedElement[TableMetricEvent]): EstItemCountAcc =
+    evt match
+      case StorageMetricEvent.EstimatedItemCount(et, _, count) =>
+        acc.updated(et.ticks, count)
+      case _ => acc
+
   // (operation-string, tick) -> cumulative count
   private type RetItemAcc = Map[(String, Long), Long]
 
@@ -331,11 +340,12 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     }
     val retItemFoldSink = Sink.fold[RetItemAcc, TimedElement[TableMetricEvent]](Map.empty)(foldMetricEvent)
     val latSampleFoldSink = Sink.fold[LatencySampleAcc, TimedElement[TableMetricEvent]](Map.empty)(foldLatencySampleEvent)
+    val estItemFoldSink = Sink.fold[EstItemCountAcc, TimedElement[TableMetricEvent]](Map.empty)(foldEstItemCountEvent)
 
-    val (accF, retItemAccF, latSampleAccF) = RunnableGraph.fromGraph(
-      GraphDSL.createGraph(foldSink, retItemFoldSink, latSampleFoldSink)((c, m, l) => (c, m, l)) { implicit b => (consSink, metSink, latSink) =>
+    val (accF, retItemAccF, latSampleAccF, estItemAccF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(foldSink, retItemFoldSink, latSampleFoldSink, estItemFoldSink)((c, m, l, e) => (c, m, l, e)) { implicit b => (consSink, metSink, latSink, estSink) =>
         import GraphDSL.Implicits.*
-        val metricBcast = b.add(org.apache.pekko.stream.scaladsl.Broadcast[TimedElement[TableMetricEvent]](2))
+        val metricBcast = b.add(org.apache.pekko.stream.scaladsl.Broadcast[TimedElement[TableMetricEvent]](3))
         schedule match
           case Some(reconfigurationSchedule) =>
             val table = b.add(DynamoDbTable.componentOfManaged(buildTableConfig(config, tableState, behaviors)))
@@ -352,6 +362,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
             table.out2 ~> metricBcast.in
         metricBcast.out(0) ~> metSink
         metricBcast.out(1) ~> latSink
+        metricBcast.out(2) ~> estSink
         ClosedShape
       }
     ).run()
@@ -362,6 +373,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       rawAcc       <- accF
       retItemAcc   <- retItemAccF
       latSampleAcc <- latSampleAccF
+      estItemAcc   <- estItemAccF
     yield
       val timeBasedTotals = extractTimeBasedUsage(rawAcc)
       val costBreakdown = DynamoDbCostBreakdown.price(
@@ -379,11 +391,15 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         retItemAcc.map { case ((op, tick), count) =>
           SimulationTimeSeriesPoint(tick, DemoMetric.ReturnedItemCount(op), BigDecimal(count))
         }.toVector
+      val estItemPoints: Vector[SimulationTimeSeriesPoint] =
+        estItemAcc.map { case (tick, count) =>
+          SimulationTimeSeriesPoint(tick, DemoMetric.EstimatedItemCount, BigDecimal(count))
+        }.toVector
 
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = points ++ retItemPoints ++ latencyPercentileTimeSeries(latSampleAcc),
+        timeSeries = points ++ retItemPoints ++ estItemPoints ++ latencyPercentileTimeSeries(latSampleAcc),
         summary = Vector(
           TrialSummaryValue(DemoMetric.TotalReadCapacityUnits, rawAcc.usageTotals.overall.readCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, rawAcc.usageTotals.overall.writeCapacityUnits),

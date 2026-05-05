@@ -258,7 +258,8 @@ object DynamoDbTable:
                            itemCollectionSizeLimitBytes: Option[Long] = None,
                            systemErrorRate: Double = 0.0,
                            latencyModel: LatencyModel = LatencyModel.awsDefault,
-                           tableClass: TableClass = TableClass.Standard
+                           tableClass: TableClass = TableClass.Standard,
+                           ttlSampler: Option[TtlSampler] = None
                          ):
     Config.validate(this)
 
@@ -832,7 +833,8 @@ object DynamoDbTable:
                            itemCollectionSizeLimitBytes: Option[Long] = None,
                            billingModeRef: Option[BillingModeRef] = None,
                            systemErrorRate: Double = 0.0,
-                           latencyModel: LatencyModel = LatencyModel.awsDefault
+                           latencyModel: LatencyModel = LatencyModel.awsDefault,
+                           ttlSampler: Option[TtlSampler] = None
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -886,7 +888,8 @@ object DynamoDbTable:
           systemErrorRate = systemErrorRate,
           rng = storageRng,
           latencyModel = latencyModel,
-          latencyRng = latencyRng
+          latencyRng = latencyRng,
+          ttlSampler = ttlSampler
         )
       )
       val throttledResponseFilter = b.add(
@@ -990,7 +993,8 @@ object DynamoDbTable:
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
         itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
         systemErrorRate = config.systemErrorRate,
-        latencyModel = config.latencyModel
+        latencyModel = config.latencyModel,
+        ttlSampler = config.ttlSampler
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -1245,7 +1249,8 @@ object DynamoDbTable:
         itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
         billingModeRef = Some(billingModeRef),
         systemErrorRate = config.systemErrorRate,
-        latencyModel = config.latencyModel
+        latencyModel = config.latencyModel,
+        ttlSampler = config.ttlSampler
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -1677,7 +1682,8 @@ object DynamoDbTable:
           systemErrorRate = config.systemErrorRate,
           rng = replicatedStorageRng,
           latencyModel = config.latencyModel,
-          latencyRng = replicatedLatencyRng
+          latencyRng = replicatedLatencyRng,
+          ttlSampler = config.ttlSampler
         )
       )
 

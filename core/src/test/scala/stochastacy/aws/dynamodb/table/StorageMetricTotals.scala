@@ -121,3 +121,9 @@ object StorageMetricTotals:
 
       case _: StorageMetricEvent.SuccessfulRequestLatency =>
         acc
+
+      case _: StorageMetricEvent.TtlItemsExpired =>
+        acc
+
+      case _: StorageMetricEvent.EstimatedItemCount =>
+        acc

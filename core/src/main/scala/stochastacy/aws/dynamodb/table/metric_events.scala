@@ -222,3 +222,18 @@ object StorageMetricEvent:
     target: DynamoDbTarget,
     latencyMs: Double
   ) extends StorageMetricEvent
+
+  /** TTL background expiry fired for this tick: `count` items removed, `freedBytes` reclaimed from the base table. */
+  final case class TtlItemsExpired(
+    eventTime: SimTime,
+    usecase: Any,
+    count: Long,
+    freedBytes: Long
+  ) extends StorageMetricEvent
+
+  /** Estimated live item count after applying all mutations up to and including this tick. */
+  final case class EstimatedItemCount(
+    eventTime: SimTime,
+    usecase: Any,
+    count: Long
+  ) extends StorageMetricEvent

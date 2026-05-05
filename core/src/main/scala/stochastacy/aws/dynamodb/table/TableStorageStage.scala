@@ -103,6 +103,16 @@ object TableStorageStage:
     override val eventTime: SimTime = request.eventTime
     override val usecase: Any = request.usecase
 
+  private[table] final case class TtlExpiry(
+    override val eventTime: SimTime,
+    sample: TtlExpirySample,
+    remainingItemCount: Long
+  ) extends StorageOutcome:
+    override val usecase: Any = TtlExpiry.Usecase
+
+  private[table] object TtlExpiry:
+    case object Usecase
+
   private def itemCollectionContext(
                                      sample: AdmittedRequestSample
                                    ): Option[(Long, Long, LogicalPartitionAccess, Vector[IndexMaintenancePlan])] =
@@ -151,7 +161,8 @@ object TableStorageStage:
                                           systemErrorRate: Double = 0.0,
                                           rng: Option[UniformRandomProvider] = None,
                                           latencyModel: DynamoDbTable.LatencyModel = DynamoDbTable.LatencyModel.awsDefault,
-                                          latencyRng: UniformRandomProvider = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(0L)
+                                          latencyRng: UniformRandomProvider = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(0L),
+                                          ttlSampler: Option[TtlSampler] = None
                                         ): Graph[
     FanOutShape4[
       TimedElement[AdmittedRequestSample],
@@ -170,13 +181,22 @@ object TableStorageStage:
       // Validate-then-mutate: per write, check the LSI item-collection-size limit
       // before applying any state mutation. Rejected writes flow downstream as
       // StorageRejection records; admitted writes/reads flow as StorageAdmitted
-      // with state already updated.
+      // with state already updated. Tick events additionally produce a TtlExpiry
+      // record when a TTL sampler is configured.
       val decisionFlow = b.add(
-        Flow[TimedElement[AdmittedRequestSample]].map[TimedElement[StorageOutcome]] {
-          case t: TimedControlEvent => t
+        Flow[TimedElement[AdmittedRequestSample]].mapConcat[TimedElement[StorageOutcome]] {
+          case t: TimedControlEvent.Tick =>
+            ttlSampler match
+              case None => List(t)
+              case Some(sampler) =>
+                val ttlSample = sampler.expiryAt(TtlSamplerContext(t.eventTime.ticks))
+                stateModel.recordTtlExpiry(ttlSample.expiredItemCount, ttlSample.baseTableBytesFreed)
+                List(t, TtlExpiry(t.eventTime, ttlSample, stateModel.itemCount))
+
+          case t: TimedControlEvent => List(t)
 
           case sample: AdmittedRequestSample =>
-            validateItemCollectionLimit(sample, itemCollectionSizeLimitBytes) match
+            val outcome = validateItemCollectionLimit(sample, itemCollectionSizeLimitBytes) match
               case Left(rejection) => rejection
               case Right(admitted) =>
                 val isSystemError = systemErrorRate > 0.0 && rng.exists(_.nextDouble() < systemErrorRate)
@@ -191,19 +211,32 @@ object TableStorageStage:
                     case r: Replicated[?] => r.sample match
                       case s: AdmittedPutItemSample =>
                         stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                        if s.sample.createdNewItem then
+                          ttlSampler.foreach(_.recordWrite(s.sample.writtenItemBytes, admitted.req.eventTime.ticks))
                       case s: AdmittedUpdateItemSample =>
                         stateModel.recordSuccessfulUpdate(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                        if s.sample.createdNewItem then
+                          ttlSampler.foreach(_.recordWrite(s.sample.writtenItemBytes, admitted.req.eventTime.ticks))
                       case s: AdmittedDeleteItemSample =>
                         stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
+                        if s.sample.deletedExistingItem then
+                          ttlSampler.foreach(_.recordDelete(admitted.req.eventTime.ticks))
                       case _ => ()
                     case s: AdmittedPutItemSample =>
                       stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                      if s.sample.createdNewItem then
+                        ttlSampler.foreach(_.recordWrite(s.sample.writtenItemBytes, admitted.req.eventTime.ticks))
                     case s: AdmittedUpdateItemSample =>
                       stateModel.recordSuccessfulUpdate(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                      if s.sample.createdNewItem then
+                        ttlSampler.foreach(_.recordWrite(s.sample.writtenItemBytes, admitted.req.eventTime.ticks))
                     case s: AdmittedDeleteItemSample =>
                       stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
+                      if s.sample.deletedExistingItem then
+                        ttlSampler.foreach(_.recordDelete(admitted.req.eventTime.ticks))
                     case _ => ()
                   StorageAdmitted(admitted)
+            List(outcome)
         }
       )
 
@@ -287,25 +320,26 @@ object TableStorageStage:
           )
 
       val responseFlow = b.add(
-        Flow[TimedElement[StorageOutcome]].map[TimedElement[DynamoDBResponse]] {
-          case t: TimedControlEvent => t
+        Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDBResponse]] {
+          case t: TimedControlEvent => List(t)
+          case _: TtlExpiry => Nil
           case rejection: StorageRejection =>
-            ItemCollectionSizeLimitExceededResponse(
+            List(ItemCollectionSizeLimitExceededResponse(
               eventTime = rejection.eventTime,
               usecase = rejection.usecase,
               operation = rejection.operation,
               target = rejection.target,
               resultingCollectionBytes = rejection.resultingCollectionBytes,
               limitBytes = rejection.limitBytes
-            )
+            ))
           case err: StorageSystemError =>
-            SystemErrorResponse(
+            List(SystemErrorResponse(
               eventTime = err.eventTime,
               usecase = err.usecase,
               operation = err.operation,
               target = err.target
-            )
-          case StorageAdmitted(sample) => responseForSample(sample)
+            ))
+          case StorageAdmitted(sample) => List(responseForSample(sample))
         }
       )
 
@@ -450,6 +484,14 @@ object TableStorageStage:
       val metricFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[StorageMetricEvent]] {
           case t: TimedControlEvent => List(t)
+          case expiry: TtlExpiry =>
+            val ttlEvents: List[TimedElement[StorageMetricEvent]] =
+              if expiry.sample.expiredItemCount > 0L then
+                List(StorageMetricEvent.TtlItemsExpired(expiry.eventTime, expiry.usecase, expiry.sample.expiredItemCount, expiry.sample.baseTableBytesFreed))
+              else Nil
+            val countEvent: TimedElement[StorageMetricEvent] =
+              StorageMetricEvent.EstimatedItemCount(expiry.eventTime, expiry.usecase, expiry.remainingItemCount)
+            ttlEvents :+ countEvent
           case rejection: StorageRejection =>
             List(
               StorageMetricEvent.ItemCollectionSizeLimitExceeded(
@@ -674,6 +716,22 @@ object TableStorageStage:
       val consumptionFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
           case t: TimedControlEvent => List(t)
+          case expiry: TtlExpiry =>
+            val s = expiry.sample
+            if s.expiredItemCount <= 0L then Nil
+            else
+              val baseTableTarget = DynamoDbTarget.Table("table")
+              val baseDelta: TimedElement[DynamoDbConsumptionEvent] =
+                DynamoDbConsumptionEvent.StorageBytesDelta(expiry.eventTime, expiry.usecase, baseTableTarget, -s.baseTableBytesFreed)
+              val gsiDeltas: List[TimedElement[DynamoDbConsumptionEvent]] =
+                s.gsiStorageFreed.toList.map { case (indexName, bytes) =>
+                  DynamoDbConsumptionEvent.StorageBytesDelta(expiry.eventTime, expiry.usecase, DynamoDbTarget.GlobalSecondaryIndex("table", indexName), -bytes)
+                }
+              val lsiDeltas: List[TimedElement[DynamoDbConsumptionEvent]] =
+                s.lsiStorageFreed.toList.map { case (indexName, bytes) =>
+                  DynamoDbConsumptionEvent.StorageBytesDelta(expiry.eventTime, expiry.usecase, DynamoDbTarget.LocalSecondaryIndex("table", indexName), -bytes)
+                }
+              baseDelta :: gsiDeltas ++ lsiDeltas
           case _: StorageRejection => Nil
           case _: StorageSystemError => Nil
           case StorageAdmitted(sample) => consumptionForSample(sample)
@@ -687,6 +745,7 @@ object TableStorageStage:
       val validatedSampleFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[AdmittedRequestSample]] {
           case t: TimedControlEvent => List(t)
+          case _: TtlExpiry => Nil
           case _: StorageRejection => Nil
           case _: StorageSystemError => Nil
           case StorageAdmitted(sample) => List(sample)
