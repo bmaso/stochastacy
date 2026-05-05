@@ -1,10 +1,10 @@
 # IPS Hand-Off
 
-Last updated: 2026-05-02 (phase 5 slices 1–5 complete: rWCU billing, tiered transfer pricing, GSI/LSI in replicated tables, ReturnedItemCount metric, mixed-mode dashboard enhanced with percentile bands)
+Last updated: 2026-05-04 (phase 5 complete: all pricing accuracy, regional pricing, reserved capacity, per-GSI pricing, table class, mixed-mode cost accounting fixes, and multi-region demo update)
 
 ## Current Position
 
-The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phase 3 (on-demand fidelity) and Phase 4 (provisioned capacity mode and dynamic reconfiguration) are complete. **Phase 5** (accuracy and metric completeness) is **in progress** — slices 1–5 are shipped; slices 6–12 are future.
+The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phases 1–5 are all complete. **Phase 5** (accuracy and metric completeness) shipped all planned pricing-accuracy slices (9–11, 11b, 12) plus the earlier simulation-accuracy slices (1–5). Three originally-planned Phase 5 slices (ReplicationLatency, SystemErrors, SuccessfulRequestLatency) were deferred to Phase 6.
 
 The simulator supports:
 
@@ -22,16 +22,23 @@ The simulator supports:
 - LSI item-collection size limit enforcement (stochastic, no per-key state)
 - Global Tables: N-region replicated table with stochastic per-link replication lag, including GSI/LSI support at every replica
 - **rWCU as a distinct capacity bucket**: replicated writes at a destination region bill as `ReplicatedWriteCapacityConsumed`, not `WriteCapacityConsumed`; separate on-demand pricing and separate provisioned admission ceiling
-- **Tiered cross-region transfer pricing**: `CrossRegionTransferPricing` accumulates cumulative bytes per source region and applies the correct tier rate per tranche
+- **Tiered cross-region transfer pricing**: `CrossRegionTransferPricing` accumulates cumulative bytes per source region and applies the correct tier rate per tranche; `multiRegionDefault` demo config uses flat-rate pricing (no free tier)
 - **Mid-simulation reconfiguration** via `DynamoDbManagementEvent`:
   - `SwitchBillingMode` — on-demand ↔ provisioned (24-hour cooldown enforced)
   - `UpdateProvisionedCapacity` — change RCU/WCU/rWCU within provisioned mode (no cooldown)
 - **`ReturnedItemCount` metric** for Query and Scan: `StorageMetricEvent.ReturnedItemCount` emitted per admitted request; collected and reported in all three demo runners
+- **Table class** (`Standard` / `StandardInfrequentAccess`): `DynamoDbTable.TableClass` selects between rate sets; Standard-IA has higher storage and lower throughput rates; reserved capacity unavailable for Standard-IA
+- **Per-GSI provisioned capacity pricing**: `ProvisionedCapacityData` carries the true sum of base-table + all GSI provisioned ticks; pricing formula sums across all entities instead of approximating with `× (1 + numGsis)`
+- **Reserved capacity discount**: `ReservedCapacity` sub-config on `DynamoDbPricingRates` specifies committed RCU/WCU and discounted hourly rates; `DynamoDbCostBreakdown.price()` splits ticks between discounted and standard-rate buckets
+- **Regional pricing via `PricingSchedule`**: `PricingSchedule` trait maps `(region, tick)` to `DynamoDbPricingRates`; `StaticPricingSchedule` backed by `Map[String, DynamoDbPricingRates]` + fallback; `ThermostatFleetScenarioConfig.pricingSchedule` replaces the old single `pricingRates` field
+- **Correct provisioned hourly rates**: `RateSet` carries `provisionedReadCapacityUnitHourlyPrice` ($0.00013/RCU-hr) and `provisionedWriteCapacityUnitHourlyPrice` ($0.00065/WCU-hr); previously on-demand per-unit rates were used here (520× too low for writes)
+- **Mixed-mode cost accounting split**: `ConsAcc` maintains `onDemandUsageTotals` (ticks ≤ `modeSwitchTick` only) alongside `usageTotals` (all ticks); pricing uses `onDemandUsageTotals` so on-demand and provisioned cost components add correctly
+- **Per-region cost breakdown metrics**: `DemoMetric.TotalRegionWriteCapacityCost`, `TotalRegionReplicatedWriteCapacityCost`, `TotalRegionTransferCost` per region; stacked barchart panel in multi-region Grafana dashboard
 - raw DynamoDB consumption events → additive usage → time-based storage usage → pricing
 - Monte Carlo multi-trial execution
 - JSONL export (raw + 60s/300s windowed), Postgres staging, provisioned Grafana dashboards
 
-### Phase 5 Status
+### Phase 5 Status (complete)
 
 | Slice | Status | Summary |
 |-------|--------|---------|
@@ -40,7 +47,14 @@ The simulator supports:
 | 3. Tiered Transfer Pricing | **Done** | Tiered `CrossRegionTransferPricingRates`; per-tranche cost accumulation |
 | 4. GSI/LSI in `componentOfReplicated` | **Done** | Test-completion slice (guard was already absent); new provisioned-mode + GSI rWCU test |
 | 5. ReturnedItemCount Metric | **Done** | `StorageMetricEvent.ReturnedItemCount`; collected in all runners; Grafana panels in both dashboards; WCU panel now shows p50/p75/p95 bands |
-| 6–12 | Future | ReplicationLatency, SystemErrors, SuccessfulRequestLatency, Table Class, Per-GSI Pricing Accuracy, Reserved Capacity, Multi-Region Demo Update |
+| 6. ReplicationLatency Metric | **Deferred to Phase 6** | Surface tick-delta from `ReplicationCoordinator` as a metric; per-destination-region panel |
+| 7. SystemErrors | **Deferred to Phase 6** | Bernoulli error model; `SystemErrorResponse`; `DemoMetric.SystemErrorCount` |
+| 8. SuccessfulRequestLatency | **Deferred to Phase 6** | Log-normal latency samples; P50/P95/P99 rollup; latency panels |
+| 9. Table Class: Standard vs. Standard-IA | **Done** | `DynamoDbTable.TableClass` sealed type; `DynamoDbPricingRates` extended with Standard-IA rate set; Standard-IA incompatible with reserved capacity |
+| 10. Per-GSI Provisioned Capacity Pricing | **Done** | `ProvisionedCapacityData` carries true base+GSI sum; `× (1+numGsis)` approximation removed |
+| 11. Reserved Capacity Discount | **Done** | `ReservedCapacity` sub-config; discounted/standard rate split in `DynamoDbCostBreakdown.price()`; 19 pricing tests pass |
+| 11b. Regional Pricing | **Done** | `PricingSchedule` trait + `StaticPricingSchedule`; `pricingSchedule` field on both scenario configs; per-region rate resolution in both trial runners |
+| 12. Multi-Region Demo Update | **Done** | Full GSI/LSI config in multi-region; 3 new per-region cost metrics; stacked cost-breakdown panel in Grafana; flat transfer pricing (removes erroneous free tier) |
 
 ### Phase 4 Status (all 7 slices complete)
 
@@ -75,9 +89,46 @@ At a Global Table destination region, every replicated write (whether it arrived
 
 ### Tiered Cross-Region Transfer Pricing
 
-`CrossRegionTransferPricingRates` maps each source region to a `Vector[TransferPricingTier]` (cumulative byte threshold + per-GiB rate, sorted ascending). `TransferPricingTier.flat(rate)` preserves backward compatibility for callers that don't need tiers.
+`CrossRegionTransferPricingRates` maps each source region to a `Vector[TransferPricingTier]` (cumulative byte threshold + per-GiB rate, sorted ascending). `CrossRegionTransferPricingRates.flat(rateByRegion)` constructs a single-tier (no free tier) pricing schedule for callers that don't need tiers.
 
 `CrossRegionTransferPricing` accumulates cumulative bytes transferred per source region across the simulation run and applies the correct tier rate to each tranche. The entire simulation run is treated as one billing period.
+
+`multiRegionDefault` uses flat-rate pricing (`CrossRegionTransferPricingRates.flat`). There is no free tier — AWS Global Tables charges for all replicated bytes from byte zero.
+
+### PricingSchedule
+
+`PricingSchedule` (in `core/src/main/scala/stochastacy/aws/dynamodb/pricing/PricingSchedule.scala`) maps `(region: String, tick: Long)` to a `DynamoDbPricingRates` instance. The default implementation is `StaticPricingSchedule(ratesByRegion: Map[String, DynamoDbPricingRates], fallback: DynamoDbPricingRates)`, which ignores the tick parameter and performs a region-keyed map lookup.
+
+Factory methods:
+- `PricingSchedule.default` — uniform `DynamoDbPricingRates.phase1Default` for all regions
+- `PricingSchedule.uniform(rates)` — same rate set for all regions
+- `PricingSchedule.byRegion(map, fallback)` — per-region rates; falls back for unmapped regions
+
+`ThermostatFleetScenarioConfig` and `ThermostatFleetMixedModeConfig` carry `pricingSchedule: PricingSchedule = PricingSchedule.default`. Both single-trial runners resolve rates at trial completion via `config.pricingSchedule.ratesAt(region, simulationTicks)`. Aggregate (cross-region total) costs use `pricingSchedule.defaultRates`.
+
+### Provisioned Capacity Hourly Rates
+
+`DynamoDbPricingRates.RateSet` carries two distinct hourly prices used in the provisioned cost formula:
+- `provisionedReadCapacityUnitHourlyPrice: BigDecimal` (default `$0.00013/RCU-hr`)
+- `provisionedWriteCapacityUnitHourlyPrice: BigDecimal` (default `$0.00065/WCU-hr`)
+
+The pricing formula: `capacity_unit_ticks × hourlyRate / 3600`. These are 520× higher than the on-demand per-unit rates ($0.00000025/RCU, $0.00000125/WCU), which is why using the on-demand rate for provisioned ticks was a critical bug (cost was 520× too low for writes).
+
+### Mixed-Mode Cost Accounting
+
+`ThermostatFleetMixedModeSingleTrialRunner`'s `ConsAcc` maintains two parallel usage accumulators:
+- `usageTotals: DynamoDbUsageTotals` — ALL consumed units across all ticks (used for usage summary metrics like `TotalWriteCapacityUnits`)
+- `onDemandUsageTotals: DynamoDbUsageTotals` — only units consumed during on-demand ticks (ticks ≤ `modeSwitchTick`)
+
+`DynamoDbPricingInputs` uses `onDemandUsageTotals` for the `usage` field and `provisionedCapacity` carries the provisioned ticks. `DynamoDbCostBreakdown.price()` adds both components together, giving the correct total cost for a mixed billing-mode simulation.
+
+### Reserved Capacity Discount
+
+`ReservedCapacity` is an optional sub-config on `DynamoDbPricingRates` specifying:
+- `reservedReadCapacityUnits` / `reservedWriteCapacityUnits` — the committed provisioned capacity
+- `discountedReadCapacityUnitPrice` / `discountedWriteCapacityUnitPrice` — the discounted hourly rate per tick
+
+`DynamoDbCostBreakdown.price()` splits provisioned ticks into discounted (up to reserved units) and standard-rate tranches. Validation enforces: reserved capacity requires provisioned billing mode and `TableClass.Standard` (not Standard-IA).
 
 ### ReturnedItemCount Metric
 
@@ -140,16 +191,18 @@ The "Write Capacity: Consumed vs. Provisioned" panel shows mean, P50, P75, and P
 
 ### Downstream Pipeline
 - [DynamoDbUsageTotals.scala](core/src/main/scala/stochastacy/aws/dynamodb/usage/DynamoDbUsageTotals.scala) — accumulates WCU and rWCU as separate fields
-- [DynamoDbPricing.scala](core/src/main/scala/stochastacy/aws/dynamodb/pricing/DynamoDbPricing.scala)
-- [model.scala](core/src/main/scala/stochastacy/demo/model.scala) — `DemoMetric` enum including `ReturnedItemCount(op)`, `TotalRegionReplicatedWriteCapacityUnits`, etc.
+- [DynamoDbPricing.scala](core/src/main/scala/stochastacy/aws/dynamodb/pricing/DynamoDbPricing.scala) — `DynamoDbCostBreakdown.price()`, `RateSet` with provisioned hourly rates, `ReservedCapacity`, `DynamoDbPricingRates`
+- [PricingSchedule.scala](core/src/main/scala/stochastacy/aws/dynamodb/pricing/PricingSchedule.scala) — `PricingSchedule` trait, `StaticPricingSchedule`, factory methods
+- [model.scala](core/src/main/scala/stochastacy/demo/model.scala) — `DemoMetric` enum including `ReturnedItemCount(op)`, `TotalRegionReplicatedWriteCapacityUnits`, `TotalRegionWriteCapacityCost`, `TotalRegionReplicatedWriteCapacityCost`, `TotalRegionTransferCost`, etc.
 
 ### Demo
 - [ThermostatFleetBridge.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetBridge.scala) — primary demo entry point (single-region, multi-region, mixed-mode dispatch)
-- [ThermostatFleetSingleTrialRunner.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetSingleTrialRunner.scala) — two-sink (single-region) and three-sink (multi-region) graph patterns; collects ReturnedItemCount
+- [ThermostatFleetScenarioConfig.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetScenarioConfig.scala) — scenario config; `singleRegionDefault` and `multiRegionDefault` presets with `pricingSchedule`
+- [ThermostatFleetSingleTrialRunner.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetSingleTrialRunner.scala) — two-sink (single-region) and three-sink (multi-region) graph patterns; collects ReturnedItemCount; resolves rates via `pricingSchedule`
 - [ThermostatFleetMixedModeBridge.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeBridge.scala) — mixed billing mode demo entry point
-- [ThermostatFleetMixedModeConfig.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeConfig.scala) — config for the mixed-mode scenario
-- [ThermostatFleetMixedModeSingleTrialRunner.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeSingleTrialRunner.scala) — two-sink graph; `updateMetricAcc` handles both `AdmissionMetricEvent` and `StorageMetricEvent.ReturnedItemCount`
-- [thermostat-fleet-dashboard.json](examples/grafana/thermostat-fleet-dashboard.json) — UID `ips-phase3`; includes ReturnedItemCount panel
+- [ThermostatFleetMixedModeConfig.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeConfig.scala) — config for the mixed-mode scenario; carries `pricingSchedule`
+- [ThermostatFleetMixedModeSingleTrialRunner.scala](examples/src/main/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeSingleTrialRunner.scala) — `ConsAcc` with `usageTotals` + `onDemandUsageTotals` split; billing mode timeline from config schedule
+- [thermostat-fleet-dashboard.json](examples/grafana/thermostat-fleet-dashboard.json) — UID `ips-phase3`; includes ReturnedItemCount panel and per-region cost breakdown barchart
 - [thermostat-fleet-mixed-mode-dashboard.json](examples/grafana/thermostat-fleet-mixed-mode-dashboard.json) — UID `ips-phase4-mixed-mode`; includes p50/p75/p95 WCU bands and ReturnedItemCount panel
 
 ## Key Proof Tests
@@ -158,30 +211,33 @@ The "Write Capacity: Consumed vs. Provisioned" panel shows mean, P50, P75, and P
 - [DynamoDbTableComponentSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableComponentSpec.scala) — `componentOfManaged` integration tests and metric outlet routing
 - [DynamoDbTableReplicatedSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbTableReplicatedSpec.scala) — rWCU admission, GSI/LSI in replicated tables, provisioned-mode + GSI rWCU intersection
 - [DynamoDbGlobalTableSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/DynamoDbGlobalTableSpec.scala) — rWCU at peer regions, GSI/LSI replicated-write scenarios
+- [DynamoDbPricingSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/pricing/DynamoDbPricingSpec.scala) — 19 tests: provisioned hourly rates, reserved capacity rate split, table class rates, mixed on-demand+provisioned cost, Standard-IA validation
+- [PricingScheduleSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/pricing/PricingScheduleSpec.scala) — 5 tests: uniform schedule, per-region lookup, fallback for unknown region, `defaultRates`, tick-invariance
 - [TableStorageStageQuerySpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageStageQuerySpec.scala) — asserts `ReturnedItemCount` events including zero-count results
-- [TableStorageStageScanSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageScanSpec.scala) — asserts `ReturnedItemCount` events for Scan
 - [ThermostatFleetSingleTrialRunnerSpec.scala](examples/src/test/scala/stochastacy/examples/thermostatfleet/ThermostatFleetSingleTrialRunnerSpec.scala) — end-to-end trial runner tests including ReturnedItemCount and multi-region GSI metrics
+- [ThermostatFleetMixedModeSingleTrialRunnerSpec.scala](examples/src/test/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeSingleTrialRunnerSpec.scala) — reserved capacity test uses `PricingSchedule.uniform(reservedRates)`
 - All storage stage specs (GetItem, PutItem, UpdateItem, DeleteItem, Query, Scan)
 
-Total: 261 core tests + 123 examples tests = 384 tests all passing.
+Total: 276 core tests + 142 examples tests = 418 tests all passing.
 
 ## Recommended Next Work
 
-Phase 5 slices 6–12 remain. Suggested order:
+Phase 6 — three slices deferred from Phase 5, plus any new feature work:
 
-1. **Slice 6 — ReplicationLatency metric**: surface the tick-delta already computed in `ReplicationCoordinator` as `ReplicationMetricEvent.ReplicationLatency`; add a per-destination-region panel to the multi-region dashboard.
-2. **Slice 7 — SystemErrors**: Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; `DemoMetric.SystemErrorCount`.
-3. **Slice 8 — SuccessfulRequestLatency**: log-normal per-operation latency samples emitted from `TableStorageStage`; P50/P95/P99 rollup in demo pipeline; latency panel in dashboards.
-4. **Slices 9–11 — Pricing accuracy**: Table Class (Standard vs IA), per-GSI provisioned pricing, reserved capacity discount.
-5. **Slice 12 — Multi-region demo update**: update multi-region Grafana dashboard with rWCU vs WCU per region, tiered transfer cost, replication latency, and latency panels.
+1. **ReplicationLatency metric**: surface the tick-delta already computed in `ReplicationCoordinator` as `ReplicationMetricEvent.ReplicationLatency`; add a per-destination-region panel to the multi-region dashboard.
+2. **SystemErrors**: Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; `DemoMetric.SystemErrorCount`; no-consumption / no-state-mutation guarantee (same validate-then-mutate split as item-collection limit).
+3. **SuccessfulRequestLatency**: log-normal per-operation latency samples emitted from `TableStorageStage` for admitted, non-errored requests; P50/P95/P99 rollup in demo pipeline; latency panel in both dashboards.
+4. **Multi-region latency panels**: once ReplicationLatency and SuccessfulRequestLatency are done, add dedicated panels to the multi-region Grafana dashboard.
 
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
-- `sbt test` runs all 384 tests; `sbt "core/test"` runs the 261 core tests
-- The canonical planning anchors are [ips-phase5.md](../roadmaps/ips-phase5.md) (ongoing) and [ips-phase4.md](../roadmaps/ips-phase4.md) (complete); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
+- `sbt test` runs all 418 tests; `sbt "core/test"` runs the 276 core tests
+- The canonical planning anchors are [ips-phase5.md](../roadmaps/ips-phase5.md) (complete) and [ips-phase4.md](../roadmaps/ips-phase4.md) (complete); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
 - Implement one slice at a time; use plan mode for new slices
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries
 - `componentOfManaged` is the factory for any table that needs mid-simulation reconfiguration; `componentOf` and `componentOfReplicated` do not accept management events
 - rWCU is a destination-region concept: only `componentOfReplicated` / `componentOfManagedReplicated` handle it; single-region tables never see `ReplicatedWriteCapacityConsumed`
 - When adding a new `StorageMetricEvent` subtype, update `StorageMetricTotals.scala` (test helper) to add a wildcard or explicit case — otherwise the compiler emits a fatal exhaustivity warning
+- `PricingSchedule.default` is `StaticPricingSchedule(Map.empty, DynamoDbPricingRates.phase1Default)` — used by all single-region demos without any change in behavior; callers that need per-region rates construct via `PricingSchedule.byRegion(...)`
+- Provisioned cost uses `provisionedReadCapacityUnitHourlyPrice`/`provisionedWriteCapacityUnitHourlyPrice` from `RateSet`, NOT the on-demand per-unit prices; the two differ by 520× for writes

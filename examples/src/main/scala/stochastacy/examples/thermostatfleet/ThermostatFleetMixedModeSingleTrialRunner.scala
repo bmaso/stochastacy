@@ -27,6 +27,8 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
 
   private case class ConsAcc(
     usageTotals: DynamoDbUsageTotals = DynamoDbUsageTotals(),
+    onDemandUsageTotals: DynamoDbUsageTotals = DynamoDbUsageTotals(),
+    currentTick: Long = 0L,
     currentStorageBytes: Long = 0L,
     cumStorageByteTicks: BigInt = BigInt(0),
     activeBucket: Option[TickBucket] = None,
@@ -90,23 +92,31 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     acc: ConsAcc,
     evt: TimedElement[DynamoDbConsumptionEvent],
     rates: DynamoDbPricingRates,
-    tableClass: DynamoDbTable.TableClass
+    tableClass: DynamoDbTable.TableClass,
+    modeSwitchTick: Long
   ): ConsAcc =
     evt match
       case tick: TimedControlEvent.Tick =>
         val finalized = finalizeBucket(acc, rates, tableClass)
-        finalized.copy(activeBucket = Some(TickBucket(tick = tick.eventTime.ticks)))
+        finalized.copy(
+          currentTick   = tick.eventTime.ticks,
+          activeBucket  = Some(TickBucket(tick = tick.eventTime.ticks))
+        )
 
       case cons: DynamoDbConsumptionEvent =>
         val acc1 = acc.copy(usageTotals = DynamoDbUsageTotals.accumulate(acc.usageTotals, cons))
+        val acc2 =
+          if acc.currentTick <= modeSwitchTick then
+            acc1.copy(onDemandUsageTotals = DynamoDbUsageTotals.accumulate(acc1.onDemandUsageTotals, cons))
+          else acc1
         cons match
           case DynamoDbConsumptionEvent.ReadCapacityConsumed(_, _, _, units, _) =>
-            acc1.copy(activeBucket = acc1.activeBucket.map(b => b.copy(readUnits = b.readUnits + units)))
+            acc2.copy(activeBucket = acc2.activeBucket.map(b => b.copy(readUnits = b.readUnits + units)))
           case DynamoDbConsumptionEvent.WriteCapacityConsumed(_, _, _, units) =>
-            acc1.copy(activeBucket = acc1.activeBucket.map(b => b.copy(writeUnits = b.writeUnits + units)))
+            acc2.copy(activeBucket = acc2.activeBucket.map(b => b.copy(writeUnits = b.writeUnits + units)))
           case DynamoDbConsumptionEvent.StorageBytesDelta(_, _, _, delta) =>
-            acc1.copy(currentStorageBytes = acc1.currentStorageBytes + delta)
-          case _ => acc1
+            acc2.copy(currentStorageBytes = acc2.currentStorageBytes + delta)
+          case _ => acc2
 
       case _ => acc
 
@@ -195,7 +205,7 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     val rc = rates.reservedCapacity
 
     val consFoldSink: Sink[TimedElement[DynamoDbConsumptionEvent], Future[ConsAcc]] =
-      Sink.fold(ConsAcc()) { (acc, evt) => updateConsAcc(acc, evt, rates, scenarioConfig.tableClass) }
+      Sink.fold(ConsAcc()) { (acc, evt) => updateConsAcc(acc, evt, rates, scenarioConfig.tableClass, config.modeSwitchTick) }
     val metricFoldSink: Sink[TimedElement[TableMetricEvent], Future[MetricAcc]] =
       Sink.fold(MetricAcc()) { (acc, evt) => updateMetricAcc(acc, evt, rc) }
 
@@ -236,8 +246,8 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
         )
       val costBreakdown = DynamoDbCostBreakdown.price(
         DynamoDbPricingInputs(
-          usage = consAcc.usageTotals,
-          timeBasedUsage = timeBasedUsage,
+          usage               = consAcc.onDemandUsageTotals,
+          timeBasedUsage      = timeBasedUsage,
           provisionedCapacity = provisionedCapacity
         ),
         rates,

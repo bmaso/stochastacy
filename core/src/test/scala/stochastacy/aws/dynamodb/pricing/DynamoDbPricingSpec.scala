@@ -204,7 +204,7 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
   }
 
   "DynamoDbCostBreakdown (provisioned billing)" should {
-    "bill provisioned-capacity-ticks at per-second rate: non-uniform GSI capacity produces exact-sum cost" in {
+    "bill provisioned-capacity-ticks at the provisioned hourly rate (not the on-demand per-unit rate)" in {
       // base=10 WCU, GSI-A=20 WCU, GSI-B=5 WCU → total=35 WCU
       // Run for 3600 ticks (= 1 simulated hour at 1 tick/second)
       val provisionedWcuTicks = BigInt(35) * 3600
@@ -218,11 +218,11 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
       )
       val breakdown = DynamoDbCostBreakdown.price(inputs, DynamoDbPricingRates.phase1Default)
 
-      // (35 WCU × 3600 ticks) / 3600 × writePrice = 35 × writePrice
-      val expected = BigDecimal(35) * DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice
+      // (35 WCU × 3600 ticks) / 3600 × provisionedWriteHourlyPrice = 35 × provisionedWriteHourlyPrice
+      val expected = BigDecimal(35) * DynamoDbPricingRates.awsDefaultStandard.provisionedWriteCapacityUnitHourlyPrice
       breakdown.writeCapacityCost shouldBe expected
-      // must not be 10 × 3 × writePrice (old per-entity approximation with 3 entities)
-      breakdown.writeCapacityCost should not be BigDecimal(30) * DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice
+      // must differ materially from the on-demand rate (520× higher)
+      breakdown.writeCapacityCost should not be BigDecimal(35) * DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice
     }
 
     "fall back to consumed-unit on-demand billing when no provisionedCapacity is supplied" in {
@@ -233,6 +233,26 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
       )
       val breakdown = DynamoDbCostBreakdown.price(inputs, DynamoDbPricingRates.phase1Default)
       breakdown.writeCapacityCost shouldBe BigDecimal(100) * DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice
+    }
+
+    "mixed-mode: on-demand consumed units and provisioned capacity ticks both contribute to cost" in {
+      // On-demand phase: 200 WCU consumed
+      // Provisioned phase: 50 WCU provisioned for 3600 ticks (1 hour)
+      val onDemandUsage = DynamoDbUsageTotals(overall = DynamoDbTargetUsageTotals(writeCapacityUnits = BigDecimal(200)))
+      val inputs = DynamoDbPricingInputs(
+        usage = onDemandUsage,
+        timeBasedUsage = DynamoDbTimeBasedUsageTotals(),
+        provisionedCapacity = Some(ProvisionedCapacityData(
+          totalProvisionedReadCapacityUnitTicks  = BigInt(0),
+          totalProvisionedWriteCapacityUnitTicks = BigInt(50) * 3600
+        ))
+      )
+      val r = DynamoDbPricingRates.awsDefaultStandard
+      val breakdown = DynamoDbCostBreakdown.price(inputs, DynamoDbPricingRates.phase1Default)
+
+      val expectedOnDemand    = BigDecimal(200) * r.writeCapacityUnitPrice
+      val expectedProvisioned = BigDecimal(50)  * r.provisionedWriteCapacityUnitHourlyPrice
+      breakdown.writeCapacityCost shouldBe (expectedOnDemand + expectedProvisioned)
     }
   }
 
@@ -276,11 +296,11 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
       val breakdown = DynamoDbCostBreakdown.price(inputs, ratesWithReserved)
       val expected =
         BigDecimal(50) * rc.discountedReadCapacityUnitPrice +
-        BigDecimal(30) * DynamoDbPricingRates.awsDefaultStandard.readCapacityUnitPrice
+        BigDecimal(30) * DynamoDbPricingRates.awsDefaultStandard.provisionedReadCapacityUnitHourlyPrice
       breakdown.readCapacityCost shouldBe expected
     }
 
-    "GSI ticks in standardReadCapacityUnitTicks bill at standard rate even when base is within reserved" in {
+    "GSI ticks in standardReadCapacityUnitTicks bill at provisioned hourly rate even when base is within reserved" in {
       // base = 40 RCU (< reserved 50), GSI = 20 RCU → discounted = 40, standard = 20 (GSI)
       val inputs = DynamoDbPricingInputs(
         usage = DynamoDbUsageTotals(),
@@ -295,7 +315,7 @@ class DynamoDbPricingSpec extends AnyWordSpec with should.Matchers:
       val breakdown = DynamoDbCostBreakdown.price(inputs, ratesWithReserved)
       val expected =
         BigDecimal(40) * rc.discountedReadCapacityUnitPrice +
-        BigDecimal(20) * DynamoDbPricingRates.awsDefaultStandard.readCapacityUnitPrice
+        BigDecimal(20) * DynamoDbPricingRates.awsDefaultStandard.provisionedReadCapacityUnitHourlyPrice
       breakdown.readCapacityCost shouldBe expected
     }
 

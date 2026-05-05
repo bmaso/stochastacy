@@ -1769,6 +1769,78 @@
       ],
       "title": "PutItem Latency Percentiles (ms, mean across trials)",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "Per-region DynamoDB cost breakdown: WCU cost, rWCU cost, and cross-region transfer cost (multi-region only). Reveals which regions and cost components dominate total spending.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 85
+      },
+      "id": 104,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.97,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "orientation": "auto",
+        "stacking": "normal",
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "xTickLabelRotation": -45,
+        "xTickLabelSpacing": 200
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select\n  split_part(metric, ':', 2) as \"Region\",\n  avg(case when metric like 'Region:%:TotalWriteCapacityCost' then \"value\" end) as \"WCU Cost\",\n  avg(case when metric like 'Region:%:TotalReplicatedWriteCapacityCost' then \"value\" end) as \"rWCU Cost\",\n  avg(case when metric like 'Region:%:TotalTransferCost' then \"value\" end) as \"Transfer Cost\"\nfrom stochastacy_demo.trial_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and (metric like 'Region:%:TotalWriteCapacityCost'\n    or metric like 'Region:%:TotalReplicatedWriteCapacityCost'\n    or metric like 'Region:%:TotalTransferCost')\ngroup by split_part(metric, ':', 2)\norder by split_part(metric, ':', 2);",
+          "refId": "A"
+        }
+      ],
+      "title": "Per-Region Cost Breakdown: WCU / rWCU / Transfer (mean across trials)",
+      "type": "barchart"
     }
   ],
   "refresh": "",

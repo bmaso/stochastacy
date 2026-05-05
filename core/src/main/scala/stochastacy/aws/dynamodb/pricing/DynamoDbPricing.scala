@@ -38,12 +38,15 @@ object DynamoDbPricingRates:
     readCapacityUnitPrice: BigDecimal,
     writeCapacityUnitPrice: BigDecimal,
     replicatedWriteCapacityUnitPrice: BigDecimal = BigDecimal("0.000000975"),
-    storagePricePerGiBSecond: BigDecimal
+    storagePricePerGiBSecond: BigDecimal,
+    provisionedReadCapacityUnitHourlyPrice: BigDecimal  = BigDecimal("0.00013"),
+    provisionedWriteCapacityUnitHourlyPrice: BigDecimal = BigDecimal("0.00065")
   )
 
   /**
    * AWS-calibrated Standard table class defaults.
    * Storage pricing uses GiB-seconds: one simulation tick = one second, 1024^3 bytes = one GiB.
+   * Provisioned hourly prices are charged per capacity-unit per hour, independent of consumption.
    */
   val awsDefaultStandard: RateSet = RateSet(
     readCapacityUnitPrice    = BigDecimal("0.00000025"),
@@ -53,10 +56,12 @@ object DynamoDbPricingRates:
 
   // Standard-IA: higher storage rate, lower throughput rate (per Phase 5 roadmap spec)
   val awsDefaultStandardIa: RateSet = RateSet(
-    readCapacityUnitPrice            = BigDecimal("0.000000125"),
-    writeCapacityUnitPrice           = BigDecimal("0.000000625"),
-    replicatedWriteCapacityUnitPrice = BigDecimal("0.0000004875"),
-    storagePricePerGiBSecond         = BigDecimal("0.50") / SecondsPer30DayMonth
+    readCapacityUnitPrice                   = BigDecimal("0.000000125"),
+    writeCapacityUnitPrice                  = BigDecimal("0.000000625"),
+    replicatedWriteCapacityUnitPrice        = BigDecimal("0.0000004875"),
+    storagePricePerGiBSecond                = BigDecimal("0.50") / SecondsPer30DayMonth,
+    provisionedReadCapacityUnitHourlyPrice  = BigDecimal("0.000065"),
+    provisionedWriteCapacityUnitHourlyPrice = BigDecimal("0.000325")
   )
 
   val phase1Default: DynamoDbPricingRates =
@@ -101,23 +106,26 @@ object DynamoDbCostBreakdown:
 
     val r = rates.forClass(tableClass)
 
+    val onDemandReadCost  = inputs.usage.overall.readCapacityUnits  * r.readCapacityUnitPrice
+    val onDemandWriteCost = inputs.usage.overall.writeCapacityUnits * r.writeCapacityUnitPrice
+
     val (readCapacityCost, writeCapacityCost) = inputs.provisionedCapacity match
       case Some(pc) =>
         rates.reservedCapacity match
           case Some(rc) =>
-            val readCost =
-              BigDecimal(pc.discountedReadCapacityUnitTicks) * rc.discountedReadCapacityUnitPrice / BigDecimal(3600) +
-              BigDecimal(pc.standardReadCapacityUnitTicks)   * r.readCapacityUnitPrice             / BigDecimal(3600)
-            val writeCost =
-              BigDecimal(pc.discountedWriteCapacityUnitTicks) * rc.discountedWriteCapacityUnitPrice / BigDecimal(3600) +
-              BigDecimal(pc.standardWriteCapacityUnitTicks)   * r.writeCapacityUnitPrice             / BigDecimal(3600)
-            (readCost, writeCost)
+            val provReadCost =
+              BigDecimal(pc.discountedReadCapacityUnitTicks) * rc.discountedReadCapacityUnitPrice        / BigDecimal(3600) +
+              BigDecimal(pc.standardReadCapacityUnitTicks)   * r.provisionedReadCapacityUnitHourlyPrice  / BigDecimal(3600)
+            val provWriteCost =
+              BigDecimal(pc.discountedWriteCapacityUnitTicks) * rc.discountedWriteCapacityUnitPrice       / BigDecimal(3600) +
+              BigDecimal(pc.standardWriteCapacityUnitTicks)   * r.provisionedWriteCapacityUnitHourlyPrice / BigDecimal(3600)
+            (onDemandReadCost + provReadCost, onDemandWriteCost + provWriteCost)
           case None =>
-            (BigDecimal(pc.totalProvisionedReadCapacityUnitTicks)  * r.readCapacityUnitPrice  / BigDecimal(3600),
-             BigDecimal(pc.totalProvisionedWriteCapacityUnitTicks) * r.writeCapacityUnitPrice / BigDecimal(3600))
+            val provReadCost  = BigDecimal(pc.totalProvisionedReadCapacityUnitTicks)  * r.provisionedReadCapacityUnitHourlyPrice  / BigDecimal(3600)
+            val provWriteCost = BigDecimal(pc.totalProvisionedWriteCapacityUnitTicks) * r.provisionedWriteCapacityUnitHourlyPrice / BigDecimal(3600)
+            (onDemandReadCost + provReadCost, onDemandWriteCost + provWriteCost)
       case None =>
-        (inputs.usage.overall.readCapacityUnits  * r.readCapacityUnitPrice,
-         inputs.usage.overall.writeCapacityUnits * r.writeCapacityUnitPrice)
+        (onDemandReadCost, onDemandWriteCost)
 
     val replicatedWriteCapacityCost =
       inputs.usage.overall.replicatedWriteCapacityUnits * r.replicatedWriteCapacityUnitPrice

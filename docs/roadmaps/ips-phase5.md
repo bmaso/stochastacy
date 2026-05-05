@@ -215,17 +215,17 @@ unavailable for Standard-IA tables. Validation at config construction enforces t
 |-------|--------|---------|
 | 1. rWCU Consumption Event and On-Demand Billing | **Done** | `ReplicatedWriteCapacityConsumed` event; rWCU accumulation in `DynamoDbUsageTotals`; on-demand rWCU pricing path; multi-region demo and dashboard updated |
 | 2. rWCU Provisioned Admission | **Done** | `BillingMode.Provisioned.replicatedWriteCapacityUnits: Option[Long]`; rWCU token-bucket admission in `componentOfReplicated`; `InsufficientReplicatedWriteCapacity` throttle reason; `UpdateProvisionedCapacity` extended for rWCU |
-| 3. Tiered Cross-Region Transfer Pricing | **Done** | `CrossRegionTransferPricingRates` uses tiered schedule; `CrossRegionTransferPricing` accumulates cumulative bytes and applies correct per-tranche rate; AWS default tiers added to demo config |
+| 3. Tiered Cross-Region Transfer Pricing | **Done** | `CrossRegionTransferPricingRates` uses tiered schedule; `CrossRegionTransferPricing` accumulates cumulative bytes and applies correct per-tranche rate; `multiRegionDefault` uses flat-rate (no free tier) pricing |
 | 4. GSI/LSI Support in `componentOfReplicated` | **Done** | Construction-time guard was already absent; verified storage and index-maintenance graph are topology-agnostic; test-completion slice: provisioned-mode + GSI rWCU test added to `DynamoDbTableReplicatedSpec`; multi-region GSI metric assertion added to `ThermostatFleetSingleTrialRunnerSpec` |
-| 5. ReturnedItemCount for Query and Scan | **Done** | `StorageMetricEvent.ReturnedItemCount` emitted unconditionally per admitted Query/Scan; `DemoMetric.ReturnedItemCount(operation)` with SUM rollup; both single-region runner, multi-region runner, and mixed-mode runner collect and emit the metric; "Returned Item Count by Operation" panel added to thermostat-fleet and mixed-mode dashboards; WCU consumed-vs-provisioned panel enhanced with p50/p75/p95 percentile bands |
-| 6. ReplicationLatency Metric | Future | |
-| 7. SystemErrors | Future | |
-| 8. SuccessfulRequestLatency | Future | |
-| 9. Table Class: Standard vs. Standard-IA | Future | |
-| 10. Per-GSI Provisioned Capacity Pricing Accuracy | Future | |
-| 11. Reserved Capacity Discount | Future | |
-| 11b. Regional Pricing | Future | |
-| 12. Multi-Region Demo Update | Future | |
+| 5. ReturnedItemCount for Query and Scan | **Done** | `StorageMetricEvent.ReturnedItemCount` emitted unconditionally per admitted Query/Scan; `DemoMetric.ReturnedItemCount(operation)` with SUM rollup; single-region, multi-region, and mixed-mode runners all collect; "Returned Item Count by Operation" panel added to both dashboards; WCU panel enhanced with p50/p75/p95 bands |
+| 6. ReplicationLatency Metric | **Deferred to Phase 6** | |
+| 7. SystemErrors | **Deferred to Phase 6** | |
+| 8. SuccessfulRequestLatency | **Deferred to Phase 6** | |
+| 9. Table Class: Standard vs. Standard-IA | **Done** | `DynamoDbTable.TableClass` sealed type (`Standard`, `StandardInfrequentAccess`); parallel rate set in `DynamoDbPricingRates`; Standard-IA: higher storage, lower throughput rates; validation: reserved capacity incompatible with Standard-IA |
+| 10. Per-GSI Provisioned Capacity Pricing Accuracy | **Done** | `ProvisionedCapacityData` carries true base+GSI provisioned ticks sum; `× (1+numGsis)` approximation removed from mixed-mode runner; `DynamoDbCostBreakdown.price()` computes from actual summed values |
+| 11. Reserved Capacity Discount | **Done** | `ReservedCapacity` sub-config on `DynamoDbPricingRates`; `DynamoDbCostBreakdown.price()` splits provisioned ticks into discounted/standard tranches; 19 pricing tests including mixed-mode and straddling-threshold cases |
+| 11b. Regional Pricing | **Done** | `PricingSchedule` trait + `StaticPricingSchedule`; `PricingSchedule.byRegion()` factory; `ThermostatFleetScenarioConfig.pricingSchedule` replaces `pricingRates`; both trial runners resolve rates via `ratesAt(region, tick)` |
+| 12. Multi-Region Demo Update | **Done** | Multi-region config uses full GSI/LSI setup; `multiRegionDefault` updated with per-region pricing schedule and flat transfer rates; 3 new per-region cost metrics (`TotalRegionWriteCapacityCost`, `TotalRegionReplicatedWriteCapacityCost`, `TotalRegionTransferCost`); stacked cost-breakdown barchart panel added to Grafana; fixed provisioned hourly rate formula (520× error) and mixed-mode on-demand+provisioned cost accounting |
 
 ---
 

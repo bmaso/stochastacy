@@ -636,6 +636,14 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         )
       }
 
+      val regionTransferCost: Map[String, BigDecimal] =
+        regions.map { r =>
+          val c = transferCostBreakdown.costByDirectionalPair
+            .collect { case ((src, _), cost) if src == r => cost }
+            .foldLeft(BigDecimal(0))(_ + _)
+          r -> c
+        }.toMap
+
       val perRegionSummary = regions.flatMap { r =>
         val usage = regionUsage.getOrElse(r, DynamoDbUsageTotals())
         val timeBased = regionTimeBasedUsage.getOrElse(r, DynamoDbTimeBasedUsageTotals())
@@ -646,7 +654,10 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
           TrialSummaryValue(DemoMetric.TotalRegionReplicatedWriteCapacityUnits(r), usage.overall.replicatedWriteCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalRegionStorageByteTicks(r), BigDecimal(timeBased.overallStorageByteTicks)),
           TrialSummaryValue(DemoMetric.TotalRegionFinalStorageBytes(r), BigDecimal(timeBased.endingOverallStorageBytes)),
-          TrialSummaryValue(DemoMetric.TotalRegionEstimatedCost(r), cost.totalCost)
+          TrialSummaryValue(DemoMetric.TotalRegionEstimatedCost(r), cost.totalCost),
+          TrialSummaryValue(DemoMetric.TotalRegionWriteCapacityCost(r), cost.writeCapacityCost),
+          TrialSummaryValue(DemoMetric.TotalRegionReplicatedWriteCapacityCost(r), cost.replicatedWriteCapacityCost),
+          TrialSummaryValue(DemoMetric.TotalRegionTransferCost(r), regionTransferCost.getOrElse(r, BigDecimal(0)))
         )
       }
 

@@ -1,8 +1,8 @@
 package stochastacy.examples.thermostatfleet
 
-import stochastacy.aws.dynamodb.pricing.PricingSchedule
+import stochastacy.aws.dynamodb.pricing.{DynamoDbPricingRates, PricingSchedule}
 import stochastacy.aws.dynamodb.table.*
-import stochastacy.aws.transfer.{CrossRegionTransferPricingRates, TransferPricingTier}
+import stochastacy.aws.transfer.CrossRegionTransferPricingRates
 
 final case class RegionFleetConfig(
   regionName: String,
@@ -139,20 +139,25 @@ object ThermostatFleetScenarioConfig:
       eveningSpikePeakTickRange = (1020L, 1140L),
       customerSupportQueryRatePerTick = 0.5,
       fleetDashboardScanRatePerTick = 0.1,
-      transferPricingRates = CrossRegionTransferPricingRates(
-        tiersBySourceRegion = Map(
-          "us-east-1" -> Vector(
-            TransferPricingTier(Some(OneGiB), BigDecimal("0")),   // first 1 GiB: free
-            TransferPricingTier(None, BigDecimal("0.02"))         // remainder: $0.02/GiB
-          ),
-          "eu-west-1" -> Vector(
-            TransferPricingTier(Some(OneGiB), BigDecimal("0")),   // first 1 GiB: free
-            TransferPricingTier(None, BigDecimal("0.02"))         // remainder: $0.02/GiB
-          ),
-          "ap-southeast-1" -> Vector(
-            TransferPricingTier(Some(OneGiB), BigDecimal("0")),   // first 1 GiB: free
-            TransferPricingTier(None, BigDecimal("0.08"))         // remainder: $0.08/GiB
-          )
-        )
+      transferPricingRates = CrossRegionTransferPricingRates.flat(Map(
+        "us-east-1"      -> BigDecimal("0.02"),
+        "eu-west-1"      -> BigDecimal("0.02"),
+        "ap-southeast-1" -> BigDecimal("0.08")
+      )),
+      pricingSchedule = PricingSchedule.byRegion(
+        Map(
+          "us-east-1" -> DynamoDbPricingRates.phase1Default,
+          "eu-west-1" -> DynamoDbPricingRates(standard = DynamoDbPricingRates.RateSet(
+            readCapacityUnitPrice    = BigDecimal("0.000000283"),
+            writeCapacityUnitPrice   = BigDecimal("0.0000014"),
+            storagePricePerGiBSecond = BigDecimal("0.000000108507")
+          )),
+          "ap-southeast-1" -> DynamoDbPricingRates(standard = DynamoDbPricingRates.RateSet(
+            readCapacityUnitPrice    = BigDecimal("0.000000338"),
+            writeCapacityUnitPrice   = BigDecimal("0.000001690"),
+            storagePricePerGiBSecond = BigDecimal("0.000000125")
+          ))
+        ),
+        fallback = DynamoDbPricingRates.phase1Default
       )
     )

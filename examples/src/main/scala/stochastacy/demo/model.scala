@@ -27,6 +27,9 @@ enum DemoMetric:
   case TotalRegionStorageByteTicks(regionName: String)
   case TotalRegionFinalStorageBytes(regionName: String)
   case TotalRegionEstimatedCost(regionName: String)
+  case TotalRegionWriteCapacityCost(regionName: String)
+  case TotalRegionReplicatedWriteCapacityCost(regionName: String)
+  case TotalRegionTransferCost(regionName: String)
   case TotalCrossRegionTransferBytes
   case TotalCrossRegionTransferCost
   case CumulativeCrossRegionTransferCost
@@ -70,6 +73,9 @@ enum DemoMetric:
       case DemoMetric.TotalRegionStorageByteTicks(r) => s"Region:$r:TotalStorageByteTicks"
       case DemoMetric.TotalRegionFinalStorageBytes(r) => s"Region:$r:FinalStorageBytes"
       case DemoMetric.TotalRegionEstimatedCost(r) => s"Region:$r:TotalEstimatedCost"
+      case DemoMetric.TotalRegionWriteCapacityCost(r) => s"Region:$r:TotalWriteCapacityCost"
+      case DemoMetric.TotalRegionReplicatedWriteCapacityCost(r) => s"Region:$r:TotalReplicatedWriteCapacityCost"
+      case DemoMetric.TotalRegionTransferCost(r) => s"Region:$r:TotalTransferCost"
       case DemoMetric.TotalCrossRegionTransferBytes => "TotalCrossRegionTransferBytes"
       case DemoMetric.TotalCrossRegionTransferCost => "TotalCrossRegionTransferCost"
       case DemoMetric.CumulativeCrossRegionTransferCost => "CumulativeCrossRegionTransferCost"
@@ -112,6 +118,9 @@ enum DemoMetric:
       case DemoMetric.TotalRegionStorageByteTicks(r) => (22, r)
       case DemoMetric.TotalRegionFinalStorageBytes(r) => (23, r)
       case DemoMetric.TotalRegionEstimatedCost(r) => (24, r)
+      case DemoMetric.TotalRegionWriteCapacityCost(r) => (39, r)
+      case DemoMetric.TotalRegionReplicatedWriteCapacityCost(r) => (40, r)
+      case DemoMetric.TotalRegionTransferCost(r) => (41, r)
       case DemoMetric.TotalCrossRegionTransferBytes => (25, "")
       case DemoMetric.TotalCrossRegionTransferCost => (26, "")
       case DemoMetric.CumulativeCrossRegionTransferCost => (31, "")

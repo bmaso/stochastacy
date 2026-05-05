@@ -10,19 +10,26 @@ one at a time.
 
 ## Issue List
 
-### 1. Billing Mode Timeline shows no mode switch  (OPEN)
+### 1. Billing Mode Timeline shows no mode switch  (FIXED)
 
-**Symptom:** The "Billing Mode Timeline" panel shows a flat green line at `1.0` (provisioned)
+**Symptom:** The "Billing Mode Timeline" panel showed a flat green line at `1.0` (provisioned)
 for the entire simulation window. A mixed-mode scenario should show a step transition between
 on-demand (`0`) and provisioned (`1`) at the reconfiguration tick.
 
-**Likely causes (to investigate):**
-- The `SwitchBillingMode` management event never fires in the scenario configuration.
-- The `BillingModeIndicator` metric is only emitted during provisioned ticks, so the on-demand
-  phase has no data points — Grafana fills the gap with the last known value (1), hiding the
-  switch.
-- The Grafana query uses `max` across trials, which would suppress any windows where some
-  trials are at 0.
+**Root cause (diagnosed):** The management stream races ahead in Pekko's fused graph (returning
+`Nil` for ticks causes it to drain before the request stream processes tick 2), making
+stream-observed `BillingModeSnapshot` events unreliable for the on-demand phase.
+
+**Fix applied:** `billingModeTimeSeries` is now derived from the config schedule, not stream
+events. `ThermostatFleetMixedModeSingleTrialRunner` constructs it deterministically:
+```scala
+val billingModeTimeSeries = (1L to scenarioConfig.simulationTicks).map { tick =>
+  val modeCode = if tick <= config.modeSwitchTick then 0 else 1
+  SimulationTimeSeriesPoint(tick, DemoMetric.BillingModeIndicator, BigDecimal(modeCode))
+}.toVector
+```
+This produces a clean step function: `0` for all on-demand ticks, `1` for all provisioned ticks,
+matching the reconfiguration schedule exactly.
 
 ---
 
