@@ -47,9 +47,9 @@ The simulator supports:
 | 3. Tiered Transfer Pricing | **Done** | Tiered `CrossRegionTransferPricingRates`; per-tranche cost accumulation |
 | 4. GSI/LSI in `componentOfReplicated` | **Done** | Test-completion slice (guard was already absent); new provisioned-mode + GSI rWCU test |
 | 5. ReturnedItemCount Metric | **Done** | `StorageMetricEvent.ReturnedItemCount`; collected in all runners; Grafana panels in both dashboards; WCU panel now shows p50/p75/p95 bands |
-| 6. ReplicationLatency Metric | **Deferred to Phase 6** | Surface tick-delta from `ReplicationCoordinator` as a metric; per-destination-region panel |
-| 7. SystemErrors | **Deferred to Phase 6** | Bernoulli error model; `SystemErrorResponse`; `DemoMetric.SystemErrorCount` |
-| 8. SuccessfulRequestLatency | **Deferred to Phase 6** | Log-normal latency samples; P50/P95/P99 rollup; latency panels |
+| 6. ReplicationLatency Metric | **In Phase 6** | Surface tick-delta from `ReplicationCoordinator` as a metric; per-destination-region panel |
+| 7. SystemErrors | **In Phase 6** | Bernoulli error model; `SystemErrorResponse`; `DemoMetric.SystemErrorCount` |
+| 8. SuccessfulRequestLatency | **In Phase 6** | Log-normal latency samples; P50/P95/P99 rollup; latency panels |
 | 9. Table Class: Standard vs. Standard-IA | **Done** | `DynamoDbTable.TableClass` sealed type; `DynamoDbPricingRates` extended with Standard-IA rate set; Standard-IA incompatible with reserved capacity |
 | 10. Per-GSI Provisioned Capacity Pricing | **Done** | `ProvisionedCapacityData` carries true base+GSI sum; `× (1+numGsis)` approximation removed |
 | 11. Reserved Capacity Discount | **Done** | `ReservedCapacity` sub-config; discounted/standard rate split in `DynamoDbCostBreakdown.price()`; 19 pricing tests pass |
@@ -222,12 +222,19 @@ Total: 276 core tests + 142 examples tests = 418 tests all passing.
 
 ## Recommended Next Work
 
-Phase 6 — three slices deferred from Phase 5, plus any new feature work:
+Phase 6 — "Close the Gap" — five slices targeting features required for the final ThermoFleet
+multi-service demo. The full ThermoFleet demo requires API Gateway, Lambda, SQS, DynamoDB, and
+S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises it. See
+[ips-phase6.md](../roadmaps/ips-phase6.md) for the full spec.
 
-1. **ReplicationLatency metric**: surface the tick-delta already computed in `ReplicationCoordinator` as `ReplicationMetricEvent.ReplicationLatency`; add a per-destination-region panel to the multi-region dashboard.
-2. **SystemErrors**: Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; `DemoMetric.SystemErrorCount`; no-consumption / no-state-mutation guarantee (same validate-then-mutate split as item-collection limit).
-3. **SuccessfulRequestLatency**: log-normal per-operation latency samples emitted from `TableStorageStage` for admitted, non-errored requests; P50/P95/P99 rollup in demo pipeline; latency panel in both dashboards.
-4. **Multi-region latency panels**: once ReplicationLatency and SuccessfulRequestLatency are done, add dedicated panels to the multi-region Grafana dashboard.
+1. **Read consistency RCU accounting** — verify/complete 0.5 RCU for eventually-consistent vs. 1.0 RCU for strongly-consistent reads.
+2. **TTL** — ring-buffer write history in `SummaryTableState`; deletion at tick T equals writes at tick T − ttlPeriod; algorithm is advisory and likely to be iterated.
+3. **Reactive auto-scaling** — external `DynamoDbAutoScaler` component; policy-driven `UpdateProvisionedCapacity` events with reaction delay; feedback-arc design requires a dedicated discussion before implementation.
+4. **Multi-table simulation framework** — composable runner for N parallel table instances with shared tick clock and per-table namespaced metrics.
+5. **DynamoDB capstone demo** — four-table ThermoFleet-inspired simulation (Device Registry, Telemetry, Commands, Alerts); workload scenarios: steady state, morning rush, polar vortex, combined peak; Grafana dashboard answering the key provisioned-vs-on-demand breakeven question.
+6. **ReplicationLatency metric** — surface tick-delta from `ReplicationCoordinator` as `ReplicationMetricEvent.ReplicationLatency`; per-destination-region panel in multi-region dashboard.
+7. **SystemErrors** — Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; no-consumption no-state-mutation guarantee; `DemoMetric.SystemErrorCount`.
+8. **SuccessfulRequestLatency** — log-normal latency samples per admitted non-errored request; `DynamoDbTable.LatencyModel` config; P50/P95/P99 rollup; latency panels in both dashboards.
 
 ## Notes For A Fresh Session
 
