@@ -7,6 +7,7 @@ import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, Materializer}
 import org.apache.pekko.stream.scaladsl.{Flow, GraphDSL, Merge, RunnableGraph, Sink, Source}
 import stochastacy.aws.dynamodb.*
+import stochastacy.aws.dynamodb.autoscaling.DynamoDbAutoScaler
 import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates, PricingSchedule}
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.dynamodb.usage.{DynamoDbTargetTimeBasedUsageTotals, DynamoDbTargetUsageTotals, DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
@@ -334,6 +335,11 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       ThermostatFleetScenarioConfig.DeviceStatusGsiName
     )
     val schedule = config.reconfigurationSchedule.filter(_.events.nonEmpty)
+    val autoScalerOpt: Option[DynamoDbAutoScaler] = config.autoScalerPolicy.flatMap { policy =>
+      config.billingMode match
+        case p: DynamoDbTable.BillingMode.Provisioned => Some(new DynamoDbAutoScaler(policy, p))
+        case _                                        => None
+    }
 
     val foldSink = Sink.fold[PerRegionAcc, TimedElement[DynamoDbConsumptionEvent]](PerRegionAcc()) {
       (acc, evt) => updatePerRegionAcc(acc, evt)
@@ -342,19 +348,27 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     val latSampleFoldSink = Sink.fold[LatencySampleAcc, TimedElement[TableMetricEvent]](Map.empty)(foldLatencySampleEvent)
     val estItemFoldSink = Sink.fold[EstItemCountAcc, TimedElement[TableMetricEvent]](Map.empty)(foldEstItemCountEvent)
 
+    val bcastSize = if autoScalerOpt.isDefined then 4 else 3
     val (accF, retItemAccF, latSampleAccF, estItemAccF) = RunnableGraph.fromGraph(
       GraphDSL.createGraph(foldSink, retItemFoldSink, latSampleFoldSink, estItemFoldSink)((c, m, l, e) => (c, m, l, e)) { implicit b => (consSink, metSink, latSink, estSink) =>
         import GraphDSL.Implicits.*
-        val metricBcast = b.add(org.apache.pekko.stream.scaladsl.Broadcast[TimedElement[TableMetricEvent]](3))
-        schedule match
-          case Some(reconfigurationSchedule) =>
+        val metricBcast = b.add(org.apache.pekko.stream.scaladsl.Broadcast[TimedElement[TableMetricEvent]](bcastSize))
+        (autoScalerOpt, schedule) match
+          case (Some(autoScaler), _) =>
+            val table = b.add(DynamoDbTable.componentOfManaged(buildTableConfig(config, tableState, behaviors)))
+            Source.fromIterator(() => requestIterator) ~> table.requestIn
+            b.add(autoScaler.managementSource) ~> table.managementIn
+            table.responseOut ~> b.add(Sink.ignore)
+            table.consumptionOut ~> consSink
+            table.metricOut ~> metricBcast.in
+          case (None, Some(reconfigurationSchedule)) =>
             val table = b.add(DynamoDbTable.componentOfManaged(buildTableConfig(config, tableState, behaviors)))
             Source.fromIterator(() => requestIterator) ~> table.requestIn
             Source.fromIterator(() => managementEventsFor(config.simulationTicks, reconfigurationSchedule)) ~> table.managementIn
             table.responseOut ~> b.add(Sink.ignore)
             table.consumptionOut ~> consSink
             table.metricOut ~> metricBcast.in
-          case None =>
+          case (None, None) =>
             val table = b.add(DynamoDbTable.componentOf(buildTableConfig(config, tableState, behaviors)))
             Source.fromIterator(() => requestIterator) ~> table.in
             table.out0 ~> b.add(Sink.ignore)
@@ -363,6 +377,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         metricBcast.out(0) ~> metSink
         metricBcast.out(1) ~> latSink
         metricBcast.out(2) ~> estSink
+        autoScalerOpt.foreach { autoScaler => metricBcast.out(3) ~> b.add(autoScaler.metricSink) }
         ClosedShape
       }
     ).run()
@@ -375,6 +390,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       latSampleAcc <- latSampleAccF
       estItemAcc   <- estItemAccF
     yield
+      autoScalerOpt.foreach(_.stop())
       val timeBasedTotals = extractTimeBasedUsage(rawAcc)
       val costBreakdown = DynamoDbCostBreakdown.price(
         DynamoDbPricingInputs(usage = rawAcc.usageTotals, timeBasedUsage = timeBasedTotals),

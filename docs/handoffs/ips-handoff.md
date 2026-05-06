@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-05-04 (phase 5 complete: all pricing accuracy, regional pricing, reserved capacity, per-GSI pricing, table class, mixed-mode cost accounting fixes, and multi-region demo update)
+Last updated: 2026-05-05 (phase 6 slices 1–3 complete: read consistency verified, TTL implemented, reactive auto-scaling added)
 
 ## Current Position
 
@@ -218,7 +218,7 @@ The "Write Capacity: Consumed vs. Provisioned" panel shows mean, P50, P75, and P
 - [ThermostatFleetMixedModeSingleTrialRunnerSpec.scala](examples/src/test/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeSingleTrialRunnerSpec.scala) — reserved capacity test uses `PricingSchedule.uniform(reservedRates)`
 - All storage stage specs (GetItem, PutItem, UpdateItem, DeleteItem, Query, Scan)
 
-Total: 288 core tests + 142 examples tests = 430 tests all passing.
+Total: 295 core tests + 142 examples tests = 437 tests all passing.
 
 ## Recommended Next Work
 
@@ -229,7 +229,7 @@ S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises
 
 1. **Read consistency RCU accounting** — DONE (verified): `TableThroughputMath` already applies 0.5× for eventually-consistent reads.
 2. **TTL** — DONE: `TtlSampler`/`SimpleTtlSampler` ring-buffer; `TtlExpiry` StorageOutcome at tick boundaries; `TtlItemsExpired`+`EstimatedItemCount` metrics; `StorageBytesDelta` cascade for GSI/LSI; `DynamoDbTable.Config.ttlSampler`; 12 new tests.
-3. **Reactive auto-scaling** — external `DynamoDbAutoScaler` component; policy-driven `UpdateProvisionedCapacity` events with reaction delay; feedback-arc design requires a dedicated discussion before implementation.
+3. **Reactive auto-scaling** — DONE: `DynamoDbAutoScaler` actor-based external coordinator; `Policy` config (separate scale-up/down reaction delays and cooldowns, rolling window, min/max bounds); `ThermostatFleetScenarioConfig.autoScalerPolicy` field; 3-way runner path (auto-scaler / schedule / plain); 7 new tests.
 4. **Multi-table simulation framework** — composable runner for N parallel table instances with shared tick clock and per-table namespaced metrics.
 5. **DynamoDB capstone demo** — four-table ThermoFleet-inspired simulation (Device Registry, Telemetry, Commands, Alerts); workload scenarios: steady state, morning rush, polar vortex, combined peak; Grafana dashboard answering the key provisioned-vs-on-demand breakeven question.
 6. **ReplicationLatency metric** — surface tick-delta from `ReplicationCoordinator` as `ReplicationMetricEvent.ReplicationLatency`; per-destination-region panel in multi-region dashboard.
@@ -239,12 +239,13 @@ S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
-- `sbt test` runs all 430 tests; `sbt "core/test"` runs the 288 core tests
+- `sbt test` runs all 437 tests; `sbt "core/test"` runs the 295 core tests
 - The canonical planning anchors are [ips-phase5.md](../roadmaps/ips-phase5.md) (complete) and [ips-phase4.md](../roadmaps/ips-phase4.md) (complete); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
 - Implement one slice at a time; use plan mode for new slices
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries
 - `componentOfManaged` is the factory for any table that needs mid-simulation reconfiguration; `componentOf` and `componentOfReplicated` do not accept management events
 - rWCU is a destination-region concept: only `componentOfReplicated` / `componentOfManagedReplicated` handle it; single-region tables never see `ReplicatedWriteCapacityConsumed`
 - When adding a new `StorageMetricEvent` subtype, update `StorageMetricTotals.scala` (test helper) to add a wildcard or explicit case — otherwise the compiler emits a fatal exhaustivity warning
+- `DynamoDbAutoScaler` (in `core/.../autoscaling/`) is an actor-based external controller that bridges the metric outlet and `componentOfManaged.managementIn` without forming a stream cycle. It uses `Source.queue[TimedElement[DynamoDbManagementEvent]](64).preMaterialize()` (non-deprecated `BoundedSourceQueue` API) and `Sink.actorRef` for metric ingestion. Stream completion: metric stream ends → `StreamComplete` → actor calls `queue.complete()` → management source completes → graph resolves. The runner calls `autoScaler.stop()` after the trial completes to release the actor.
 - `PricingSchedule.default` is `StaticPricingSchedule(Map.empty, DynamoDbPricingRates.phase1Default)` — used by all single-region demos without any change in behavior; callers that need per-region rates construct via `PricingSchedule.byRegion(...)`
 - Provisioned cost uses `provisionedReadCapacityUnitHourlyPrice`/`provisionedWriteCapacityUnitHourlyPrice` from `RateSet`, NOT the on-demand per-unit prices; the two differ by 520× for writes

@@ -32,7 +32,7 @@ multi-service simulation.
 |-------|--------|---------|
 | 1. Read Consistency RCU Accounting | Done | Already implemented: `TableThroughputMath.readCapacityUnitsFor` applies 0.5× for eventual consistency; tests verify 2× difference |
 | 2. TTL | Done | `TtlSampler` / `SimpleTtlSampler` ring-buffer; `TtlExpiry` StorageOutcome; `TtlItemsExpired` + `EstimatedItemCount` metrics; `StorageBytesDelta` cascade; `DynamoDbTable.Config.ttlSampler`; 12 new tests |
-| 3. Reactive Auto-Scaling | Planned | External `DynamoDbAutoScaler` component; policy-driven `UpdateProvisionedCapacity` events with reaction delay |
+| 3. Reactive Auto-Scaling | Done | `DynamoDbAutoScaler` actor-based coordinator; `Policy` with rolling window, reaction delays, cooldowns; `autoScalerPolicy` on `ThermostatFleetScenarioConfig`; 7 tests |
 | 4. Multi-Table Simulation Framework | Planned | Composable runner for N parallel table instances with shared tick clock and unified TrialResult |
 | 5. DynamoDB Capstone Demo | Planned | Four-table ThermoFleet-inspired workload; all Phase 6 features exercised; Grafana dashboard |
 | 6. ReplicationLatency Metric | Planned | Surface tick-delta from `ReplicationCoordinator` as `ReplicationMetricEvent.ReplicationLatency`; per-destination-region panel |
@@ -148,36 +148,51 @@ T−ttlPeriod and the intermediate modification rates — not a function of curr
 **Goal:** A reactive DAS-style controller that adjusts provisioned capacity in response to
 observed table load, without a pre-computed schedule.
 
-This is the most architecturally novel slice. Requires a design discussion before
-implementation to resolve the feedback-arc question (see below).
-
 **Motivation:** The core simulation question — "at what fleet size does on-demand beat
 provisioned with auto-scaling?" — requires showing the *lag window* during which demand has
-spiked but auto-scaling has not yet reacted. A pre-computed reconfiguration schedule cannot
+spiked but auto-scaling has not yet reacted. A pre-computed `ReconfigurationSchedule` cannot
 capture this because the schedule must be known before the simulation runs; real auto-scaling
 reacts to observed consumption, which is only known during the run.
 
-**Architecture:**
+---
 
-`DynamoDbAutoScaler` is a new component external to the table. It connects between the table's
-metric outlet and `componentOfManaged`'s management inlet:
+**Architecture: actor-based external coordinator**
+
+`DynamoDbAutoScaler` is a Pekko actor (not a stream stage) that sits between the table's metric
+outlet and `componentOfManaged`'s management inlet:
 
 ```
-table.metricOut  →  DynamoDbAutoScaler  →  componentOfManaged.managementIn
+table.metricOut  →  Sink.foreach(actor !)  →  [actor]  →  Source.queue  →  componentOfManaged.managementIn
 ```
 
-The auto-scaler consumes `ConsumedCapacitySnapshot` events, maintains a rolling utilization
-window, and emits `UpdateProvisionedCapacity` management events after a configurable reaction
-delay. It does not emit events during the on-demand phase or during a cooldown window after a
-recent scale event.
+This mirrors how real DAS works: CloudWatch metrics flow to Application Auto Scaling (the
+external controller), which calls the DynamoDB API. Keeping the auto-scaler outside the stream
+graph keeps the graph acyclic — no cycle-breaking primitives are needed.
 
-New config type:
-```
+**Wiring in the runner:** `DynamoDbAutoScaler` exposes a simple API — `actor` and
+`managementSource` — that the runner uses to wire the graph. `runTrialSingleRegion` is
+modestly restructured: when an auto-scaler policy is present, the actor is created before the
+graph is built, the metric broadcast gains an extra outlet feeding `Sink.foreach(actor !)`,
+and `managementSource` (the actor's `Source.queue`) replaces the static management events
+iterator feeding `componentOfManaged.managementIn`. When no policy is configured, the runner
+path is unchanged.
+
+The `Source.queue` uses `OverflowStrategy.dropHead` with a small buffer (e.g. 64 elements) so
+actor offers never block — management events are rare (one every `scaleUpReactionDelayTicks` at
+most) and the buffer will not overflow in practice.
+
+---
+
+**Policy config:**
+
+```scala
 DynamoDbAutoScaler.Policy(
-  targetUtilization: Double,         // e.g. 0.7
-  reactionDelayTicks: Int,           // e.g. 120 (2 minutes)
-  evaluationWindowTicks: Int,        // rolling window for utilization averaging
-  scaleDownCooldownTicks: Int,       // e.g. 900 (15 minutes)
+  targetUtilization: Double,           // e.g. 0.70 — scale up above, scale down below
+  evaluationWindowTicks: Int,          // rolling window for utilization averaging, e.g. 60
+  scaleUpReactionDelayTicks: Int,      // ticks from decision to scale-up event, e.g. 120 (2 min)
+  scaleDownReactionDelayTicks: Int,    // ticks from decision to scale-down event, e.g. 900 (15 min)
+  scaleUpCooldownTicks: Int,           // min ticks between scale-up events, e.g. 120
+  scaleDownCooldownTicks: Int,         // min ticks between scale-down events, e.g. 900
   minReadCapacityUnits: Long,
   maxReadCapacityUnits: Long,
   minWriteCapacityUnits: Long,
@@ -185,20 +200,61 @@ DynamoDbAutoScaler.Policy(
 )
 ```
 
-**Design question (resolve before implementation):** In Pekko Streams, a graph with a feedback
-arc (output feeds back to input of the same component) requires explicit cycle-breaking
-mechanisms. Two candidate approaches:
+AWS does not publish the exact DAS algorithm or reaction timings. The defaults above are
+conservative estimates derived from observed real-world DAS behavior. Scale-down is
+significantly slower than scale-up by default to reflect the real asymmetry.
 
-- **External coordinator**: the auto-scaler runs as a separate Pekko actor (not a stream stage)
-  that subscribes to metric events via a materialized sink and publishes management events via
-  a `Source.queue`. This keeps the graph acyclic at the cost of actor/stream boundary overhead.
-- **Internal async feedback**: the auto-scaler is a `GraphStage` with both a metric inlet and a
-  management outlet, connected to the table component via a `BroadcastMerge` pattern with an
-  async boundary. Keeps everything in the streaming model.
+---
 
-The external-coordinator approach is simpler and mirrors how real DAS works (CloudWatch metrics
-→ Application Auto Scaling service → DynamoDB API calls). It is the preferred candidate unless
-the async boundary introduces tick-ordering hazards.
+**Utilization metric and window management:**
+
+The auto-scaler consumes `AdmissionMetricEvent.ProvisionedCapacityUtilization` events (not
+`ConsumedCapacitySnapshot`) because each event already carries both consumed and provisioned
+capacity for the completed tick. The utilization ratio `consumed / provisioned` is computed
+directly from the event, so the rolling window always reflects the correct denominator even as
+provisioned capacity changes.
+
+On each scale event (up or down), the rolling utilization window is flushed. The subsequent
+cooldown period absorbs the post-scale measurement noise while the window refills.
+
+---
+
+**Scale-up and scale-down decisions:**
+
+On every `ProvisionedCapacityUtilization` event (for reads and writes independently):
+
+- If rolling-window average > `targetUtilization` and no scale-up is pending and cooldown has
+  elapsed: enqueue a scale-up decision with fire tick = `currentTick + scaleUpReactionDelayTicks`.
+  Target new capacity = `ceil(consumed / targetUtilization)`, clamped to `maxCapacityUnits`.
+- If rolling-window average < `targetUtilization × scaleDownThreshold` (e.g. 0.5×, configurable)
+  and no scale-down is pending and cooldown has elapsed: enqueue a scale-down decision with
+  fire tick = `currentTick + scaleDownReactionDelayTicks`. Target new capacity =
+  `ceil(consumed / targetUtilization)`, clamped to `minCapacityUnits`.
+
+Pending decisions are keyed by (dimension: read/write, fireTick). On each `Tick(T)` event,
+the actor drains any decisions with `fireTick <= T` and offers `UpdateProvisionedCapacity`
+events to `Source.queue`.
+
+---
+
+**On-demand phase silence:**
+
+The auto-scaler is silent when `BillingModeSnapshot` indicates on-demand mode. It activates
+only in provisioned mode. In a mixed-mode scenario, it ignores all events until the mode switch
+tick and starts its rolling window fresh at that point.
+
+---
+
+**GSI scaling:** Deferred. This slice scales only the base table. Per-GSI independent scaling
+is a candidate follow-on slice within Phase 6.
+
+---
+
+**New `DemoMetric` cases:**
+
+- `ProvisionedReadCapacityUnits` and `ProvisionedWriteCapacityUnits` already exist (Phase 4).
+  No new metrics are required — the existing provisioned capacity time series will show the
+  step changes as auto-scaling fires, which is the key visual for the lag-window analysis.
 
 ---
 

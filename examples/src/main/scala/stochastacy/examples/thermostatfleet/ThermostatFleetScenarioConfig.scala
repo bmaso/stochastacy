@@ -1,5 +1,6 @@
 package stochastacy.examples.thermostatfleet
 
+import stochastacy.aws.dynamodb.autoscaling.DynamoDbAutoScaler
 import stochastacy.aws.dynamodb.pricing.{DynamoDbPricingRates, PricingSchedule}
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.transfer.CrossRegionTransferPricingRates
@@ -44,6 +45,7 @@ final case class ThermostatFleetScenarioConfig(
   adaptiveCapacityModel: Option[DynamoDbTable.AdaptiveCapacityModel] = None,
   dynamicPartitionTopologyModel: Option[DynamoDbTable.DynamicPartitionTopologyModel] = None,
   reconfigurationSchedule: Option[ReconfigurationSchedule] = None,
+  autoScalerPolicy: Option[DynamoDbAutoScaler.Policy] = None,
   replicationModel: Option[ReplicationModel] = None,
   transferPricingRates: CrossRegionTransferPricingRates = CrossRegionTransferPricingRates(),
   pricingSchedule: PricingSchedule = PricingSchedule.default,
