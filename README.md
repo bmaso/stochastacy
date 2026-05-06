@@ -123,6 +123,20 @@ The thermostat fleet in a single region, running first in on-demand mode then sw
 
 ---
 
+### 5. Thermostat Fleet — Multi-Table
+
+Two independent DynamoDB tables simulated in a single Pekko graph: a low-write `device-registry` table (customer-support reads dominate) and a high-write `device-telemetry` table (continuous IoT ingest). Demonstrates the multi-table simulation framework — N `DynamoDbTable` components wired in parallel, each emitting per-table namespaced metrics (`Table:<name>:ReadCapacityUnits`, etc.) so cost and capacity can be compared side-by-side across tables in one dashboard.
+
+```bash
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-mt-001 --output /tmp/thermostat-mt-001.jsonl --mode multi-table --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-mt-001.jsonl --batch-id thermostat-mt-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-mt-001 --mode multi-table'
+```
+
+---
+
 ## DynamoDB Table simulator development curriculum
 
 1. Phase 1 - Table data plane with usecases consisting of `GetItem` and `PutItem` operations 

@@ -46,6 +46,16 @@ enum DemoMetric:
   case LatencyP95(operation: String)
   case LatencyP99(operation: String)
   case EstimatedItemCount
+  // Per-table metrics (multi-table demos)
+  case TableReadCapacityUnits(tableName: String)
+  case TableWriteCapacityUnits(tableName: String)
+  case TableStorageBytes(tableName: String)
+  case TableCumulativeEstimatedCost(tableName: String)
+  case TableTotalReadCapacityUnits(tableName: String)
+  case TableTotalWriteCapacityUnits(tableName: String)
+  case TableTotalStorageByteTicks(tableName: String)
+  case TableFinalStorageBytes(tableName: String)
+  case TableTotalEstimatedCost(tableName: String)
 
   def exportName: String =
     this match
@@ -92,6 +102,15 @@ enum DemoMetric:
       case DemoMetric.LatencyP95(op) => s"LatencyP95:$op"
       case DemoMetric.LatencyP99(op) => s"LatencyP99:$op"
       case DemoMetric.EstimatedItemCount => "EstimatedItemCount"
+      case DemoMetric.TableReadCapacityUnits(t)       => s"Table:$t:ReadCapacityUnits"
+      case DemoMetric.TableWriteCapacityUnits(t)      => s"Table:$t:WriteCapacityUnits"
+      case DemoMetric.TableStorageBytes(t)            => s"Table:$t:StorageBytes"
+      case DemoMetric.TableCumulativeEstimatedCost(t) => s"Table:$t:CumulativeEstimatedCost"
+      case DemoMetric.TableTotalReadCapacityUnits(t)  => s"Table:$t:TotalReadCapacityUnits"
+      case DemoMetric.TableTotalWriteCapacityUnits(t) => s"Table:$t:TotalWriteCapacityUnits"
+      case DemoMetric.TableTotalStorageByteTicks(t)   => s"Table:$t:TotalStorageByteTicks"
+      case DemoMetric.TableFinalStorageBytes(t)       => s"Table:$t:FinalStorageBytes"
+      case DemoMetric.TableTotalEstimatedCost(t)      => s"Table:$t:TotalEstimatedCost"
 
   def sortKey: (Int, String) =
     this match
@@ -137,7 +156,16 @@ enum DemoMetric:
       case DemoMetric.LatencyP50(op) => (36, op)
       case DemoMetric.LatencyP95(op) => (37, op)
       case DemoMetric.LatencyP99(op) => (38, op)
-      case DemoMetric.EstimatedItemCount => (42, "")
+      case DemoMetric.EstimatedItemCount              => (42, "")
+      case DemoMetric.TableReadCapacityUnits(t)       => (43, t)
+      case DemoMetric.TableWriteCapacityUnits(t)      => (44, t)
+      case DemoMetric.TableStorageBytes(t)            => (45, t)
+      case DemoMetric.TableCumulativeEstimatedCost(t) => (46, t)
+      case DemoMetric.TableTotalReadCapacityUnits(t)  => (47, t)
+      case DemoMetric.TableTotalWriteCapacityUnits(t) => (48, t)
+      case DemoMetric.TableTotalStorageByteTicks(t)   => (49, t)
+      case DemoMetric.TableFinalStorageBytes(t)       => (50, t)
+      case DemoMetric.TableTotalEstimatedCost(t)      => (51, t)
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

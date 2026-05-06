@@ -17,12 +17,9 @@ import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent, ti
 
 import scala.concurrent.{ExecutionContext, Future}
 
-final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, ExecutionContext)
-    extends SingleTrialRunner[ThermostatFleetScenarioConfig]:
+private[thermostatfleet] object ThermostatFleetSingleTrialRunner:
 
-  // ── Private accumulator types ────────────────────────────────────────────
-
-  private case class TSSBucket(
+  case class TSSBucket(
     tick: Long,
     readUnits: BigDecimal = BigDecimal(0),
     writeUnits: BigDecimal = BigDecimal(0),
@@ -32,10 +29,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     storageByteDelta: Long = 0L
   )
 
-  /** Per-region streaming fold accumulator. Uses perTickBuckets keyed by eventTime.ticks so that
-   *  reads from GSI branches (which carry no Tick events) are attributed to their correct tick
-   *  regardless of arrival order in the merged stream. */
-  private case class PerRegionAcc(
+  case class PerRegionAcc(
     usageTotals: DynamoDbUsageTotals = DynamoDbUsageTotals(),
     tbByteTicksByTarget: Map[DynamoDbTarget, BigInt] = Map.empty,
     tbCurrentBytesByTarget: Map[DynamoDbTarget, Long] = Map.empty,
@@ -44,7 +38,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     currentStorageBytes: Long = 0L
   )
 
-  private case class TickBucketAgg(
+  private[thermostatfleet] case class TickBucketAgg(
     readUnits: BigDecimal = BigDecimal(0),
     writeUnits: BigDecimal = BigDecimal(0),
     replWriteUnits: BigDecimal = BigDecimal(0),
@@ -53,29 +47,29 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     gsiWriteByName: Map[String, BigDecimal] = Map.empty
   )
 
-  private case class MultiRegionFoldAcc(
+  private[thermostatfleet] case class MultiRegionFoldAcc(
     perRegion: Map[String, PerRegionAcc] = Map.empty,
     aggByTick: Map[Long, TickBucketAgg] = Map.empty
   )
 
-  private case class TransferFoldAcc(
+  private[thermostatfleet] case class TransferFoldAcc(
     totals: CrossRegionTransferUsageTotals = CrossRegionTransferUsageTotals(),
     byTickAndLink: Map[(Long, (String, String)), Long] = Map.empty
   )
 
   // tick -> estimated live item count (last observed value per tick)
-  private type EstItemCountAcc = Map[Long, Long]
+  private[thermostatfleet] type EstItemCountAcc = Map[Long, Long]
 
-  private def foldEstItemCountEvent(acc: EstItemCountAcc, evt: TimedElement[TableMetricEvent]): EstItemCountAcc =
+  private[thermostatfleet] def foldEstItemCountEvent(acc: EstItemCountAcc, evt: TimedElement[TableMetricEvent]): EstItemCountAcc =
     evt match
       case StorageMetricEvent.EstimatedItemCount(et, _, count) =>
         acc.updated(et.ticks, count)
       case _ => acc
 
   // (operation-string, tick) -> cumulative count
-  private type RetItemAcc = Map[(String, Long), Long]
+  private[thermostatfleet] type RetItemAcc = Map[(String, Long), Long]
 
-  private def foldMetricEvent(acc: RetItemAcc, evt: TimedElement[TableMetricEvent]): RetItemAcc =
+  private[thermostatfleet] def foldMetricEvent(acc: RetItemAcc, evt: TimedElement[TableMetricEvent]): RetItemAcc =
     evt match
       case StorageMetricEvent.ReturnedItemCount(et, _, op, count) =>
         val key = (op.toString, et.ticks)
@@ -83,9 +77,9 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       case _ => acc
 
   // tick -> max observed lagMs for a single destination region
-  private type LatencyAcc = Map[Long, Double]
+  private[thermostatfleet] type LatencyAcc = Map[Long, Double]
 
-  private def foldLatencyEvent(acc: LatencyAcc, evt: TimedElement[TableMetricEvent]): LatencyAcc =
+  private[thermostatfleet] def foldLatencyEvent(acc: LatencyAcc, evt: TimedElement[TableMetricEvent]): LatencyAcc =
     evt match
       case lat: ReplicationMetricEvent.ReplicationLatency =>
         val prev = acc.getOrElse(lat.eventTime.ticks, 0.0)
@@ -93,16 +87,16 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       case _ => acc
 
   // (operation-string, tick) -> raw latency samples (ms) collected within the tick
-  private type LatencySampleAcc = Map[(String, Long), Vector[Double]]
+  private[thermostatfleet] type LatencySampleAcc = Map[(String, Long), Vector[Double]]
 
-  private def foldLatencySampleEvent(acc: LatencySampleAcc, evt: TimedElement[TableMetricEvent]): LatencySampleAcc =
+  private[thermostatfleet] def foldLatencySampleEvent(acc: LatencySampleAcc, evt: TimedElement[TableMetricEvent]): LatencySampleAcc =
     evt match
       case lat: StorageMetricEvent.SuccessfulRequestLatency =>
         val key = (lat.operation.toString, lat.eventTime.ticks)
         acc.updated(key, acc.getOrElse(key, Vector.empty) :+ lat.latencyMs)
       case _ => acc
 
-  private def latencyPercentileTimeSeries(latSampleAcc: LatencySampleAcc): Vector[SimulationTimeSeriesPoint] =
+  private[thermostatfleet] def latencyPercentileTimeSeries(latSampleAcc: LatencySampleAcc): Vector[SimulationTimeSeriesPoint] =
     latSampleAcc.flatMap { case ((op, tick), samples) =>
       val sorted = samples.sorted
       val p50 = sorted((sorted.size * 0.50).toInt.min(sorted.size - 1))
@@ -117,12 +111,12 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
 
   // ── Fold helpers ─────────────────────────────────────────────────────────
 
-  private val bytesPerGiB = BigDecimal(1024).pow(3)
+  private[thermostatfleet] val bytesPerGiB = BigDecimal(1024).pow(3)
 
   /** Build per-region time series points from perTickBuckets, iterating in tick order to compute
    *  cumulative cost. All consumption events are keyed by eventTime.ticks so reads from GSI branches
    *  are correctly attributed regardless of arrival order in the merged stream. */
-  private def buildPerRegionTimeSeries(
+  private[thermostatfleet] def buildPerRegionTimeSeries(
     acc: PerRegionAcc,
     gsiNames: Vector[String],
     pricingRates: DynamoDbPricingRates,
@@ -180,7 +174,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       )
     }
 
-  private def updatePerRegionAcc(
+  def updatePerRegionAcc(
     acc: PerRegionAcc,
     evt: TimedElement[DynamoDbConsumptionEvent]
   ): PerRegionAcc =
@@ -229,7 +223,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
 
       case _ => acc
 
-  private def extractTimeBasedUsage(acc: PerRegionAcc): DynamoDbTimeBasedUsageTotals =
+  def extractTimeBasedUsage(acc: PerRegionAcc): DynamoDbTimeBasedUsageTotals =
     val allTargets = acc.tbByteTicksByTarget.keySet ++ acc.tbCurrentBytesByTarget.keySet
     val byTarget = allTargets.iterator.map { target =>
       target -> DynamoDbTargetTimeBasedUsageTotals(
@@ -242,6 +236,10 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       endingOverallStorageBytes = byTarget.valuesIterator.map(_.endingStorageBytes).sum,
       byTarget = byTarget
     )
+
+final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, ExecutionContext)
+    extends SingleTrialRunner[ThermostatFleetScenarioConfig]:
+  import ThermostatFleetSingleTrialRunner.*
 
   private def updateTickBucketAgg(
     aggByTick: Map[Long, TickBucketAgg],
@@ -874,7 +872,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
 
   // ── Table config builder ────────────────────────────────────────────────────
 
-  private def buildTableConfig(
+  private[thermostatfleet] def buildTableConfig(
     config: ThermostatFleetScenarioConfig,
     tableState: TableState,
     behaviors: Map[Any, UseCaseSampler[TableState]]

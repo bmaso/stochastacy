@@ -45,11 +45,11 @@ object ThermostatFleetBridgeCommand:
 
 object ThermostatFleetBridgeCli:
   private val GenerateUsage =
-    "usage: ThermostatFleetBridge generate --output <path> --mode <single-region|multi-region|mixed-mode> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>] [--initial-provisioned-wcu <long>] [--adjusted-provisioned-wcu <long>]"
+    "usage: ThermostatFleetBridge generate --output <path> --mode <single-region|multi-region|mixed-mode|multi-table> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>] [--initial-provisioned-wcu <long>] [--adjusted-provisioned-wcu <long>]"
   private val StageUsage =
-    "usage: ThermostatFleetBridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--mode <single-region|multi-region|mixed-mode>]"
+    "usage: ThermostatFleetBridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--mode <single-region|multi-region|mixed-mode|multi-table>]"
   private val ViewUsage =
-    "usage: ThermostatFleetBridge view --batch-id <id> [--mode <single-region|multi-region|mixed-mode>] [--grafana-base-url <url>]"
+    "usage: ThermostatFleetBridge view --batch-id <id> [--mode <single-region|multi-region|mixed-mode|multi-table>] [--grafana-base-url <url>]"
   private val TopLevelUsage =
     s"""usage:
        |  $GenerateUsage
@@ -184,6 +184,9 @@ object ThermostatFleetBridgeCli:
               case "multi-region" =>
                 val c = ThermostatFleetScenarioConfig.multiRegionDefault
                 (c.scenarioId, ThermostatFleetDemoRunner.BaseSeed, c.readConsistency.toString, c.tableName)
+              case "multi-table" =>
+                val c = MultiTableScenarioConfig.twoTableDefault
+                (c.scenarioId, ThermostatFleetMultiTableDemoRunner.BaseSeed, "EventuallyConsistent", "multi-table")
               case _ =>
                 val c = ThermostatFleetScenarioConfig.singleRegionDefault
                 (c.scenarioId, ThermostatFleetDemoRunner.BaseSeed, c.readConsistency.toString, c.tableName)
@@ -249,6 +252,7 @@ object ThermostatFleetBridgeCli:
             val scenarioId = resolvedMode match
               case "mixed-mode"   => ThermostatFleetMixedModeConfig().scenarioId
               case "multi-region" => ThermostatFleetScenarioConfig.multiRegionDefault.scenarioId
+              case "multi-table"  => MultiTableScenarioConfig.twoTableDefault.scenarioId
               case _              => ThermostatFleetScenarioConfig.singleRegionDefault.scenarioId
             ThermostatFleetBridgeCommand.View(
               grafanaBaseUrl = grafanaBaseUrl.getOrElse("http://localhost:3000"),
@@ -273,8 +277,8 @@ object ThermostatFleetBridgeCli:
     loop(args, None, None, None)
 
   private def validateMode(mode: String, usage: String): Either[String, Unit] =
-    if mode == "single-region" || mode == "multi-region" || mode == "mixed-mode" then Right(())
-    else Left(s"--mode must be 'single-region', 'multi-region', or 'mixed-mode', got: $mode\n$usage")
+    if Set("single-region", "multi-region", "mixed-mode", "multi-table").contains(mode) then Right(())
+    else Left(s"--mode must be 'single-region', 'multi-region', 'mixed-mode', or 'multi-table', got: $mode\n$usage")
 
   private def parseIntFlag(name: String, value: String, usage: String): Either[String, Int] =
     Try(value.toInt).toEither.left.map(_ => s"invalid integer for $name: $value\n$usage").flatMap { parsed =>
@@ -547,6 +551,115 @@ object ThermostatFleetMixedModeGrafanaView:
   private def encode(value: String): String =
     URLEncoder.encode(value, StandardCharsets.UTF_8)
 
+object ThermostatFleetMultiTableGrafanaView:
+  private val DashboardUid  = "ips-phase6-multi-table"
+  private val DashboardSlug = "thermostat-fleet-multi-table-demo"
+
+  def url(grafanaBaseUrl: String, batchId: String, scenarioId: String): String =
+    val base = grafanaBaseUrl.stripSuffix("/")
+    s"$base/d/$DashboardUid/$DashboardSlug?var-batch_id=${encode(batchId)}&var-scenarioId=${encode(scenarioId)}"
+
+  private def encode(value: String): String =
+    URLEncoder.encode(value, StandardCharsets.UTF_8)
+
+object ThermostatFleetMultiTableDemoRunner:
+  val BaseSeed: Long = 20260426L
+
+  def generateToFile(
+    outputPath: java.nio.file.Path,
+    trialCount: Int,
+    parallelism: Int,
+    simulationTicks: Long
+  )(using org.apache.pekko.actor.ActorSystem, org.apache.pekko.stream.Materializer, scala.concurrent.ExecutionContext): scala.concurrent.Future[String] =
+    import org.apache.pekko.stream.scaladsl.{Source => PekkoSource}
+    import org.json4s.jackson.Serialization
+    given org.json4s.DefaultFormats = org.json4s.DefaultFormats
+
+    val config = MultiTableScenarioConfig.twoTableDefault.copy(
+      trialCount      = trialCount,
+      parallelism     = parallelism,
+      simulationTicks = simulationTicks,
+      tables = MultiTableScenarioConfig.twoTableDefault.tables.map { entry =>
+        entry.copy(config = entry.config.copy(simulationTicks = simulationTicks))
+      }
+    )
+    val runner = ThermostatFleetMultiTableSingleTrialRunner()
+    val exec   = stochastacy.demo.TrialExecutionConfig(trialCount, parallelism, BaseSeed)
+
+    val writer = new java.io.BufferedWriter(
+      new java.io.OutputStreamWriter(
+        java.nio.file.Files.newOutputStream(outputPath),
+        java.nio.charset.StandardCharsets.UTF_8
+      )
+    )
+
+    case class AggState(
+      mcAgg: stochastacy.demo.IncrementalMonteCarloAgg,
+      windowedAgg: Map[WindowSizeSeconds, stochastacy.demo.IncrementalWindowedAgg],
+      recordCount: Int,
+      completedTrials: Int
+    )
+
+    val initState = AggState(
+      mcAgg        = stochastacy.demo.IncrementalMonteCarloAgg(config.scenarioId),
+      windowedAgg  = WindowSizeSeconds.phase1Values.map(ws => ws -> stochastacy.demo.IncrementalWindowedAgg(ws)).toMap,
+      recordCount  = 0,
+      completedTrials = 0
+    )
+
+    def writeRecord(rec: DemoExportRecord): Unit =
+      writer.write(Serialization.write(rec))
+      writer.newLine()
+
+    val barWidth = 40
+    def printProgress(completed: Int): Unit =
+      val pct    = if trialCount == 0 then 100 else (completed * 100) / trialCount
+      val filled = if trialCount == 0 then barWidth else (completed * barWidth) / trialCount
+      val bar    = "█" * filled + "░" * (barWidth - filled)
+      print(s"\r[$bar] $completed/$trialCount ($pct%)")
+      System.out.flush()
+
+    printProgress(0)
+
+    PekkoSource(exec.trialRunConfigs)
+      .mapAsync(parallelism)(run => runner.runTrial(config, run))
+      .runFold(initState) { (state, trial) =>
+        val perTrialRecs =
+          DemoExportRecord.fromTrialResult(trial) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromWindowedTrialTimeSeries(
+                trial.scenarioId, trial.trialId,
+                TimeWindowRollups.rollupTrialTimeSeries(trial.timeSeries, ws)
+              )
+            }
+        perTrialRecs.foreach(writeRecord)
+        val newCompleted = state.completedTrials + 1
+        printProgress(newCompleted)
+        state.copy(
+          mcAgg       = state.mcAgg.addTrial(trial),
+          windowedAgg = state.windowedAgg.map { case (ws, wagg) => ws -> wagg.addTrial(trial.timeSeries) },
+          recordCount = state.recordCount + perTrialRecs.size,
+          completedTrials = newCompleted
+        )
+      }
+      .map { finalState =>
+        val mcResult = finalState.mcAgg.toMonteCarloResult
+        val aggRecs =
+          DemoExportRecord.fromMonteCarloResult(mcResult) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromAggregatedWindowedTimeSeries(
+                mcResult.scenarioId, mcResult.trialCount,
+                finalState.windowedAgg(ws).toAggregatedWindowedPoints
+              )
+            }
+        aggRecs.foreach(writeRecord)
+        writer.flush()
+        writer.close()
+        println()
+        s"wrote ${finalState.recordCount + aggRecs.size} records for scenario ${mcResult.scenarioId} to $outputPath"
+      }
+      .andThen { case scala.util.Failure(_) => println(); scala.util.Try(writer.close()) }(scala.concurrent.ExecutionContext.parasitic)
+
 @main def ThermostatFleetBridge(args: String*): Unit =
   ThermostatFleetBridgeCli.parseArgs(args) match
     case Left(error) =>
@@ -571,6 +684,13 @@ object ThermostatFleetMixedModeGrafanaView:
                     simulationTicks       = generate.simulationTicks,
                     initialProvisionedWcu = generate.initialProvisionedWcu,
                     adjustedProvisionedWcu = generate.adjustedProvisionedWcu
+                  )
+                else if generate.mode == "multi-table" then
+                  ThermostatFleetMultiTableDemoRunner.generateToFile(
+                    outputPath      = generate.outputPath,
+                    trialCount      = generate.trialCount,
+                    parallelism     = generate.parallelism,
+                    simulationTicks = generate.simulationTicks
                   )
                 else
                   ThermostatFleetDemoRunner.generateToFile(
@@ -624,16 +744,23 @@ object ThermostatFleetMixedModeGrafanaView:
 
         case view: ThermostatFleetBridgeCommand.View =>
           println(
-            if view.mode == "mixed-mode" then
-              ThermostatFleetMixedModeGrafanaView.url(
-                grafanaBaseUrl = view.grafanaBaseUrl,
-                batchId        = view.batchId,
-                scenarioId     = view.scenarioId
-              )
-            else
-              ThermostatFleetGrafanaView.url(
-                grafanaBaseUrl = view.grafanaBaseUrl,
-                batchId        = view.batchId,
-                scenarioId     = view.scenarioId
-              )
+            view.mode match
+              case "mixed-mode" =>
+                ThermostatFleetMixedModeGrafanaView.url(
+                  grafanaBaseUrl = view.grafanaBaseUrl,
+                  batchId        = view.batchId,
+                  scenarioId     = view.scenarioId
+                )
+              case "multi-table" =>
+                ThermostatFleetMultiTableGrafanaView.url(
+                  grafanaBaseUrl = view.grafanaBaseUrl,
+                  batchId        = view.batchId,
+                  scenarioId     = view.scenarioId
+                )
+              case _ =>
+                ThermostatFleetGrafanaView.url(
+                  grafanaBaseUrl = view.grafanaBaseUrl,
+                  batchId        = view.batchId,
+                  scenarioId     = view.scenarioId
+                )
           )
