@@ -96,6 +96,20 @@ private[thermostatfleet] object ThermostatFleetSingleTrialRunner:
         acc.updated(key, acc.getOrElse(key, Vector.empty) :+ lat.latencyMs)
       case _ => acc
 
+  // tick -> cumulative count
+  private[thermostatfleet] type SysErrAcc = Map[Long, Long]
+
+  private[thermostatfleet] def foldSysErrEvent(acc: SysErrAcc, evt: TimedElement[TableMetricEvent]): SysErrAcc =
+    evt match
+      case StorageMetricEvent.SystemError(et, _, _, _) =>
+        acc.updated(et.ticks, acc.getOrElse(et.ticks, 0L) + 1L)
+      case _ => acc
+
+  private[thermostatfleet] case class TaggedMetricAcc(
+    retItemByRegion: Map[String, RetItemAcc] = Map.empty,
+    sysErrByRegion: Map[String, SysErrAcc] = Map.empty
+  )
+
   private[thermostatfleet] def latencyPercentileTimeSeries(latSampleAcc: LatencySampleAcc): Vector[SimulationTimeSeriesPoint] =
     latSampleAcc.flatMap { case ((op, tick), samples) =>
       val sorted = samples.sorted
@@ -345,10 +359,11 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     val retItemFoldSink = Sink.fold[RetItemAcc, TimedElement[TableMetricEvent]](Map.empty)(foldMetricEvent)
     val latSampleFoldSink = Sink.fold[LatencySampleAcc, TimedElement[TableMetricEvent]](Map.empty)(foldLatencySampleEvent)
     val estItemFoldSink = Sink.fold[EstItemCountAcc, TimedElement[TableMetricEvent]](Map.empty)(foldEstItemCountEvent)
+    val sysErrFoldSink = Sink.fold[SysErrAcc, TimedElement[TableMetricEvent]](Map.empty)(foldSysErrEvent)
 
-    val bcastSize = if autoScalerOpt.isDefined then 4 else 3
-    val (accF, retItemAccF, latSampleAccF, estItemAccF) = RunnableGraph.fromGraph(
-      GraphDSL.createGraph(foldSink, retItemFoldSink, latSampleFoldSink, estItemFoldSink)((c, m, l, e) => (c, m, l, e)) { implicit b => (consSink, metSink, latSink, estSink) =>
+    val bcastSize = if autoScalerOpt.isDefined then 5 else 4
+    val (accF, retItemAccF, latSampleAccF, estItemAccF, sysErrAccF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(foldSink, retItemFoldSink, latSampleFoldSink, estItemFoldSink, sysErrFoldSink)((c, m, l, e, s) => (c, m, l, e, s)) { implicit b => (consSink, metSink, latSink, estSink, sysErrSink) =>
         import GraphDSL.Implicits.*
         val metricBcast = b.add(org.apache.pekko.stream.scaladsl.Broadcast[TimedElement[TableMetricEvent]](bcastSize))
         (autoScalerOpt, schedule) match
@@ -375,7 +390,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         metricBcast.out(0) ~> metSink
         metricBcast.out(1) ~> latSink
         metricBcast.out(2) ~> estSink
-        autoScalerOpt.foreach { autoScaler => metricBcast.out(3) ~> b.add(autoScaler.metricSink) }
+        metricBcast.out(3) ~> sysErrSink
+        autoScalerOpt.foreach { autoScaler => metricBcast.out(4) ~> b.add(autoScaler.metricSink) }
         ClosedShape
       }
     ).run()
@@ -387,6 +403,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       retItemAcc   <- retItemAccF
       latSampleAcc <- latSampleAccF
       estItemAcc   <- estItemAccF
+      sysErrAcc    <- sysErrAccF
     yield
       autoScalerOpt.foreach(_.stop())
       val timeBasedTotals = extractTimeBasedUsage(rawAcc)
@@ -409,11 +426,15 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         estItemAcc.map { case (tick, count) =>
           SimulationTimeSeriesPoint(tick, DemoMetric.EstimatedItemCount, BigDecimal(count))
         }.toVector
+      val sysErrPoints: Vector[SimulationTimeSeriesPoint] =
+        sysErrAcc.map { case (tick, count) =>
+          SimulationTimeSeriesPoint(tick, DemoMetric.SystemErrorCount, BigDecimal(count))
+        }.toVector
 
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = points ++ retItemPoints ++ estItemPoints ++ latencyPercentileTimeSeries(latSampleAcc),
+        timeSeries = points ++ retItemPoints ++ estItemPoints ++ sysErrPoints ++ latencyPercentileTimeSeries(latSampleAcc),
         summary = Vector(
           TrialSummaryValue(DemoMetric.TotalReadCapacityUnits, rawAcc.usageTotals.overall.readCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, rawAcc.usageTotals.overall.writeCapacityUnits),
@@ -507,10 +528,15 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     }
 
     type TaggedMetricEvent = (String, TimedElement[TableMetricEvent])
-    val taggedMetricFoldSink = Sink.fold[Map[String, RetItemAcc], TaggedMetricEvent](Map.empty) {
+    val taggedMetricFoldSink = Sink.fold[TaggedMetricAcc, TaggedMetricEvent](TaggedMetricAcc()) {
       (acc, tagged) =>
         val (region, evt) = tagged
-        acc.updated(region, foldMetricEvent(acc.getOrElse(region, Map.empty), evt))
+        acc.copy(
+          retItemByRegion = acc.retItemByRegion.updated(region,
+            foldMetricEvent(acc.retItemByRegion.getOrElse(region, Map.empty), evt)),
+          sysErrByRegion = acc.sysErrByRegion.updated(region,
+            foldSysErrEvent(acc.sysErrByRegion.getOrElse(region, Map.empty), evt))
+        )
     }
 
     val taggedLatencyFoldSink = Sink.fold[Map[String, LatencyAcc], TaggedMetricEvent](Map.empty) {
@@ -525,7 +551,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         acc.updated(region, foldLatencySampleEvent(acc.getOrElse(region, Map.empty), evt))
     }
 
-    val (mrAccF, transferAccF, retItemRegionAccF, latencyRegionAccF, latencySampleRegionAccF) = RunnableGraph.fromGraph(
+    val (mrAccF, transferAccF, taggedMetricAccF, latencyRegionAccF, latencySampleRegionAccF) = RunnableGraph.fromGraph(
       GraphDSL.createGraph(taggedConsSink, transferSink, taggedMetricFoldSink, taggedLatencyFoldSink, taggedLatencySampleFoldSink)(
         (mc, tf, mi, la, ls) => (mc, tf, mi, la, ls)
       ) {
@@ -588,10 +614,12 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     for
       mrAcc                 <- mrAccF
       transferAcc           <- transferAccF
-      retItemRegionAcc      <- retItemRegionAccF
+      taggedMetricAcc       <- taggedMetricAccF
       latencyRegionAcc      <- latencyRegionAccF
       latencySampleRegionAcc <- latencySampleRegionAccF
     yield
+      val retItemRegionAcc = taggedMetricAcc.retItemByRegion
+      val sysErrRegionAcc  = taggedMetricAcc.sysErrByRegion
       val regions = sortedRegions.map(_.regionName)
 
       val regionUsage = mrAcc.perRegion.map { case (r, acc) => r -> acc.usageTotals }
@@ -728,10 +756,21 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         }
       val requestLatencyPoints = latencyPercentileTimeSeries(aggregateLatencySampleAcc)
 
+      val aggregateSysErrAcc: SysErrAcc =
+        sysErrRegionAcc.values.foldLeft(Map.empty: SysErrAcc) { (agg, regionAcc) =>
+          regionAcc.foldLeft(agg) { case (a, (tick, count)) =>
+            a.updated(tick, a.getOrElse(tick, 0L) + count)
+          }
+        }
+      val sysErrPoints: Vector[SimulationTimeSeriesPoint] =
+        aggregateSysErrAcc.map { case (tick, count) =>
+          SimulationTimeSeriesPoint(tick, DemoMetric.SystemErrorCount, BigDecimal(count))
+        }.toVector
+
       TrialResult(
         scenarioId = config.scenarioId,
         trialId = run.trialId,
-        timeSeries = (aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries ++ transferCostTimeSeries ++ retItemPoints ++ latencyPoints ++ requestLatencyPoints)
+        timeSeries = (aggregateTimeSeries ++ perRegionTimeSeries ++ transferTimeSeries ++ transferCostTimeSeries ++ retItemPoints ++ sysErrPoints ++ latencyPoints ++ requestLatencyPoints)
           .filter(_.tick <= config.simulationTicks),
         summary = overallSummary ++ perRegionSummary ++ perLinkSummary
       )
@@ -865,10 +904,19 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         val halfWidth = (end - start) / 2.0
         1.0 + (multiplier - 1.0) * (1.0 - math.abs(tick.toDouble - mid) / halfWidth)
 
-    math.max(
+    val baseMultiplier = math.max(
       triangularPeak(morningStart, morningEnd, config.morningSpikePeakMultiplier),
       triangularPeak(eveningStart, eveningEnd, config.eveningSpikePeakMultiplier)
     )
+
+    val (vortexStart, vortexEnd) = config.polarVortexTickRange
+    val polarMultiplier =
+      if vortexStart > 0L && tick >= vortexStart && tick <= vortexEnd then
+        // Only the affected fraction of devices writes at the elevated rate; the rest continue at 1×.
+        1.0 + config.polarVortexAffectedFraction * (config.polarVortexWriteMultiplier - 1.0)
+      else 1.0
+
+    baseMultiplier * polarMultiplier
 
   // ── Table config builder ────────────────────────────────────────────────────
 
@@ -908,7 +956,9 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       burstCapacityModel = config.burstCapacityModel,
       adaptiveCapacityModel = config.adaptiveCapacityModel,
       dynamicPartitionTopologyModel = config.dynamicPartitionTopologyModel,
-      tableClass = config.tableClass
+      ttlSampler = config.ttlPeriodTicks.map(p => new SimpleTtlSampler(p)),
+      tableClass = config.tableClass,
+      systemErrorRate = config.systemErrorRate
     )
 
   private def buildDefaultReplicationModel(seed: Long): ReplicationModel =

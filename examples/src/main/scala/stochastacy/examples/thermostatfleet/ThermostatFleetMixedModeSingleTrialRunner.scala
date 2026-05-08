@@ -46,7 +46,8 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     throttleCount: Int = 0,
     admittedCount: Int = 0,
     consumedReadUnits: BigDecimal = BigDecimal(0),
-    consumedWriteUnits: BigDecimal = BigDecimal(0)
+    consumedWriteUnits: BigDecimal = BigDecimal(0),
+    systemErrorCount: Int = 0
   )
 
   private case class MetricAcc(
@@ -177,6 +178,10 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
         acc.copy(latencySamplesByOpAndTick = acc.latencySamplesByOpAndTick.updated(
           key, acc.latencySamplesByOpAndTick.getOrElse(key, Vector.empty) :+ lat.latencyMs
         ))
+      case err: StorageMetricEvent.SystemError =>
+        val t   = err.eventTime.ticks
+        val old = acc.byTick.getOrElse(t, MetricTickData())
+        acc.copy(byTick = acc.byTick.updated(t, old.copy(systemErrorCount = old.systemErrorCount + 1)))
       case _ => acc
 
   // ── Run trial ─────────────────────────────────────────────────────────────
@@ -262,7 +267,8 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
             SimulationTimeSeriesPoint(tick, DemoMetric.ReadCapacityUnits,     data.consumedReadUnits),
             SimulationTimeSeriesPoint(tick, DemoMetric.WriteCapacityUnits,    data.consumedWriteUnits),
             SimulationTimeSeriesPoint(tick, DemoMetric.ThrottleCount,         BigDecimal(data.throttleCount)),
-            SimulationTimeSeriesPoint(tick, DemoMetric.AdmittedRequestCount,  BigDecimal(data.admittedCount))
+            SimulationTimeSeriesPoint(tick, DemoMetric.AdmittedRequestCount,  BigDecimal(data.admittedCount)),
+            SimulationTimeSeriesPoint(tick, DemoMetric.SystemErrorCount,      BigDecimal(data.systemErrorCount))
           )
         }
 

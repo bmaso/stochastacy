@@ -70,10 +70,15 @@ class ThermostatFleetScenarioConfigSpec extends AnyWordSpec with should.Matchers
       thrown.getMessage should include("distinct")
     }
 
-    "reject non-positive telemetryReportsPerDevicePerTick" in {
+    "reject negative telemetryReportsPerDevicePerTick" in {
       val thrown = the[IllegalArgumentException] thrownBy
-        ThermostatFleetScenarioConfig.singleRegionDefault.copy(telemetryReportsPerDevicePerTick = 0.0)
+        ThermostatFleetScenarioConfig.singleRegionDefault.copy(telemetryReportsPerDevicePerTick = -0.1)
       thrown.getMessage should include("telemetryReportsPerDevicePerTick")
+    }
+
+    "accept zero telemetryReportsPerDevicePerTick (pure-read table)" in {
+      noException should be thrownBy
+        ThermostatFleetScenarioConfig.singleRegionDefault.copy(telemetryReportsPerDevicePerTick = 0.0)
     }
 
     "reject alertStormProbabilityPerTick outside [0,1]" in {

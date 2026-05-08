@@ -56,6 +56,11 @@ enum DemoMetric:
   case TableTotalStorageByteTicks(tableName: String)
   case TableFinalStorageBytes(tableName: String)
   case TableTotalEstimatedCost(tableName: String)
+  case TableThrottleCount(tableName: String)
+  case TableProvisionedReadCapacityUnits(tableName: String)
+  case TableProvisionedWriteCapacityUnits(tableName: String)
+  case TableEstimatedItemCount(tableName: String)
+  case TableSystemErrorCount(tableName: String)
 
   def exportName: String =
     this match
@@ -111,6 +116,11 @@ enum DemoMetric:
       case DemoMetric.TableTotalStorageByteTicks(t)   => s"Table:$t:TotalStorageByteTicks"
       case DemoMetric.TableFinalStorageBytes(t)       => s"Table:$t:FinalStorageBytes"
       case DemoMetric.TableTotalEstimatedCost(t)      => s"Table:$t:TotalEstimatedCost"
+      case DemoMetric.TableThrottleCount(t)                => s"Table:$t:ThrottleCount"
+      case DemoMetric.TableProvisionedReadCapacityUnits(t) => s"Table:$t:ProvisionedReadCapacityUnits"
+      case DemoMetric.TableProvisionedWriteCapacityUnits(t)=> s"Table:$t:ProvisionedWriteCapacityUnits"
+      case DemoMetric.TableEstimatedItemCount(t)           => s"Table:$t:EstimatedItemCount"
+      case DemoMetric.TableSystemErrorCount(t)             => s"Table:$t:SystemErrorCount"
 
   def sortKey: (Int, String) =
     this match
@@ -166,6 +176,11 @@ enum DemoMetric:
       case DemoMetric.TableTotalStorageByteTicks(t)   => (49, t)
       case DemoMetric.TableFinalStorageBytes(t)       => (50, t)
       case DemoMetric.TableTotalEstimatedCost(t)      => (51, t)
+      case DemoMetric.TableThrottleCount(t)                => (52, t)
+      case DemoMetric.TableProvisionedReadCapacityUnits(t) => (53, t)
+      case DemoMetric.TableProvisionedWriteCapacityUnits(t)=> (54, t)
+      case DemoMetric.TableEstimatedItemCount(t)           => (55, t)
+      case DemoMetric.TableSystemErrorCount(t)             => (56, t)
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

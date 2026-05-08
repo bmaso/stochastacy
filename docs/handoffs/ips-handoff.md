@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-05-05 (phase 6 slices 1–3 complete: read consistency verified, TTL implemented, reactive auto-scaling added)
+Last updated: 2026-05-06 (phase 6 slices 1–6 complete: read consistency verified, TTL, reactive auto-scaling, multi-table framework, capstone demo, ReplicationLatency metric)
 
 ## Current Position
 
@@ -230,9 +230,9 @@ S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises
 1. **Read consistency RCU accounting** — DONE (verified): `TableThroughputMath` already applies 0.5× for eventually-consistent reads.
 2. **TTL** — DONE: `TtlSampler`/`SimpleTtlSampler` ring-buffer; `TtlExpiry` StorageOutcome at tick boundaries; `TtlItemsExpired`+`EstimatedItemCount` metrics; `StorageBytesDelta` cascade for GSI/LSI; `DynamoDbTable.Config.ttlSampler`; 12 new tests.
 3. **Reactive auto-scaling** — DONE: `DynamoDbAutoScaler` actor-based external coordinator; `Policy` config (separate scale-up/down reaction delays and cooldowns, rolling window, min/max bounds); `ThermostatFleetScenarioConfig.autoScalerPolicy` field; 3-way runner path (auto-scaler / schedule / plain); 7 new tests.
-4. **Multi-table simulation framework** — composable runner for N parallel table instances with shared tick clock and per-table namespaced metrics.
-5. **DynamoDB capstone demo** — four-table ThermoFleet-inspired simulation (Device Registry, Telemetry, Commands, Alerts); workload scenarios: steady state, morning rush, polar vortex, combined peak; Grafana dashboard answering the key provisioned-vs-on-demand breakeven question.
-6. **ReplicationLatency metric** — surface tick-delta from `ReplicationCoordinator` as `ReplicationMetricEvent.ReplicationLatency`; per-destination-region panel in multi-region dashboard.
+4. **Multi-table simulation framework** — DONE: composable runner for N parallel table instances with shared tick clock and per-table namespaced metrics (`Table:<name>:*`); `MultiTableScenarioConfig`, `MultiTableEntry`, `ThermostatFleetMultiTableSingleTrialRunner`.
+5. **DynamoDB capstone demo** — DONE: four-table ThermoFleet-inspired simulation (Device Registry, Telemetry, Commands, Alerts); polar vortex burst (40% fleet, 5× writes); provisioned+auto-scaling on telemetry table; Grafana dashboard with per-table cost, throttle count, provisioned vs. consumed, and EstimatedItemCount panels.
+6. **ReplicationLatency metric** — DONE: `ReplicationMetricEvent.ReplicationLatency` emitted by `ReplicationCoordinator` (both zero-lag and queued paths); routed to per-destination-region metric outlets in `DynamoDbGlobalTable`; collected by multi-region runner as `DemoMetric.ReplicationLatency(region)` with MAX-per-window rollup; Grafana panel in thermostat-fleet dashboard.
 7. **SystemErrors** — Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; no-consumption no-state-mutation guarantee; `DemoMetric.SystemErrorCount`.
 8. **SuccessfulRequestLatency** — log-normal latency samples per admitted non-errored request; `DynamoDbTable.LatencyModel` config; P50/P95/P99 rollup; latency panels in both dashboards.
 

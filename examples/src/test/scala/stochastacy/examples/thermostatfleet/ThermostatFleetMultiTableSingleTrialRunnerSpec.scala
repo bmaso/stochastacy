@@ -5,7 +5,7 @@ import org.apache.pekko.stream.Materializer
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.demo.{DemoMetric, TrialRunConfig}
+import stochastacy.demo.{DemoMetric, TrialResult, TrialRunConfig}
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext}
@@ -32,25 +32,24 @@ class ThermostatFleetMultiTableSingleTrialRunnerSpec
     }
   )
 
+  // Run once; tests 1–3 share this result.
+  private val sharedRunner = ThermostatFleetMultiTableSingleTrialRunner()
+  private lazy val sharedResult: TrialResult = Await.result(
+    sharedRunner.runTrial(smallTwoTable, run),
+    60.seconds
+  )
+
   "ThermostatFleetMultiTableSingleTrialRunner" should {
 
     "complete a two-table trial and return a non-empty TrialResult" in {
-      val runner = ThermostatFleetMultiTableSingleTrialRunner()
-      val result = Await.result(
-        runner.runTrial(smallTwoTable, run),
-        60.seconds
-      )
+      val result = sharedResult
       result.scenarioId shouldBe "thermostat-fleet-multi-table"
       result.timeSeries should not be empty
       result.summary    should not be empty
     }
 
     "namespace time-series metrics under Table:<name>:* with no unnamed metrics" in {
-      val runner = ThermostatFleetMultiTableSingleTrialRunner()
-      val result = Await.result(
-        runner.runTrial(smallTwoTable, run),
-        60.seconds
-      )
+      val result = sharedResult
       val names = result.timeSeries.map(_.metric)
       names.foreach {
         case _: DemoMetric.TableReadCapacityUnits       =>
@@ -68,12 +67,7 @@ class ThermostatFleetMultiTableSingleTrialRunnerSpec
     }
 
     "produce non-zero RCU and WCU totals for both tables" in {
-      val runner = ThermostatFleetMultiTableSingleTrialRunner()
-      val result = Await.result(
-        runner.runTrial(smallTwoTable, run),
-        60.seconds
-      )
-      val summary = result.summary.map(sv => sv.metric -> sv.value).toMap
+      val summary = sharedResult.summary.map(sv => sv.metric -> sv.value).toMap
 
       summary(DemoMetric.TableTotalReadCapacityUnits("device-registry"))   should be > BigDecimal(0)
       summary(DemoMetric.TableTotalReadCapacityUnits("device-telemetry"))  should be > BigDecimal(0)

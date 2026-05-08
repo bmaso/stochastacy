@@ -245,6 +245,18 @@ class ThermostatFleetSingleTrialRunnerSpec extends AnyWordSpec with should.Match
       metrics should contain(DemoMetric.GsiWriteCapacityUnits(ThermostatFleetScenarioConfig.FleetAlertsGsiName))
       metrics should contain(DemoMetric.GsiWriteCapacityUnits(ThermostatFleetScenarioConfig.DeviceStatusGsiName))
     }
+
+    "emit ReplicationLatency time-series points for each destination region" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val result = Await.result(
+        runner.runTrial(smallMultiRegionConfig, TrialRunConfig(trialId = 0, seed = 42L)),
+        30.seconds
+      )
+      val metrics = result.timeSeries.map(_.metric).toSet
+      // Both regions receive replication from the other; both should appear as destinations
+      metrics should contain(DemoMetric.ReplicationLatency("eu-west-1"))
+      metrics should contain(DemoMetric.ReplicationLatency("us-east-1"))
+    }
   }
 
   "ThermostatFleetSingleTrialRunner request generation" should {
@@ -329,5 +341,21 @@ class ThermostatFleetSingleTrialRunnerSpec extends AnyWordSpec with should.Match
       val scheduledMap = scheduled.summary.map(s => s.metric -> s.value).toMap
 
       scheduledMap(DemoMetric.FinalStorageBytes) should be < baselineMap(DemoMetric.FinalStorageBytes)
+    }
+
+    "emit SystemErrorCount metric when systemErrorRate > 0" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val highErrorConfig = smallConfig.copy(systemErrorRate = 0.5)
+      val result = Await.result(
+        runner.runTrial(highErrorConfig, TrialRunConfig(trialId = 0, seed = 42L)),
+        30.seconds
+      )
+      val metrics = result.timeSeries.map(_.metric).toSet
+      metrics should contain(DemoMetric.SystemErrorCount)
+      val totalErrors = result.timeSeries
+        .filter(_.metric == DemoMetric.SystemErrorCount)
+        .map(_.value)
+        .sum
+      totalErrors should be > BigDecimal(0)
     }
   }

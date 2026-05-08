@@ -37,6 +37,7 @@ services:
       - ./examples/grafana/thermostat-fleet-dashboard.json:/var/lib/grafana/dashboards/thermostat-fleet-dashboard.json:ro
       - ./examples/grafana/thermostat-fleet-mixed-mode-dashboard.json:/var/lib/grafana/dashboards/thermostat-fleet-mixed-mode-dashboard.json:ro
       - ./examples/grafana/thermostat-fleet-multi-table-dashboard.json:/var/lib/grafana/dashboards/thermostat-fleet-multi-table-dashboard.json:ro
+      - ./examples/grafana/thermostat-fleet-capstone-dashboard.json:/var/lib/grafana/dashboards/thermostat-fleet-capstone-dashboard.json:ro
 
 volumes:
   postgres_data:

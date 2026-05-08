@@ -44,12 +44,17 @@ final case class ThermostatFleetScenarioConfig(
   burstCapacityModel: Option[DynamoDbTable.BurstCapacityModel] = None,
   adaptiveCapacityModel: Option[DynamoDbTable.AdaptiveCapacityModel] = None,
   dynamicPartitionTopologyModel: Option[DynamoDbTable.DynamicPartitionTopologyModel] = None,
+  ttlPeriodTicks: Option[Int] = None,
+  polarVortexWriteMultiplier: Double = 1.0,
+  polarVortexAffectedFraction: Double = 1.0,
+  polarVortexTickRange: (Long, Long) = (0L, 0L),
   reconfigurationSchedule: Option[ReconfigurationSchedule] = None,
   autoScalerPolicy: Option[DynamoDbAutoScaler.Policy] = None,
   replicationModel: Option[ReplicationModel] = None,
   transferPricingRates: CrossRegionTransferPricingRates = CrossRegionTransferPricingRates(),
   pricingSchedule: PricingSchedule = PricingSchedule.default,
-  tableClass: DynamoDbTable.TableClass = DynamoDbTable.TableClass.Standard
+  tableClass: DynamoDbTable.TableClass = DynamoDbTable.TableClass.Standard,
+  systemErrorRate: Double = 0.0
 ):
   require(scenarioId.nonEmpty, "scenarioId must be non-empty")
   require(simulationTicks >= 1L, "simulationTicks must be at least 1")
@@ -58,7 +63,7 @@ final case class ThermostatFleetScenarioConfig(
   require(tableName.nonEmpty, "tableName must be non-empty")
   require(regions.nonEmpty, "regions must be non-empty")
   require(regions.map(_.regionName).distinct.size == regions.size, "region names must be distinct")
-  require(telemetryReportsPerDevicePerTick > 0.0, "telemetryReportsPerDevicePerTick must be positive")
+  require(telemetryReportsPerDevicePerTick >= 0.0, "telemetryReportsPerDevicePerTick must be non-negative")
   require(telemetryItemMeanBytes >= 1L, "telemetryItemMeanBytes must be at least 1")
   require(telemetryItemBytesVariance >= 0.0, "telemetryItemBytesVariance must be non-negative")
   require(morningSpikePeakMultiplier >= 1.0, "morningSpikePeakMultiplier must be at least 1.0")
@@ -83,6 +88,18 @@ final case class ThermostatFleetScenarioConfig(
   itemCollectionSizeLimitBytes.foreach { limit =>
     require(limit >= 1L, "itemCollectionSizeLimitBytes must be positive when defined")
   }
+  ttlPeriodTicks.foreach { p =>
+    require(p >= 1, "ttlPeriodTicks must be at least 1 when defined")
+  }
+  require(polarVortexWriteMultiplier >= 1.0, "polarVortexWriteMultiplier must be at least 1.0")
+  require(
+    polarVortexAffectedFraction > 0.0 && polarVortexAffectedFraction <= 1.0,
+    "polarVortexAffectedFraction must be in (0, 1]"
+  )
+  require(
+    polarVortexTickRange._1 >= 0L && polarVortexTickRange._2 >= polarVortexTickRange._1,
+    "polarVortexTickRange must be a valid range (start >= 0, end >= start)"
+  )
   reconfigurationSchedule.foreach { schedule =>
     schedule.validateAgainst(billingMode, simulationTicks) match
       case Left(message) => throw new IllegalArgumentException(message)

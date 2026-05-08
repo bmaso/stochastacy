@@ -135,11 +135,25 @@ sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge
 sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-mt-001 --mode multi-table'
 ```
 
+### 6. Thermostat Fleet — Capstone Demo
+
+Four-table DynamoDB workload: `device-registry` (on-demand, eventual), `device-telemetry` (provisioned + auto-scaling + TTL, polar-vortex 5× write burst at ticks 600–700), `device-commands` (on-demand, strong consistency), and `device-alerts` (on-demand, 3× polar-vortex spike). Exercises all Phase 6 features — TTL storage attenuation, reactive auto-scaling lag, per-table throttle counts, and the provisioned-vs-on-demand breakeven question in a single simulation run.
+
+```bash
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-cap-001 --output /tmp/thermostat-cap-001.jsonl --mode capstone --trial-count 100 --parallelism 8 --simulation-ticks 1440'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-cap-001.jsonl --batch-id thermostat-cap-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1440'
+
+sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-cap-001 --mode capstone'
+```
+
 ---
 
 ## DynamoDB Table simulator development curriculum
 
-1. Phase 1 - Table data plane with usecases consisting of `GetItem` and `PutItem` operations 
+1. Phase 1 - Table data plane with usecases consisting of `GetItem` and `PutItem` operations
 2. Phase 2 - Table data plane with usecases consisting of _all_ possible table query and write operations
-3. Phase 3 - Table data plane as Phase 2, with RCU, WCU, and other resources consumable by the data plane
-4. Phase 4 - Table data plane as Phase 3, with _all_ consumable resources and metrics
+3. Phase 3 - Table data plane as Phase 2, with RCU, WCU, and other resources consumable by the data plane; throttling, hot partitions, burst capacity, adaptive capacity, dynamic topology, GSI back-pressure, projection-aware reads, Global Tables / cross-region replication
+4. Phase 4 - Provisioned billing mode, rWCU admission, billing mode switch events, reconfiguration schedule DSL, utilization metrics, mixed-mode "right-sizing trap" demo
+5. Phase 5 - rWCU billing, tiered transfer pricing, GSI/LSI in replicated tables, ReturnedItemCount metric, table class (Standard/Standard-IA), per-GSI provisioned pricing, reserved capacity, regional pricing via PricingSchedule, multi-region demo update
+6. Phase 6 - Read consistency RCU accounting, sampler-driven TTL expiry (write cohorts expire after a configurable retention period, cascading to GSI/LSI storage), reactive auto-scaling (DynamoDbAutoScaler), multi-table simulation framework, DynamoDB capstone demo (four-table ThermoFleet workload with TTL, auto-scaling, and polar vortex burst)
