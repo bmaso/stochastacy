@@ -67,3 +67,13 @@ class ThermostatFleetCapstoneSingleTrialRunnerSpec extends AsyncFunSuite:
       assert(estItemPts.nonEmpty, "expected TableEstimatedItemCount for device-telemetry (TTL-enabled)")
     }
   }
+
+  test("emits latency percentile time-series points for PutItem operations") {
+    sharedResultF.map { result =>
+      val metrics = result.timeSeries.map(_.metric).toSet
+      assert(metrics.contains(DemoMetric.LatencyP50("PutItem")), "expected LatencyP50(PutItem)")
+      assert(metrics.contains(DemoMetric.LatencyP99("PutItem")), "expected LatencyP99(PutItem)")
+      val p50Values = result.timeSeries.filter(_.metric == DemoMetric.LatencyP50("PutItem")).map(_.value)
+      assert(p50Values.forall(_ > BigDecimal(0)), "expected positive P50 latency values")
+    }
+  }

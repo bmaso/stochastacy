@@ -52,6 +52,15 @@ class ThermostatFleetMixedModeGrafanaAssetsSpec extends AnyWordSpec with should.
       json should include("ProvisionedReadCapacityUnits")
     }
 
+    "include latency percentile panels for PutItem, Query, and Scan" in {
+      val json = Files.readString(Path.of("examples/grafana/thermostat-fleet-mixed-mode-dashboard.json"))
+      json should include("PutItem Latency Percentiles")
+      json should include("Query Latency Percentiles")
+      json should include("Scan Latency Percentiles")
+      json should include("LatencyP50:Query")
+      json should include("LatencyP50:Scan")
+    }
+
     "declare required template variables" in {
       val json = Files.readString(Path.of("examples/grafana/thermostat-fleet-mixed-mode-dashboard.json"))
       json should include("\"batch_id\"")

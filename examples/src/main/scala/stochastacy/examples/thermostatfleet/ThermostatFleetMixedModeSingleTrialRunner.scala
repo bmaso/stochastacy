@@ -352,5 +352,6 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
       hotPartitionModel               = config.hotPartitionModel,
       burstCapacityModel              = config.burstCapacityModel,
       adaptiveCapacityModel           = config.adaptiveCapacityModel,
-      dynamicPartitionTopologyModel   = config.dynamicPartitionTopologyModel
+      dynamicPartitionTopologyModel   = config.dynamicPartitionTopologyModel,
+      systemErrorRate                 = config.systemErrorRate
     )

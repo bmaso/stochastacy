@@ -15,7 +15,8 @@ final case class ThermostatFleetMixedModeConfig(
   initialProvisionedWcu: Long = 125L,
   adjustedProvisionedRcu: Long = 100L,
   adjustedProvisionedWcu: Long = 333L,
-  pricingSchedule: PricingSchedule = PricingSchedule.default
+  pricingSchedule: PricingSchedule = PricingSchedule.default,
+  systemErrorRate: Double = 0.001
 ):
   require(scenarioId.nonEmpty, "scenarioId must be non-empty")
   require(simulationTicks >= 1L, "simulationTicks must be at least 1")
@@ -52,5 +53,6 @@ final case class ThermostatFleetMixedModeConfig(
       parallelism = parallelism,
       billingMode = DynamoDbTable.BillingMode.OnDemand(),
       reconfigurationSchedule = Some(schedule),
-      pricingSchedule = pricingSchedule
+      pricingSchedule = pricingSchedule,
+      systemErrorRate = systemErrorRate
     )

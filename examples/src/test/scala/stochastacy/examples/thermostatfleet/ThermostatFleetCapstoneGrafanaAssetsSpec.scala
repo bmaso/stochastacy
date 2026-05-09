@@ -56,6 +56,16 @@ class ThermostatFleetCapstoneGrafanaAssetsSpec extends AnyWordSpec with should.M
       json should include("Table:device-registry:SystemErrorCount")
     }
 
+    "include latency percentile panels" in {
+      val json = Files.readString(Path.of("examples/grafana/thermostat-fleet-capstone-dashboard.json"))
+      json should include("PutItem Latency Percentiles")
+      json should include("Query Latency Percentiles")
+      json should include("Scan Latency Percentiles")
+      json should include("LatencyP50:PutItem")
+      json should include("LatencyP50:Query")
+      json should include("LatencyP50:Scan")
+    }
+
     "include the TTL estimated item count panel" in {
       val json = Files.readString(Path.of("examples/grafana/thermostat-fleet-capstone-dashboard.json"))
       json should include("Estimated Live Item Count")

@@ -52,7 +52,8 @@ object ThermostatFleetCapstoneConfig:
           fleetDashboardScanRatePerTick    = 0.2,
           alertStormProbabilityPerTick     = 0.0,
           billingMode                      = DynamoDbTable.BillingMode.OnDemand(),
-          readConsistency                  = ReadConsistency.EventuallyConsistent
+          readConsistency                  = ReadConsistency.EventuallyConsistent,
+          systemErrorRate                  = 0.001
         )
       ),
       // Device Telemetry: provisioned + auto-scaling + TTL + polar vortex
@@ -76,7 +77,8 @@ object ThermostatFleetCapstoneConfig:
           polarVortexWriteMultiplier       = 5.0,
           polarVortexAffectedFraction      = 0.40,
           polarVortexTickRange             = (600L, 700L),
-          autoScalerPolicy                 = Some(autoScalerPolicy)
+          autoScalerPolicy                 = Some(autoScalerPolicy),
+          systemErrorRate                  = 0.001
         )
       ),
       // Device Commands: on-demand, low volume; uses eventual reads since ThermostatFleetBehavior
@@ -95,7 +97,8 @@ object ThermostatFleetCapstoneConfig:
           fleetDashboardScanRatePerTick    = 0.0,
           alertStormProbabilityPerTick     = 0.0,
           billingMode                      = DynamoDbTable.BillingMode.OnDemand(),
-          readConsistency                  = ReadConsistency.EventuallyConsistent
+          readConsistency                  = ReadConsistency.EventuallyConsistent,
+          systemErrorRate                  = 0.001
         )
       ),
       // Device Alerts: on-demand, eventual, higher alert storm rate + polar vortex spike
@@ -117,7 +120,8 @@ object ThermostatFleetCapstoneConfig:
           readConsistency                  = ReadConsistency.EventuallyConsistent,
           polarVortexWriteMultiplier       = 3.0,
           polarVortexAffectedFraction      = 0.40,
-          polarVortexTickRange             = (600L, 700L)
+          polarVortexTickRange             = (600L, 700L),
+          systemErrorRate                  = 0.001
         )
       )
     )

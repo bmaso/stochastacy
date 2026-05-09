@@ -139,7 +139,8 @@ object ThermostatFleetScenarioConfig:
       fleetDashboardScanRatePerTick = 0.1,
       transferPricingRates = CrossRegionTransferPricingRates.flat(
         Map("us-east-1" -> BigDecimal("0.02"))
-      )
+      ),
+      systemErrorRate = 0.001
     )
 
   val multiRegionDefault: ThermostatFleetScenarioConfig =
@@ -178,5 +179,6 @@ object ThermostatFleetScenarioConfig:
           ))
         ),
         fallback = DynamoDbPricingRates.phase1Default
-      )
+      ),
+      systemErrorRate = 0.001
     )

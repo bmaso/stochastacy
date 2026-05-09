@@ -875,7 +875,9 @@ object DynamoDbTable:
       )
       val storageRng: Option[org.apache.commons.rng.UniformRandomProvider] =
         if systemErrorRate > 0.0 then
-          Some(org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create())
+          Some(org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(
+            executionTarget.hashCode.toLong ^ 0xDEADBEEFCAFEBABEL
+          ))
         else None
       val latencyRng = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(
         executionTarget.hashCode.toLong ^ 0xBADC0FFEE0DDF00DL
@@ -1669,7 +1671,9 @@ object DynamoDbTable:
 
       val replicatedStorageRng: Option[org.apache.commons.rng.UniformRandomProvider] =
         if config.systemErrorRate > 0.0 then
-          Some(org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create())
+          Some(org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(
+            config.tableName.hashCode.toLong ^ 0xDEADBEEFCAFEBABEL
+          ))
         else None
       val replicatedLatencyRng = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(
         config.tableName.hashCode.toLong ^ 0xBADC0FFEE0DDF00DL

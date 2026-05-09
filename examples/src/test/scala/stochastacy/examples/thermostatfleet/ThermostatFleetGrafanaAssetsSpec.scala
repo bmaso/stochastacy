@@ -63,6 +63,15 @@ class ThermostatFleetGrafanaAssetsSpec extends AnyWordSpec with should.Matchers:
       json should include("Region:us-east-1:ReplicationLatencyMs")
     }
 
+    "include latency percentile panels for PutItem, Query, and Scan" in {
+      val json = Files.readString(Path.of("examples/grafana/thermostat-fleet-dashboard.json"))
+      json should include("PutItem Latency Percentiles")
+      json should include("Query Latency Percentiles")
+      json should include("Scan Latency Percentiles")
+      json should include("LatencyP50:Query")
+      json should include("LatencyP50:Scan")
+    }
+
     "declare required template variables" in {
       val json = Files.readString(Path.of("examples/grafana/thermostat-fleet-dashboard.json"))
       json should include("\"batch_id\"")

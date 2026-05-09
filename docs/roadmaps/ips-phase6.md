@@ -2,25 +2,30 @@
 
 ## Goal
 
-Phase 6 completes the DynamoDB simulation component with the features required to support the
-final ThermoFleet multi-service demo, and closes the remaining simulation accuracy gaps deferred
-from Phase 5. The ThermoFleet demo requires API Gateway, Lambda, SQS, DynamoDB, and S3 — none
-of those other services are simulated yet. Phase 6 therefore does not deliver the full
-multi-service demo. Instead, it delivers:
+Phase 6 delivers every DynamoDB feature needed to implement the full Tier 1 Thermostat Fleet
+demo described in `docs/stochastacy-mvp-and-launch-plan.md`. The Tier 1 demo is the DynamoDB
+layer of the complete ThermoFleet multi-service architecture (Lambda, API Gateway, SQS, S3,
+DynamoDB). Those other services are not yet simulated; Phase 6 delivers only the DynamoDB side,
+but does so completely.
 
-1. The remaining DynamoDB simulation features (read consistency, TTL, reactive auto-scaling,
-   multi-table composition).
-2. Three accuracy features deferred from Phase 5 (ReplicationLatency metric, SystemErrors,
-   SuccessfulRequestLatency) — included here because simulation accuracy is a prerequisite for
-   any persuasive demo.
-3. A **DynamoDB capstone demo** that exercises every Phase 6 feature using workloads modeled
+Concretely, Phase 6 delivers:
+
+1. The remaining DynamoDB simulation features needed for realism: read consistency, TTL,
+   reactive auto-scaling, multi-table composition.
+2. Three accuracy features deferred from Phase 5: ReplicationLatency metric, SystemErrors,
+   SuccessfulRequestLatency.
+3. Two billing dimensions that materially affect real-world DynamoDB costs and are visible in
+   the Tier 1 demo: **DynamoDB Transactions** (2× RCU/WCU) and **PITR pricing** (~$0.20/GB-month).
+4. A **DynamoDB capstone demo** that exercises every Phase 6 feature using workloads modeled
    after the ThermoFleet scenarios — four tables, realistic traffic shapes, polar-vortex burst,
-   and the key "on-demand vs. provisioned+auto-scaling breakeven" question — without requiring
-   any other AWS service to be simulated.
+   and the key "on-demand vs. provisioned+auto-scaling breakeven" question.
 
-When the other service simulators are built (in later phases), the ThermoFleet workload
-definitions and multi-table scaffold from this phase become the DynamoDB layer of the full
-multi-service simulation.
+**Out of scope:** DynamoDB Streams. Streams pricing will be added when the Lambda simulator
+is built (Phase 1 of the product roadmap), since the primary use case is Lambda triggers.
+
+When the other service simulators are built, the ThermoFleet workload definitions and
+multi-table scaffold from this phase become the DynamoDB layer of the full multi-service
+simulation.
 
 ---
 
@@ -33,11 +38,13 @@ multi-service simulation.
 | 1. Read Consistency RCU Accounting | Done | Already implemented: `TableThroughputMath.readCapacityUnitsFor` applies 0.5× for eventual consistency; tests verify 2× difference |
 | 2. TTL | Done | `TtlSampler` / `SimpleTtlSampler` ring-buffer; `TtlExpiry` StorageOutcome; `TtlItemsExpired` + `EstimatedItemCount` metrics; `StorageBytesDelta` cascade; `DynamoDbTable.Config.ttlSampler`; 12 new tests |
 | 3. Reactive Auto-Scaling | Done | `DynamoDbAutoScaler` actor-based coordinator; `Policy` with rolling window, reaction delays, cooldowns; `autoScalerPolicy` on `ThermostatFleetScenarioConfig`; 7 tests |
-| 4. Multi-Table Simulation Framework | Planned | Composable runner for N parallel table instances with shared tick clock and unified TrialResult |
-| 5. DynamoDB Capstone Demo | Planned | Four-table ThermoFleet-inspired workload; all Phase 6 features exercised; Grafana dashboard |
-| 6. ReplicationLatency Metric | Planned | Surface tick-delta from `ReplicationCoordinator` as `ReplicationMetricEvent.ReplicationLatency`; per-destination-region panel |
-| 7. SystemErrors | Planned | Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; no-consumption no-state-mutation guarantee |
-| 8. SuccessfulRequestLatency | Planned | Log-normal latency samples per admitted non-errored request; P50/P95/P99 rollup; latency panels in dashboards |
+| 4. Multi-Table Simulation Framework | Done | `MultiTableScenarioConfig` / `MultiTableEntry`; `ThermostatFleetMultiTableSingleTrialRunner`; namespaced `Table:<name>:*` metrics; unified `TrialResult` |
+| 5. DynamoDB Capstone Demo | Done | Four-table ThermoFleet workload; all Phase 6 features exercised; Grafana capstone dashboard |
+| 6. ReplicationLatency Metric | Done | `ReplicationMetricEvent.ReplicationLatency` emitted by `ReplicationCoordinator`; `DemoMetric.ReplicationLatency`; per-destination-region panel in multi-region dashboard |
+| 7. SystemErrors | Done | `systemErrorRate: Double` on `DynamoDbTable.Config`; Bernoulli draw in `TableStorageStage`; `StorageMetricEvent.SystemError`; `DemoMetric.SystemErrorCount`; panels in all three thermostat-fleet dashboards |
+| 8. SuccessfulRequestLatency | Done | Log-normal latency samples in `TableStorageStage`; `StorageMetricEvent.SuccessfulRequestLatency`; P50/P95/P99 rollup; latency panels in all three thermostat-fleet dashboards |
+| 9. DynamoDB Transactions | Planned | `TransactWriteItems` (2× WCU/item) and `TransactGetItems` (2× RCU/item); new request/sample types; pricing multiplier in `TableThroughputMath` |
+| 10. PITR Pricing | Planned | `pointInTimeRecoveryEnabled: Boolean` on `DynamoDbTable.Config`; continuous storage charge at ~$0.20/GB-month; `DemoMetric.TablePITRCumulativeCost`; panel in capstone dashboard |
 
 ---
 
@@ -401,3 +408,138 @@ Add `DemoMetric.LatencyP50(operation)`, `DemoMetric.LatencyP95(operation)`,
 `DemoMetric.LatencyP99(operation)` with percentile rollup aggregation (computed across the
 window's raw samples per trial, then averaged across trials). Update both thermostat fleet
 Grafana dashboards with a latency distribution panel per operation type.
+
+---
+
+### 9. DynamoDB Transactions
+
+**Goal:** Model `TransactWriteItems` and `TransactGetItems` — DynamoDB's atomic multi-item
+APIs — so their 2× cost premium is accurately reflected in simulated workloads.
+
+AWS charges:
+- `TransactWriteItems`: 2 WCU per 1 KB written, per item (vs. 1 WCU for `PutItem`/`UpdateItem`).
+  GSI/LSI maintenance writes triggered by those items are billed at the normal 1× rate.
+- `TransactGetItems`: 2 RCU per 4 KB read, per item. The consistency is always strongly
+  consistent — the API does not support eventual consistency.
+
+Up to 25 items and 4 MB total per transaction call. The whole transaction either succeeds or
+fails atomically.
+
+The demo motivation is the Commands table in the capstone: real device-fleet apps use
+`TransactWriteItems` to atomically update a command's status and write an audit record. Without
+this slice, the Commands table's cost is modeled at half its real value.
+
+---
+
+**Current behaviors inconsistent with the goal:**
+
+1. **No transaction request or response types exist.** `DynamoDBRequest` in `op_events.scala`
+   has `GetItemRequest`, `PutItemRequest`, `UpdateItemRequest`, `DeleteItemRequest`,
+   `QueryRequest`, `ScanRequest`, and `PartiQLQueryRequest`. There is no
+   `TransactWriteItemsRequest` or `TransactGetItemsRequest`, and no corresponding response
+   types. A use-case sampler has no way to express a transactional operation at all.
+
+2. **`DynamoDbOperationKind` has no transaction cases, and `fromRequest` would crash.** The
+   `fromRequest` function pattern-matches on all known `DynamoDBRequest` subtypes. If a
+   transaction request were submitted, it would throw a `MatchError`. The latency model, metric
+   events, and consumption dispatch all key off `DynamoDbOperationKind`; every one of them
+   would break.
+
+3. **No transaction sample types.** `sample.scala` has no `TransactWriteItemsSample` or
+   `TransactGetItemsSample` traits. There is no contract by which a `UseCaseSampler` can return
+   a list of per-item sub-samples for a transactional call. The pipeline has no representation
+   for "a batch of N write samples sharing one all-or-nothing admission decision."
+
+4. **No shaped or admitted transaction types.** `shaped_request.scala` has no
+   `ShapedTransactWriteItemsRequest` or `ShapedTransactGetItemsRequest`. The sampling stage
+   would have no way to produce a shaped envelope that carries both the per-item sub-samples and
+   the correct total 2× throughput demand. Correspondingly, `admitted_requests.scala` has no
+   admitted variants for transactions.
+
+5. **`TableThroughputMath` has no 2× path.** `writeCapacityUnitsFor` computes plain 1× WCU.
+   `readCapacityUnitsFor` computes 0.5× or 1× depending on consistency. If transactional items
+   were manually routed through existing request types as a workaround, every item's cost would
+   be silently undercounted by half.
+
+6. **`TableStorageStage` would silently drop unknown sample types.** The `decisionFlow`,
+   `consumptionForSample`, `metricsForSample`, and `responseForSample` functions all dispatch on
+   known `AdmittedRequestSample` subtypes. An unknown type falls to `case _ => ()` in the
+   mutation path and `case _ => Nil` in the consumption and metric paths. A transaction would be
+   admitted and then silently swallowed — no cost, no metrics, no state change.
+
+7. **`TransactGetItems` strong-consistency-only semantics are unenforceable.** `GetItemRequest`
+   carries a `readConsistency` field that can be `EventuallyConsistent` or `StronglyConsistent`.
+   The current type system has no way to enforce that transactional reads are always strongly
+   consistent, so a transactional read routed through `GetItemRequest` could silently use the
+   cheaper consistency mode, understating cost.
+
+8. **`ThermostatFleetBehavior` never generates transaction requests.** The Commands table use
+   case emits individual `PutItemRequest` calls. The Commands table cost is currently modeled at
+   1× WCU — half the realistic cost for an app using `TransactWriteItems` for atomic device
+   command acknowledgment.
+
+---
+
+**How stochastacy will behave once the slice is implemented:**
+
+Transaction requests enter the pipeline like any other request. The sampler produces a
+`TransactWriteItemsRequest` or `TransactGetItemsRequest`; it flows through sampling, admission,
+and storage stages as a single pipeline element representing the entire transaction.
+
+**Sampling stage** invokes the use-case sampler once per sub-item to produce N
+`WriteItemSample` / `GetItemSample` results. The shaped request carries all N samples and a
+`throughputDemand` equal to the sum of `transactionalWriteCapacityUnitsFor(itemBytes)` across
+all items (i.e., 2× per item). Index maintenance plans are derived per item at 1× — GSI/LSI
+maintenance is not doubled. For `TransactGetItems`, demand is 2× strongly-consistent RCU per
+item; the read consistency is hardcoded to strong regardless of the table's default.
+
+**Admission is all-or-nothing.** The shaped transaction's total `throughputDemand` is checked
+against the remaining tick budget exactly as any other shaped request. If the budget is
+insufficient, the entire transaction throttles as a unit — no partial admission. This requires
+no change to the admission decision logic itself; only the demand computation changes.
+
+**`TableThroughputMath`** gains `transactionalWriteCapacityUnitsFor` (returns
+`2 × writeCapacityUnitsFor`) and `transactionalReadCapacityUnitsFor` (returns
+`2 × readCapacityUnitsFor(_, StronglyConsistent)`).
+
+**Storage stage** processes each sub-item sequentially. Before any mutation, a single system
+error draw covers the whole transaction: if it fires, the transaction emits one
+`SystemErrorResponse` — no mutation, no consumption, no maintenance for any sub-item. If it
+passes, each sub-item is applied in sequence (`recordSuccessfulPut` / `recordSuccessfulUpdate`
+/ `recordSuccessfulDelete`), the TTL sampler is notified per item, and index maintenance plans
+are forwarded per item. Consumption events are emitted at 2× WCU/RCU per item.
+
+**`ThermostatFleetBehavior`** is updated so the Commands table use case generates
+`TransactWriteItemsRequest` calls — a two-item transaction atomically updating command status
+and writing an audit record. The Commands table's simulated cost doubles relative to its current
+value for ticks where transactional writes fire.
+
+**Key simulation question:** "How much do transactions inflate the Commands table bill compared
+to non-transactional puts, and how does that overhead scale with fleet size?"
+
+---
+
+### 10. PITR Pricing
+
+**Goal:** Model the continuous storage charge for Point-In-Time Recovery (PITR), making
+PITR-enabled tables show their true cost in the simulation output.
+
+AWS charges ~$0.20/GB-month for PITR-enabled tables, billed continuously on the current table
+size (same footprint as storage: base table + all GSI/LSI projections). This is roughly 80% of
+the base storage rate and is frequently overlooked in cost estimates.
+
+**Scope:**
+
+- New field: `pointInTimeRecoveryEnabled: Boolean = false` on `DynamoDbTable.Config` (and
+  forwarded from `ThermostatFleetScenarioConfig`). Defaults to `false`; all existing tests and
+  demos are unaffected unless they opt in.
+- New rate field: `pitrStoragePricePerGiBSecond: BigDecimal` in `DynamoDbPricingRates.RateSet`,
+  defaulting to the AWS standard rate ($0.20/GB-month expressed per-second).
+- Pricing: when PITR is enabled, `DynamoDbCostBreakdown.price` adds
+  `currentStorageBytes × pitrRate × tickDuration` alongside the existing storage charge.
+- New `DemoMetric.TablePITRCumulativeCost(tableName)` with SUM rollup. Add a PITR cost line to
+  the capstone dashboard's cost panel (the Device Telemetry table is the natural candidate —
+  high write volume + TTL makes it both the largest table and the most likely PITR target).
+
+**Key simulation question:** "How much does enabling PITR on the Telemetry table add to the
+monthly bill as fleet size grows?"

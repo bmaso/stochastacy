@@ -15,7 +15,7 @@ import scala.concurrent.{ExecutionContext, Future}
 
 final class ThermostatFleetCapstoneSingleTrialRunner()(using ActorSystem, Materializer, ExecutionContext)
     extends SingleTrialRunner[MultiTableScenarioConfig]:
-  import ThermostatFleetSingleTrialRunner.{PerRegionAcc, updatePerRegionAcc, extractTimeBasedUsage}
+  import ThermostatFleetSingleTrialRunner.{PerRegionAcc, LatencySampleAcc, updatePerRegionAcc, extractTimeBasedUsage, foldLatencySampleEvent, latencyPercentileTimeSeries}
 
   private val helper = ThermostatFleetSingleTrialRunner()
 
@@ -82,9 +82,13 @@ final class ThermostatFleetCapstoneSingleTrialRunner()(using ActorSystem, Materi
       case (acc, (name, evt)) => updateCapstoneMetricAcc(acc, name, evt)
     }
 
-    val (consAccF, metricAccF) = RunnableGraph.fromGraph(
-      GraphDSL.createGraph(consFold, metricFold)((c, m) => (c, m)) {
-        implicit b => (consSink, metricSink) =>
+    val latSampleFold = Sink.fold[LatencySampleAcc, TaggedMetric](Map.empty) {
+      case (acc, (_, evt)) => foldLatencySampleEvent(acc, evt)
+    }
+
+    val (consAccF, metricAccF, latSampleAccF) = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(consFold, metricFold, latSampleFold)((c, m, l) => (c, m, l)) {
+        implicit b => (consSink, metricSink, latSampleSink) =>
           import GraphDSL.Implicits.*
           val consMerge   = b.add(Merge[TaggedCons](n))
           val metricMerge = b.add(Merge[TaggedMetric](n))
@@ -135,15 +139,19 @@ final class ThermostatFleetCapstoneSingleTrialRunner()(using ActorSystem, Materi
                 table.out2 ~> metricTagFlow ~> metricMerge.in(i)
           } // end foreach
 
-          consMerge.out   ~> consSink
-          metricMerge.out ~> metricSink
+          val metricBcast = b.add(Broadcast[TaggedMetric](2))
+          consMerge.out      ~> consSink
+          metricMerge.out    ~> metricBcast.in
+          metricBcast.out(0) ~> metricSink
+          metricBcast.out(1) ~> latSampleSink
           ClosedShape
       }
     ).run()
 
     for
-      consAcc   <- consAccF
-      metricAcc <- metricAccF
+      consAcc      <- consAccF
+      metricAcc    <- metricAccF
+      latSampleAcc <- latSampleAccF
     yield
       autoScalers.flatten.foreach(_.stop())
 
@@ -176,7 +184,7 @@ final class ThermostatFleetCapstoneSingleTrialRunner()(using ActorSystem, Materi
         )
       }
 
-      TrialResult(config.scenarioId, run.trialId, timeSeries, summary)
+      TrialResult(config.scenarioId, run.trialId, timeSeries ++ latencyPercentileTimeSeries(latSampleAcc), summary)
 
   private def buildCapstoneTimeSeries(
     acc: PerRegionAcc,
