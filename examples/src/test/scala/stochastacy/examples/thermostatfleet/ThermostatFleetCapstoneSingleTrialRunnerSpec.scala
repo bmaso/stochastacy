@@ -77,3 +77,28 @@ class ThermostatFleetCapstoneSingleTrialRunnerSpec extends AsyncFunSuite:
       assert(p50Values.forall(_ > BigDecimal(0)), "expected positive P50 latency values")
     }
   }
+
+  test("PITR-enabled DeviceTelemetry table emits TablePITRCumulativeCost metric") {
+    sharedResultF.map { result =>
+      val telemetryName = ThermostatFleetCapstoneConfig.DeviceTelemetryTableName
+      val pitrPts = result.timeSeries.filter(_.metric == DemoMetric.TablePITRCumulativeCost(telemetryName))
+      assert(pitrPts.nonEmpty, "expected TablePITRCumulativeCost for PITR-enabled device-telemetry table")
+    }
+  }
+
+  test("PITR-disabled tables emit TablePITRCumulativeCost = 0") {
+    sharedResultF.map { result =>
+      val pitrDisabledTables = Seq(
+        ThermostatFleetCapstoneConfig.DeviceRegistryTableName,
+        ThermostatFleetCapstoneConfig.DeviceCommandsTableName,
+        ThermostatFleetCapstoneConfig.DeviceAlertsTableName
+      )
+      val nonZeroPitrPoints = pitrDisabledTables.flatMap { tableName =>
+        result.timeSeries.filter(p =>
+          p.metric == DemoMetric.TablePITRCumulativeCost(tableName) && p.value != BigDecimal(0)
+        )
+      }
+      assert(nonZeroPitrPoints.isEmpty,
+        s"expected zero PITR cost for non-PITR tables but found: ${nonZeroPitrPoints.take(3)}")
+    }
+  }

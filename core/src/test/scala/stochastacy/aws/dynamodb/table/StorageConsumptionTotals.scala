@@ -55,3 +55,4 @@ object StorageConsumptionTotals:
         )
 
       case _: DynamoDbConsumptionEvent.ReplicatedWriteCapacityConsumed => acc
+      case _: DynamoDbConsumptionEvent.PITRStorageBytesDelta           => acc

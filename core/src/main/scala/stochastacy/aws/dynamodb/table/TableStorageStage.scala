@@ -162,7 +162,8 @@ object TableStorageStage:
                                           rng: Option[UniformRandomProvider] = None,
                                           latencyModel: DynamoDbTable.LatencyModel = DynamoDbTable.LatencyModel.awsDefault,
                                           latencyRng: UniformRandomProvider = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(0L),
-                                          ttlSampler: Option[TtlSampler] = None
+                                          ttlSampler: Option[TtlSampler] = None,
+                                          pitrStateRef: Option[PITRStateRef] = None
                                         ): Graph[
     FanOutShape4[
       TimedElement[AdmittedRequestSample],
@@ -820,6 +821,14 @@ object TableStorageStage:
             rcuEvents ++ bytesEvents
           }
 
+      def addPitrEvents(events: List[TimedElement[DynamoDbConsumptionEvent]]): List[TimedElement[DynamoDbConsumptionEvent]] =
+        if !pitrStateRef.exists(_.pitrEnabled) then events
+        else events.flatMap {
+          case d: DynamoDbConsumptionEvent.StorageBytesDelta =>
+            List(d, DynamoDbConsumptionEvent.PITRStorageBytesDelta(d.eventTime, d.usecase, d.target, d.bytesDelta))
+          case other => List(other)
+        }
+
       val consumptionFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
           case t: TimedControlEvent => List(t)
@@ -838,10 +847,10 @@ object TableStorageStage:
                 s.lsiStorageFreed.toList.map { case (indexName, bytes) =>
                   DynamoDbConsumptionEvent.StorageBytesDelta(expiry.eventTime, expiry.usecase, DynamoDbTarget.LocalSecondaryIndex("table", indexName), -bytes)
                 }
-              baseDelta :: gsiDeltas ++ lsiDeltas
+              addPitrEvents(baseDelta :: gsiDeltas ++ lsiDeltas)
           case _: StorageRejection => Nil
           case _: StorageSystemError => Nil
-          case StorageAdmitted(sample) => consumptionForSample(sample)
+          case StorageAdmitted(sample) => addPitrEvents(consumptionForSample(sample))
         }
       )
 

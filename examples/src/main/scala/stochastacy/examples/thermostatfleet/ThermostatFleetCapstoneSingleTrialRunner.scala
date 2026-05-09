@@ -193,29 +193,36 @@ final class ThermostatFleetCapstoneSingleTrialRunner()(using ActorSystem, Materi
     tableName: String,
     metricAcc: CapstoneMetricAcc
   ): Vector[SimulationTimeSeriesPoint] =
-    val sortedTicks  = acc.perTickBuckets.keys.toVector.sorted
-    var cumRead      = BigDecimal(0)
-    var cumWrite     = BigDecimal(0)
-    var cumStorage   = 0L
-    var cumByteTicks = BigInt(0)
+    val sortedTicks      = acc.perTickBuckets.keys.toVector.sorted
+    var cumRead          = BigDecimal(0)
+    var cumWrite         = BigDecimal(0)
+    var cumStorage       = 0L
+    var cumByteTicks     = BigInt(0)
+    var cumPitrStorage   = 0L
+    var cumPitrByteTicks = BigInt(0)
 
     sortedTicks.flatMap { tick =>
-      val bkt       = acc.perTickBuckets(tick)
-      cumRead      += bkt.readUnits
-      cumWrite     += bkt.writeUnits
-      cumStorage   += bkt.storageByteDelta
-      cumByteTicks += BigInt(math.max(0L, cumStorage))
-      val r    = pricingRates.forClass(tableClass)
-      val cost = (cumRead  * r.readCapacityUnitPrice) +
-                 (cumWrite * r.writeCapacityUnitPrice) +
-                 (BigDecimal(cumByteTicks) * r.storagePricePerGiBSecond / bytesPerGiB)
+      val bkt           = acc.perTickBuckets(tick)
+      cumRead          += bkt.readUnits
+      cumWrite         += bkt.writeUnits
+      cumStorage       += bkt.storageByteDelta
+      cumByteTicks     += BigInt(math.max(0L, cumStorage))
+      cumPitrStorage   += bkt.pitrStorageByteDelta
+      cumPitrByteTicks += BigInt(math.max(0L, cumPitrStorage))
+      val r        = pricingRates.forClass(tableClass)
+      val pitrCost = BigDecimal(cumPitrByteTicks) * r.pitrStoragePricePerGiBSecond / bytesPerGiB
+      val cost     = (cumRead  * r.readCapacityUnitPrice) +
+                     (cumWrite * r.writeCapacityUnitPrice) +
+                     (BigDecimal(cumByteTicks) * r.storagePricePerGiBSecond / bytesPerGiB) +
+                     pitrCost
 
       val base = Vector(
         SimulationTimeSeriesPoint(tick, DemoMetric.TableReadCapacityUnits(tableName), bkt.readUnits),
         SimulationTimeSeriesPoint(tick, DemoMetric.TableWriteCapacityUnits(tableName), bkt.writeUnits),
         SimulationTimeSeriesPoint(tick, DemoMetric.TableStorageBytes(tableName),
           BigDecimal(math.max(0L, cumStorage))),
-        SimulationTimeSeriesPoint(tick, DemoMetric.TableCumulativeEstimatedCost(tableName), cost)
+        SimulationTimeSeriesPoint(tick, DemoMetric.TableCumulativeEstimatedCost(tableName), cost),
+        SimulationTimeSeriesPoint(tick, DemoMetric.TablePITRCumulativeCost(tableName), pitrCost)
       )
 
       val metricBucket = metricAcc.getOrElse((tableName, tick), CapstoneMetricBucket())

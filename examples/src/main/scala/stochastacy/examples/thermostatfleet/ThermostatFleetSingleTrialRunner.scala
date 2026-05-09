@@ -26,13 +26,16 @@ private[thermostatfleet] object ThermostatFleetSingleTrialRunner:
     replicatedWriteUnits: BigDecimal = BigDecimal(0),
     gsiReadUnits: Map[String, BigDecimal] = Map.empty,
     gsiWriteUnits: Map[String, BigDecimal] = Map.empty,
-    storageByteDelta: Long = 0L
+    storageByteDelta: Long = 0L,
+    pitrStorageByteDelta: Long = 0L
   )
 
   case class PerRegionAcc(
     usageTotals: DynamoDbUsageTotals = DynamoDbUsageTotals(),
     tbByteTicksByTarget: Map[DynamoDbTarget, BigInt] = Map.empty,
     tbCurrentBytesByTarget: Map[DynamoDbTarget, Long] = Map.empty,
+    tbPitrByteTicksByTarget: Map[DynamoDbTarget, BigInt] = Map.empty,
+    tbPitrCurrentBytesByTarget: Map[DynamoDbTarget, Long] = Map.empty,
     tbHasSeenTick: Boolean = false,
     perTickBuckets: Map[Long, TSSBucket] = Map.empty,
     currentStorageBytes: Long = 0L
@@ -199,7 +202,10 @@ private[thermostatfleet] object ThermostatFleetSingleTrialRunner:
             val nextByteTicks = acc.tbCurrentBytesByTarget.foldLeft(acc.tbByteTicksByTarget) {
               case (m, (target, bytes)) => m.updated(target, m.getOrElse(target, BigInt(0)) + BigInt(bytes))
             }
-            acc.copy(tbByteTicksByTarget = nextByteTicks)
+            val nextPitrByteTicks = acc.tbPitrCurrentBytesByTarget.foldLeft(acc.tbPitrByteTicksByTarget) {
+              case (m, (target, bytes)) => m.updated(target, m.getOrElse(target, BigInt(0)) + BigInt(bytes))
+            }
+            acc.copy(tbByteTicksByTarget = nextByteTicks, tbPitrByteTicksByTarget = nextPitrByteTicks)
           else acc
         tbUpdated.copy(tbHasSeenTick = true)
 
@@ -233,6 +239,13 @@ private[thermostatfleet] object ThermostatFleetSingleTrialRunner:
               perTickBuckets = acc1.perTickBuckets.updated(t,
                 bucket.copy(storageByteDelta = bucket.storageByteDelta + bytesDelta))
             )
+          case DynamoDbConsumptionEvent.PITRStorageBytesDelta(_, _, target, bytesDelta) =>
+            acc1.copy(
+              tbPitrCurrentBytesByTarget = acc1.tbPitrCurrentBytesByTarget.updated(
+                target, acc1.tbPitrCurrentBytesByTarget.getOrElse(target, 0L) + bytesDelta),
+              perTickBuckets = acc1.perTickBuckets.updated(t,
+                bucket.copy(pitrStorageByteDelta = bucket.pitrStorageByteDelta + bytesDelta))
+            )
           case _ => acc1
 
       case _ => acc
@@ -245,10 +258,12 @@ private[thermostatfleet] object ThermostatFleetSingleTrialRunner:
         endingStorageBytes = acc.tbCurrentBytesByTarget.getOrElse(target, 0L)
       )
     }.toMap
+    val pitrStorageByteTicks = acc.tbPitrByteTicksByTarget.valuesIterator.foldLeft(BigInt(0))(_ + _)
     DynamoDbTimeBasedUsageTotals(
       overallStorageByteTicks = byTarget.valuesIterator.map(_.storageByteTicks).sum,
       endingOverallStorageBytes = byTarget.valuesIterator.map(_.endingStorageBytes).sum,
-      byTarget = byTarget
+      byTarget = byTarget,
+      pitrStorageByteTicks = pitrStorageByteTicks
     )
 
 final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, ExecutionContext)
@@ -705,7 +720,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       val perRegionSummary = regions.flatMap { r =>
         val usage = regionUsage.getOrElse(r, DynamoDbUsageTotals())
         val timeBased = regionTimeBasedUsage.getOrElse(r, DynamoDbTimeBasedUsageTotals())
-        val cost = regionCost.getOrElse(r, DynamoDbCostBreakdown(BigDecimal(0), BigDecimal(0), BigDecimal(0), BigDecimal(0), BigDecimal(0)))
+        val cost = regionCost.getOrElse(r, DynamoDbCostBreakdown(BigDecimal(0), BigDecimal(0), BigDecimal(0), BigDecimal(0), BigDecimal(0), BigDecimal(0)))
         Vector(
           TrialSummaryValue(DemoMetric.TotalRegionReadCapacityUnits(r), usage.overall.readCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalRegionWriteCapacityUnits(r), usage.overall.writeCapacityUnits),
@@ -793,7 +808,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     all.foldLeft(DynamoDbTimeBasedUsageTotals()) { (acc, t) =>
       DynamoDbTimeBasedUsageTotals(
         overallStorageByteTicks = acc.overallStorageByteTicks + t.overallStorageByteTicks,
-        endingOverallStorageBytes = acc.endingOverallStorageBytes + t.endingOverallStorageBytes
+        endingOverallStorageBytes = acc.endingOverallStorageBytes + t.endingOverallStorageBytes,
+        pitrStorageByteTicks = acc.pitrStorageByteTicks + t.pitrStorageByteTicks
       )
     }
 
@@ -962,7 +978,8 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       dynamicPartitionTopologyModel = config.dynamicPartitionTopologyModel,
       ttlSampler = config.ttlPeriodTicks.map(p => new SimpleTtlSampler(p)),
       tableClass = config.tableClass,
-      systemErrorRate = config.systemErrorRate
+      systemErrorRate = config.systemErrorRate,
+      pointInTimeRecoveryEnabled = config.pointInTimeRecoveryEnabled
     )
 
   private def buildDefaultReplicationModel(seed: Long): ReplicationModel =

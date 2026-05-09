@@ -61,6 +61,7 @@ enum DemoMetric:
   case TableProvisionedWriteCapacityUnits(tableName: String)
   case TableEstimatedItemCount(tableName: String)
   case TableSystemErrorCount(tableName: String)
+  case TablePITRCumulativeCost(tableName: String)
 
   def exportName: String =
     this match
@@ -121,6 +122,7 @@ enum DemoMetric:
       case DemoMetric.TableProvisionedWriteCapacityUnits(t)=> s"Table:$t:ProvisionedWriteCapacityUnits"
       case DemoMetric.TableEstimatedItemCount(t)           => s"Table:$t:EstimatedItemCount"
       case DemoMetric.TableSystemErrorCount(t)             => s"Table:$t:SystemErrorCount"
+      case DemoMetric.TablePITRCumulativeCost(t)           => s"Table:$t:PITRCumulativeCost"
 
   def sortKey: (Int, String) =
     this match
@@ -181,6 +183,7 @@ enum DemoMetric:
       case DemoMetric.TableProvisionedWriteCapacityUnits(t)=> (54, t)
       case DemoMetric.TableEstimatedItemCount(t)           => (55, t)
       case DemoMetric.TableSystemErrorCount(t)             => (56, t)
+      case DemoMetric.TablePITRCumulativeCost(t)           => (57, t)
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

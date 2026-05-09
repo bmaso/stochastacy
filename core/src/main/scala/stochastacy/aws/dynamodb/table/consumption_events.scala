@@ -69,3 +69,12 @@ object DynamoDbConsumptionEvent:
                                       target: DynamoDbTarget,
                                       bytesDelta: Long
                                     ) extends DynamoDbConsumptionEvent
+
+  /** Mirrors StorageBytesDelta but only emitted when PITR is enabled. Accumulated separately
+   *  to compute the PITR storage charge without affecting base storage accounting. */
+  final case class PITRStorageBytesDelta(
+                                          eventTime: SimTime,
+                                          usecase: Any,
+                                          target: DynamoDbTarget,
+                                          bytesDelta: Long
+                                        ) extends DynamoDbConsumptionEvent

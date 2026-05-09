@@ -40,7 +40,8 @@ object DynamoDbPricingRates:
     replicatedWriteCapacityUnitPrice: BigDecimal = BigDecimal("0.000000975"),
     storagePricePerGiBSecond: BigDecimal,
     provisionedReadCapacityUnitHourlyPrice: BigDecimal  = BigDecimal("0.00013"),
-    provisionedWriteCapacityUnitHourlyPrice: BigDecimal = BigDecimal("0.00065")
+    provisionedWriteCapacityUnitHourlyPrice: BigDecimal = BigDecimal("0.00065"),
+    pitrStoragePricePerGiBSecond: BigDecimal = BigDecimal("0.20") / (BigDecimal(3600) * BigDecimal(24) * BigDecimal(30))
   )
 
   /**
@@ -84,6 +85,7 @@ final case class DynamoDbCostBreakdown(
                                         writeCapacityCost: BigDecimal,
                                         replicatedWriteCapacityCost: BigDecimal = BigDecimal(0),
                                         storageCost: BigDecimal,
+                                        pitrCost: BigDecimal = BigDecimal(0),
                                         totalCost: BigDecimal
                                       )
 
@@ -134,10 +136,15 @@ object DynamoDbCostBreakdown:
       BigDecimal(inputs.timeBasedUsage.overallStorageByteTicks) *
         r.storagePricePerGiBSecond / BytesPerGiB
 
+    val pitrCost =
+      BigDecimal(inputs.timeBasedUsage.pitrStorageByteTicks) *
+        r.pitrStoragePricePerGiBSecond / BytesPerGiB
+
     DynamoDbCostBreakdown(
       readCapacityCost = readCapacityCost,
       writeCapacityCost = writeCapacityCost,
       replicatedWriteCapacityCost = replicatedWriteCapacityCost,
       storageCost = storageCost,
-      totalCost = readCapacityCost + writeCapacityCost + replicatedWriteCapacityCost + storageCost
+      pitrCost = pitrCost,
+      totalCost = readCapacityCost + writeCapacityCost + replicatedWriteCapacityCost + storageCost + pitrCost
     )

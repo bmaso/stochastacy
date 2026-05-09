@@ -78,7 +78,8 @@ object ThermostatFleetCapstoneConfig:
           polarVortexAffectedFraction      = 0.40,
           polarVortexTickRange             = (600L, 700L),
           autoScalerPolicy                 = Some(autoScalerPolicy),
-          systemErrorRate                  = 0.001
+          systemErrorRate                  = 0.001,
+          pointInTimeRecoveryEnabled       = true
         )
       ),
       // Device Commands: on-demand, low volume; writes are 2-item transactions (status update + audit).

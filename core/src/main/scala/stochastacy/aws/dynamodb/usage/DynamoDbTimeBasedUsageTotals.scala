@@ -11,7 +11,8 @@ final case class DynamoDbTargetTimeBasedUsageTotals(
 final case class DynamoDbTimeBasedUsageTotals(
                                                overallStorageByteTicks: BigInt = BigInt(0),
                                                endingOverallStorageBytes: Long = 0L,
-                                               byTarget: Map[DynamoDbTarget, DynamoDbTargetTimeBasedUsageTotals] = Map.empty
+                                               byTarget: Map[DynamoDbTarget, DynamoDbTargetTimeBasedUsageTotals] = Map.empty,
+                                               pitrStorageByteTicks: BigInt = BigInt(0)
                                              )
 
 object DynamoDbTimeBasedUsageTotals:
@@ -24,6 +25,8 @@ object DynamoDbTimeBasedUsageTotals:
   private case class AccumulatorState(
                                        byteTicksByTarget: Map[DynamoDbTarget, BigInt] = Map.empty,
                                        currentStorageBytesByTarget: Map[DynamoDbTarget, Long] = Map.empty,
+                                       pitrByteTicksByTarget: Map[DynamoDbTarget, BigInt] = Map.empty,
+                                       pitrCurrentBytesByTarget: Map[DynamoDbTarget, Long] = Map.empty,
                                        lastTickSeen: Option[TimedControlEvent.Tick] = None
                                      )
 
@@ -43,8 +46,17 @@ object DynamoDbTimeBasedUsageTotals:
                     btAcc.getOrElse(target, BigInt(0)) + BigInt(currentBytes)
                   )
               }
+            val nextPitrByteTicksByTarget =
+              acc.pitrCurrentBytesByTarget.foldLeft(acc.pitrByteTicksByTarget) {
+                case (btAcc, (target, currentBytes)) =>
+                  btAcc.updated(
+                    target,
+                    btAcc.getOrElse(target, BigInt(0)) + BigInt(currentBytes)
+                  )
+              }
             acc.copy(
               byteTicksByTarget = nextByteTicksByTarget,
+              pitrByteTicksByTarget = nextPitrByteTicksByTarget,
               lastTickSeen = Some(tick)
             )
 
@@ -56,6 +68,13 @@ object DynamoDbTimeBasedUsageTotals:
         acc.copy(
           currentStorageBytesByTarget =
             acc.currentStorageBytesByTarget.updated(target, currentBytes + bytesDelta)
+        )
+
+      case DynamoDbConsumptionEvent.PITRStorageBytesDelta(_, _, target, bytesDelta) =>
+        val currentBytes = acc.pitrCurrentBytesByTarget.getOrElse(target, 0L)
+        acc.copy(
+          pitrCurrentBytesByTarget =
+            acc.pitrCurrentBytesByTarget.updated(target, currentBytes + bytesDelta)
         )
 
       case _ =>
@@ -73,8 +92,11 @@ object DynamoDbTimeBasedUsageTotals:
           )
       }.toMap
 
+    val pitrStorageByteTicks = acc.pitrByteTicksByTarget.valuesIterator.foldLeft(BigInt(0))(_ + _)
+
     DynamoDbTimeBasedUsageTotals(
       overallStorageByteTicks = byTarget.valuesIterator.map(_.storageByteTicks).sum,
       endingOverallStorageBytes = byTarget.valuesIterator.map(_.endingStorageBytes).sum,
-      byTarget = byTarget
+      byTarget = byTarget,
+      pitrStorageByteTicks = pitrStorageByteTicks
     )

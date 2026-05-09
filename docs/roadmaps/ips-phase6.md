@@ -44,7 +44,7 @@ simulation.
 | 7. SystemErrors | Done | `systemErrorRate: Double` on `DynamoDbTable.Config`; Bernoulli draw in `TableStorageStage`; `StorageMetricEvent.SystemError`; `DemoMetric.SystemErrorCount`; panels in all three thermostat-fleet dashboards |
 | 8. SuccessfulRequestLatency | Done | Log-normal latency samples in `TableStorageStage`; `StorageMetricEvent.SuccessfulRequestLatency`; P50/P95/P99 rollup; latency panels in all three thermostat-fleet dashboards |
 | 9. DynamoDB Transactions | Done | `TransactWriteItems` (2× WCU/item) and `TransactGetItems` (2× RCU/item, always strongly consistent); new request/response/sample/shaped/admitted types; `transactionalWriteCapacityUnitsFor` / `transactionalReadCapacityUnitsFor` in `TableThroughputMath`; all-or-nothing LSI limit and system-error checks; `WriteAsPutSample` adapter; per-item state mutation; Commands table in capstone uses transactions; 10 new tests |
-| 10. PITR Pricing | Planned | `pointInTimeRecoveryEnabled: Boolean` on `DynamoDbTable.Config`; continuous storage charge at ~$0.20/GB-month; `DemoMetric.TablePITRCumulativeCost`; panel in capstone dashboard |
+| 10. PITR Pricing | Done | `pointInTimeRecoveryEnabled: Boolean` on `DynamoDbTable.Config`; `TogglePITR` management event; `PITRStateRef` shared ref; `PITRStorageBytesDelta` consumption event; `pitrStorageByteTicks` on `DynamoDbTimeBasedUsageTotals`; `pitrCost` in `DynamoDbCostBreakdown`; `pitrStoragePricePerGiBSecond` on `RateSet`; `DemoMetric.TablePITRCumulativeCost`; DeviceTelemetry table in capstone opts in; 8 new tests |
 
 ---
 
@@ -522,24 +522,106 @@ to non-transactional puts, and how does that overhead scale with fleet size?"
 ### 10. PITR Pricing
 
 **Goal:** Model the continuous storage charge for Point-In-Time Recovery (PITR), making
-PITR-enabled tables show their true cost in the simulation output.
+PITR-enabled tables show their true cost in the simulation output. PITR can be enabled and
+disabled mid-simulation via a management event, so the charge applies only to the ticks during
+which PITR is actually on.
 
 AWS charges ~$0.20/GB-month for PITR-enabled tables, billed continuously on the current table
 size (same footprint as storage: base table + all GSI/LSI projections). This is roughly 80% of
-the base storage rate and is frequently overlooked in cost estimates.
+the base storage rate and is frequently overlooked in cost estimates. AWS lets operators enable
+and disable PITR at any time via `UpdateContinuousBackups`; the charge applies only while PITR
+is enabled.
 
-**Scope:**
+---
 
-- New field: `pointInTimeRecoveryEnabled: Boolean = false` on `DynamoDbTable.Config` (and
-  forwarded from `ThermostatFleetScenarioConfig`). Defaults to `false`; all existing tests and
-  demos are unaffected unless they opt in.
-- New rate field: `pitrStoragePricePerGiBSecond: BigDecimal` in `DynamoDbPricingRates.RateSet`,
-  defaulting to the AWS standard rate ($0.20/GB-month expressed per-second).
-- Pricing: when PITR is enabled, `DynamoDbCostBreakdown.price` adds
-  `currentStorageBytes × pitrRate × tickDuration` alongside the existing storage charge.
-- New `DemoMetric.TablePITRCumulativeCost(tableName)` with SUM rollup. Add a PITR cost line to
-  the capstone dashboard's cost panel (the Device Telemetry table is the natural candidate —
-  high write volume + TTL makes it both the largest table and the most likely PITR target).
+**Current behaviors inconsistent with the goal:**
 
-**Key simulation question:** "How much does enabling PITR on the Telemetry table add to the
-monthly bill as fleet size grows?"
+1. **No PITR field on `DynamoDbTable.Config`.** The config has no `pointInTimeRecoveryEnabled`
+   field. There is no way to express that a table has PITR enabled; the feature does not exist
+   in the simulation model at all.
+
+2. **No PITR rate field in `DynamoDbPricingRates.RateSet`.** `RateSet` carries
+   `readCapacityUnitPrice`, `writeCapacityUnitPrice`, `storagePricePerGiBSecond`, and the
+   provisioned hourly prices, but no PITR rate. The pricing structure has nowhere to hold the
+   ~$0.20/GB-month charge.
+
+3. **`DynamoDbCostBreakdown.price()` has no PITR cost term.** The function computes
+   on-demand/provisioned capacity cost plus storage cost and returns a `DynamoDbCostBreakdown`.
+   There is no PITR branch; even if the flag and rate existed, no PITR cost would be calculated.
+
+4. **`DynamoDbCostBreakdown` has no `pitrCost` field.** The result type carries
+   `readCapacityCost`, `writeCapacityCost`, `replicatedWriteCapacityCost`, and `storageCost`.
+   PITR cost has no representation in the output, so downstream consumers (demo runners, rollup
+   metrics, Grafana panels) cannot observe it.
+
+5. **`DynamoDbManagementEvent` has no `TogglePITR` variant.** PITR can be enabled and disabled
+   at any time in real DynamoDB. The current management event type supports `SwitchBillingMode`
+   and `UpdateProvisionedCapacity` but not PITR toggling. A static config flag cannot model a
+   simulation where PITR is enabled only for a portion of the run.
+
+6. **`DynamoDbTimeBasedUsageTotals` accumulates storage byte-ticks uniformly.** All
+   `StorageBytesDelta` events contribute to `overallStorageByteTicks` regardless of PITR state.
+   There is no separate PITR-weighted accumulator, so there is no way to compute "byte-ticks
+   during which PITR was enabled" without restructuring the accumulator.
+
+7. **`ThermostatFleetScenarioConfig` has no `pointInTimeRecoveryEnabled` field.** The scenario
+   config that drives table construction cannot forward PITR enablement to `DynamoDbTable.Config`.
+
+8. **No `DemoMetric` case for PITR cost.** `DemoMetric` has no `TablePITRCumulativeCost`
+   variant. Even if the pricing layer computed a PITR charge, it could not be surfaced as a
+   time-series metric or Grafana panel.
+
+9. **The capstone Grafana dashboard has no PITR cost panel.** The Device Telemetry table is the
+   natural PITR candidate (high write volume + TTL = largest table, most likely real-world PITR
+   target), but no such panel exists.
+
+---
+
+**How stochastacy will behave once the slice is implemented:**
+
+**`DynamoDbManagementEvent.TogglePITR(enabled: Boolean)`** is added alongside
+`SwitchBillingMode` and `UpdateProvisionedCapacity`. It can be injected via
+`componentOfManaged.managementIn` at any tick, or scheduled via `ReconfigurationSchedule`.
+
+**`PITRStateRef`** is a new shared mutable ref (modeled after `BillingModeRef`) carrying
+`@volatile var pitrEnabled: Boolean`, initialized from `DynamoDbTable.Config.pointInTimeRecoveryEnabled`
+(default `false`). It is owned and written by `TableAdmissionStage` when processing
+`TogglePITR` events; read by `TableStorageStage` when emitting storage events.
+
+**`TableAdmissionStage`** processes `TogglePITR` from the management stream and updates
+`PITRStateRef`. At each tick boundary it emits `AdmissionMetricEvent.PITRSnapshot(tick, enabled)`
+alongside the existing `BillingModeSnapshot`, so downstream consumers can observe PITR state
+transitions.
+
+**`TableStorageStage`** receives `PITRStateRef` alongside its existing refs. When emitting a
+`StorageBytesDelta` consumption event, it conditionally also emits a `PITRStorageBytesDelta`
+event (same bytes, same target) if `pitrStateRef.pitrEnabled`. This keeps PITR byte-tick
+accumulation entirely in the consumption event stream — no new state in the storage stage itself.
+
+**`DynamoDbTimeBasedUsageTotals`** gains a `pitrStorageByteTicks: Long` field, accumulated from
+`PITRStorageBytesDelta` events. `overallStorageByteTicks` is unchanged.
+
+**`DynamoDbPricingRates.RateSet`** gains `pitrStoragePricePerGiBSecond: BigDecimal` defaulting
+to `BigDecimal("0.20") / SecondsPer30DayMonth`, expressed in the same per-GiB-second unit as
+the existing `storagePricePerGiBSecond`.
+
+**`DynamoDbCostBreakdown.price()`** adds:
+```
+pitrCost = BigDecimal(inputs.timeBasedUsage.pitrStorageByteTicks) * r.pitrStoragePricePerGiBSecond / BytesPerGiB
+```
+No new flag is needed on `DynamoDbPricingInputs` — if PITR was never on, `pitrStorageByteTicks`
+is zero and `pitrCost` is zero automatically.
+
+**`DynamoDbCostBreakdown`** gains `pitrCost: BigDecimal = BigDecimal(0)`, included in
+`totalCost`.
+
+**`DynamoDbTable.Config`** gains `pointInTimeRecoveryEnabled: Boolean = false` (initializes
+`PITRStateRef`) and is forwarded from `ThermostatFleetScenarioConfig`.
+
+**`DemoMetric.TablePITRCumulativeCost(tableName: String)`** is added with SUM rollup. Both
+single-trial runners emit it from the pricing result. The capstone Grafana dashboard gains a
+PITR cost panel for the Device Telemetry table.
+
+**Key simulation question answered:** "How much does enabling PITR on the Telemetry table add
+to the monthly bill as fleet size grows?" — visible as a separate cost line, computed only over
+the ticks when PITR is actually enabled.

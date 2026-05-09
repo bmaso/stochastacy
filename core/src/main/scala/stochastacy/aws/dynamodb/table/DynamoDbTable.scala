@@ -261,7 +261,8 @@ object DynamoDbTable:
                            systemErrorRate: Double = 0.0,
                            latencyModel: LatencyModel = LatencyModel.awsDefault,
                            tableClass: TableClass = TableClass.Standard,
-                           ttlSampler: Option[TtlSampler] = None
+                           ttlSampler: Option[TtlSampler] = None,
+                           pointInTimeRecoveryEnabled: Boolean = false
                          ):
     Config.validate(this)
 
@@ -835,6 +836,7 @@ object DynamoDbTable:
                            gsiWriteScopes: Vector[TableAdmissionStage.GsiWriteScopeConfig] = Vector.empty,
                            itemCollectionSizeLimitBytes: Option[Long] = None,
                            billingModeRef: Option[BillingModeRef] = None,
+                           pitrStateRef: Option[PITRStateRef] = None,
                            systemErrorRate: Double = 0.0,
                            latencyModel: LatencyModel = LatencyModel.awsDefault,
                            ttlSampler: Option[TtlSampler] = None
@@ -894,7 +896,8 @@ object DynamoDbTable:
           rng = storageRng,
           latencyModel = latencyModel,
           latencyRng = latencyRng,
-          ttlSampler = ttlSampler
+          ttlSampler = ttlSampler,
+          pitrStateRef = pitrStateRef
         )
       )
       val throttledResponseFilter = b.add(
@@ -997,6 +1000,7 @@ object DynamoDbTable:
         indexMaintenanceRuntimes = indexRuntimes,
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
         itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
+        pitrStateRef = Some(new PITRStateRef(config.pointInTimeRecoveryEnabled)),
         systemErrorRate = config.systemErrorRate,
         latencyModel = config.latencyModel,
         ttlSampler = config.ttlSampler
@@ -1203,6 +1207,7 @@ object DynamoDbTable:
    */
   def componentOfManaged(config: Config): Graph[DynamoDbTableManagedShape, NotUsed] =
     val billingModeRef = new BillingModeRef(config.billingMode)
+    val pitrRef = new PITRStateRef(config.pointInTimeRecoveryEnabled)
     val indexRuntimes = indexRuntimesFor(config)
     val baseTableGraph =
       branchGraph(
@@ -1253,6 +1258,7 @@ object DynamoDbTable:
         gsiWriteScopes = gsiWriteScopesFor(config, indexRuntimes),
         itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
         billingModeRef = Some(billingModeRef),
+        pitrStateRef = Some(pitrRef),
         systemErrorRate = config.systemErrorRate,
         latencyModel = config.latencyModel,
         ttlSampler = config.ttlSampler
@@ -1449,7 +1455,7 @@ object DynamoDbTable:
           )
         }
 
-    val managementProcessor = managementProcessorOf(billingModeRef)
+    val managementProcessor = managementProcessorOf(billingModeRef, Some(pitrRef))
 
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits.*
@@ -1471,7 +1477,8 @@ object DynamoDbTable:
     }
 
   private def managementProcessorOf(
-                                     billingModeRef: BillingModeRef
+                                     billingModeRef: BillingModeRef,
+                                     pitrRef: Option[PITRStateRef] = None
                                    ): Flow[TimedElement[DynamoDbManagementEvent], TimedElement[DynamoDBResponse], NotUsed] =
     Flow[TimedElement[DynamoDbManagementEvent]].statefulMapConcat[TimedElement[DynamoDBResponse]] { () =>
       {
@@ -1503,6 +1510,9 @@ object DynamoDbTable:
                 event.usecase,
                 "UpdateProvisionedCapacity is only valid when the table is in provisioned billing mode"
               ))
+        case event: DynamoDbManagementEvent.TogglePITR =>
+          pitrRef.foreach(_.pitrEnabled = event.enabled)
+          Nil
       }
     }
 

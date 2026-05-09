@@ -55,7 +55,8 @@ final case class ThermostatFleetScenarioConfig(
   pricingSchedule: PricingSchedule = PricingSchedule.default,
   tableClass: DynamoDbTable.TableClass = DynamoDbTable.TableClass.Standard,
   systemErrorRate: Double = 0.0,
-  transactWriteItemsPerItemBytes: Option[Vector[Long]] = None
+  transactWriteItemsPerItemBytes: Option[Vector[Long]] = None,
+  pointInTimeRecoveryEnabled: Boolean = false
 ):
   require(scenarioId.nonEmpty, "scenarioId must be non-empty")
   require(simulationTicks >= 1L, "simulationTicks must be at least 1")

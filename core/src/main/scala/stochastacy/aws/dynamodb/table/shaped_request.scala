@@ -175,6 +175,10 @@ private[table] class TopologySnapshotRef(
  *
  * Thread-safety: all stages run fused in the same Pekko actor.
  */
+/** Shared mutable PITR flag. Written by management processor on TogglePITR; read by
+ *  TableStorageStage when deciding whether to emit PITRStorageBytesDelta events. */
+private[table] class PITRStateRef(@volatile var pitrEnabled: Boolean)
+
 private[table] class BillingModeRef(
   @volatile var currentMode: DynamoDbTable.BillingMode,
   @volatile var lastSwitchTick: Option[Long] = None

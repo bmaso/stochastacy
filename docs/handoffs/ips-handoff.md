@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-05-08 (phase 6 slices 1–9 complete; DynamoDB Transactions delivered)
+Last updated: 2026-05-08 (phase 6 slices 1–10 complete; PITR Pricing delivered; all Phase 6 slices done)
 
 ## Current Position
 
@@ -220,7 +220,10 @@ The "Write Capacity: Consumed vs. Provisioned" panel shows mean, P50, P75, and P
 - [ThermostatFleetCapstoneTransactionSpec.scala](examples/src/test/scala/stochastacy/examples/thermostatfleet/ThermostatFleetCapstoneTransactionSpec.scala) — 2 tests: capstone Commands table config uses transactions; end-to-end WCU emission from transactional writes
 - All storage stage specs (GetItem, PutItem, UpdateItem, DeleteItem, Query, Scan)
 
-Total: 303 core tests + 171 examples tests = 474 tests all passing.
+- [PITRPricingSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/pricing/PITRPricingSpec.scala) — 6 tests: pitrStorageByteTicks accumulation, zero PITR without events, proportional byte-ticks, zero pitrCost when no PITR events, correct per-GiB cost for 1 GiB/30-day, pitrCost in totalCost
+- PITR integration via `ThermostatFleetCapstoneSingleTrialRunnerSpec` — 2 new tests: PITR-enabled DeviceTelemetry emits `TablePITRCumulativeCost`; PITR-disabled tables emit 0
+
+Total: 309 core tests + 173 examples tests = 482 tests all passing.
 
 ## Recommended Next Work
 
@@ -238,13 +241,14 @@ S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises
 7. **SystemErrors** — Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; no-consumption no-state-mutation guarantee; `DemoMetric.SystemErrorCount`.
 8. **SuccessfulRequestLatency** — DONE: log-normal latency samples per admitted non-errored request; `DynamoDbTable.LatencyModel` config; P50/P95/P99 rollup; latency panels in both dashboards.
 9. **DynamoDB Transactions** — DONE: `TransactWriteItems` (2× WCU/item) and `TransactGetItems` (2× RCU/item, always strongly consistent); `TransactWriteItemsRequest` / `TransactGetItemsRequest` / response types in `op_events.scala`; `TransactWriteItemsSample` / `TransactGetItemsSample` sample traits; shaped and admitted types; `transactionalWriteCapacityUnitsFor` / `transactionalReadCapacityUnitsFor` in `TableThroughputMath`; all-or-nothing LSI collection limit and system-error checks; `WriteAsPutSample` adapter; `mergeFootprints` / `mergeIndexMaintenancePlans` helpers; `ThermostatFleetBehavior.transactWriteItems`; capstone Commands table uses 2-item transactions; 10 new tests.
+10. **PITR Pricing** — DONE: `pointInTimeRecoveryEnabled: Boolean` on `DynamoDbTable.Config`; `TogglePITR` management event in `DynamoDbManagementEvent`; `PITRStateRef` shared mutable ref (follows `BillingModeRef` pattern); `PITRStorageBytesDelta` consumption event mirrors `StorageBytesDelta` only when PITR is on; `pitrStorageByteTicks` field on `DynamoDbTimeBasedUsageTotals` + `PerRegionAcc`; `pitrStoragePricePerGiBSecond` on `DynamoDbPricingRates.RateSet` (default: $0.20/GiB-month); `pitrCost` on `DynamoDbCostBreakdown` included in `totalCost`; `DemoMetric.TablePITRCumulativeCost(tableName)` emitted per tick; DeviceTelemetry table in capstone opts in (`pointInTimeRecoveryEnabled = true`); 8 new tests.
 
-**Remaining Phase 6 work:** Slice 10 — PITR Pricing ($0.20/GB-month for PITR-enabled tables).
+**Phase 6 is complete.** All 10 slices delivered.
 
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
-- `sbt test` runs all 474 tests; `sbt "core/test"` runs the 303 core tests
+- `sbt test` runs all 482 tests; `sbt "core/test"` runs the 309 core tests
 - The canonical planning anchors are [ips-phase5.md](../roadmaps/ips-phase5.md) (complete) and [ips-phase4.md](../roadmaps/ips-phase4.md) (complete); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
 - Implement one slice at a time; use plan mode for new slices
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries
