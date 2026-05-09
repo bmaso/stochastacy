@@ -100,12 +100,14 @@ object DynamoDbTable:
 
   object LatencyModel:
     val awsDefault: LatencyModel = LatencyModel(Map(
-      DynamoDbOperationKind.GetItem    -> LatencyParams(math.log(2.0),  0.5),
-      DynamoDbOperationKind.PutItem    -> LatencyParams(math.log(2.5),  0.5),
-      DynamoDbOperationKind.UpdateItem -> LatencyParams(math.log(2.5),  0.5),
-      DynamoDbOperationKind.DeleteItem -> LatencyParams(math.log(2.5),  0.5),
-      DynamoDbOperationKind.Query      -> LatencyParams(math.log(5.0),  0.6),
-      DynamoDbOperationKind.Scan       -> LatencyParams(math.log(10.0), 0.7)
+      DynamoDbOperationKind.GetItem           -> LatencyParams(math.log(2.0),  0.5),
+      DynamoDbOperationKind.PutItem           -> LatencyParams(math.log(2.5),  0.5),
+      DynamoDbOperationKind.UpdateItem        -> LatencyParams(math.log(2.5),  0.5),
+      DynamoDbOperationKind.DeleteItem        -> LatencyParams(math.log(2.5),  0.5),
+      DynamoDbOperationKind.Query             -> LatencyParams(math.log(5.0),  0.6),
+      DynamoDbOperationKind.Scan              -> LatencyParams(math.log(10.0), 0.7),
+      DynamoDbOperationKind.TransactWriteItems -> LatencyParams(math.log(2.5),  0.4),
+      DynamoDbOperationKind.TransactGetItems   -> LatencyParams(math.log(2.2),  0.4)
     ))
 
   sealed trait TableClass
@@ -504,7 +506,8 @@ object DynamoDbTable:
 
   private def routeFor(config: Config, request: DynamoDBRequest): RouteBranch =
     request match
-      case _: GetItemRequest | _: PutItemRequest | _: UpdateItemRequest | _: DeleteItemRequest | _: PartiQLQueryRequest =>
+      case _: GetItemRequest | _: PutItemRequest | _: UpdateItemRequest | _: DeleteItemRequest |
+           _: PartiQLQueryRequest | _: TransactWriteItemsRequest | _: TransactGetItemsRequest =>
         RouteBranch.BaseTable
 
       case QueryRequest(_, _, target, _, _) => routeForReadTarget(config, target)

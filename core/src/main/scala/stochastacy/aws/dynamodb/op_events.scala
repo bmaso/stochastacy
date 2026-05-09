@@ -21,6 +21,8 @@ object DynamoDbOperationKind:
   case object Query extends DynamoDbOperationKind
   case object Scan extends DynamoDbOperationKind
   case object PartiQLQuery extends DynamoDbOperationKind
+  case object TransactWriteItems extends DynamoDbOperationKind
+  case object TransactGetItems extends DynamoDbOperationKind
 
   def fromRequest(request: DynamoDBRequest): DynamoDbOperationKind =
     request match
@@ -31,6 +33,8 @@ object DynamoDbOperationKind:
       case _: QueryRequest => Query
       case _: ScanRequest => Scan
       case _: PartiQLQueryRequest => PartiQLQuery
+      case _: TransactWriteItemsRequest => TransactWriteItems
+      case _: TransactGetItemsRequest => TransactGetItems
 
 sealed trait DynamoDbThroughputDimension
 
@@ -217,3 +221,39 @@ final case class ReconfigurationRejectedResponse(
                                                   override val usecase: Any,
                                                   reason: String
                                                 ) extends DynamoDBResponse
+
+/**
+ * A transactional write containing multiple sub-item writes (puts/updates). All items are
+ * admitted all-or-nothing. Total WCU cost is 2× per item (DynamoDB transaction pricing).
+ */
+case class TransactWriteItemsRequest(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  perItemBytes: Vector[Long]
+) extends DynamoDBRequest:
+  require(perItemBytes.nonEmpty, "TransactWriteItemsRequest.perItemBytes must be non-empty")
+  require(perItemBytes.forall(_ >= 0L), "TransactWriteItemsRequest.perItemBytes values must be non-negative")
+
+/**
+ * A transactional read containing multiple sub-item gets. All reads are strongly consistent
+ * (DynamoDB requirement). Total RCU cost is 2× per item.
+ */
+case class TransactGetItemsRequest(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  itemCount: Int
+) extends DynamoDBRequest:
+  require(itemCount > 0, s"TransactGetItemsRequest.itemCount must be positive, got $itemCount")
+
+case class TransactWriteItemsResponse(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  itemCount: Int
+) extends DynamoDBResponse
+
+case class TransactGetItemsResponse(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  items: Vector[Option[Long]]
+) extends DynamoDBResponse:
+  require(items.nonEmpty, "TransactGetItemsResponse.items must be non-empty")

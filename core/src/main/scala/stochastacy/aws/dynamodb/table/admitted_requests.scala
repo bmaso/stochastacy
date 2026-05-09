@@ -81,6 +81,35 @@ private[table] final case class AdmittedDeleteItemSample(
   override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Write
 
 /**
+ * Admitted sample for a TransactWriteItems request. Carries the merged plan for LSI checks
+ * and the per-item samples for storage mutations and index-maintenance expansion (out3).
+ */
+private[table] final case class AdmittedTransactWriteItemsSample(
+  req: TransactWriteItemsRequest,
+  executionTarget: DynamoDbTarget,
+  admissionTarget: DynamoDbTarget,
+  sample: TransactWriteItemsSample,
+  throughputDemand: BigDecimal,
+  resolvedPartitionFootprint: ResolvedPartitionFootprint,
+  indexMaintenancePlan: Vector[IndexMaintenancePlan],
+  perItemSamples: Vector[AdmittedPutItemSample]
+) extends AdmittedWriteRequestSample:
+  override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Write
+
+/**
+ * Admitted sample for a TransactGetItems request (all strongly consistent reads).
+ */
+private[table] final case class AdmittedTransactGetItemsSample(
+  req: TransactGetItemsRequest,
+  executionTarget: DynamoDbTarget,
+  admissionTarget: DynamoDbTarget,
+  sample: TransactGetItemsSample,
+  throughputDemand: BigDecimal,
+  resolvedPartitionFootprint: ResolvedPartitionFootprint
+) extends AdmittedRequestSample:
+  override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Read
+
+/**
  * Envelope marking an admitted write sample as originating from cross-region replication rather
  * than from a local client request. Extends `AdmittedWriteRequestSample` by pure delegation so
  * it flows transparently through the existing `TimedElement[AdmittedRequestSample]` streams.

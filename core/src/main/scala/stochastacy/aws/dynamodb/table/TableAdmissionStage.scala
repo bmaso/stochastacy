@@ -1134,6 +1134,60 @@ object TableAdmissionStage:
             currentAdaptiveMaxWritePerPartition = currentAdaptiveMaxWritePerPartition
           )
 
+        case s: ShapedTransactWriteItemsRequest =>
+          val perItemSamples = s.sample.items.zip(s.perItemResolvedFootprints).zip(s.perItemIndexMaintenancePlans).map {
+            case ((writeItem, footprint), plans) =>
+              AdmittedPutItemSample(
+                req = PutItemRequest(s.req.eventTime, s.req.usecase, writeItem.writtenItemBytes),
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                sample = WriteAsPutSample(writeItem),
+                throughputDemand = TableThroughputMath.transactionalWriteCapacityUnitsFor(writeItem.writtenItemBytes),
+                resolvedPartitionFootprint = footprint,
+                indexMaintenancePlan = plans
+              )
+          }
+          evaluateWriteAdmissionShaped(
+            shaped = s,
+            usageState = usageState,
+            burstState = burstState,
+            gsiUsageStates = gsiUsageStates,
+            gsiBurstStates = gsiBurstStates,
+            admittedSample =
+              AdmittedTransactWriteItemsSample(
+                req = s.req,
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                sample = s.sample,
+                throughputDemand = s.throughputDemand,
+                resolvedPartitionFootprint = s.resolvedPartitionFootprint,
+                indexMaintenancePlan = s.indexMaintenancePlan,
+                perItemSamples = perItemSamples
+              ),
+            currentBillingMode = currentBillingMode,
+            currentMaxWriteRqUnits = currentMaxWriteRqUnits,
+            currentAdaptiveMaxWritePerPartition = currentAdaptiveMaxWritePerPartition
+          )
+
+        case s: ShapedTransactGetItemsRequest =>
+          evaluateReadAdmissionShaped(
+            shaped = s,
+            usageState = usageState,
+            burstState = burstState,
+            admittedSample =
+              AdmittedTransactGetItemsSample(
+                req = s.req,
+                executionTarget = s.executionTarget,
+                admissionTarget = s.admissionTarget,
+                sample = s.sample,
+                throughputDemand = s.throughputDemand,
+                resolvedPartitionFootprint = s.resolvedPartitionFootprint
+              ),
+            currentBillingMode = currentBillingMode,
+            currentMaxReadRqUnits = currentMaxReadRqUnits,
+            currentAdaptiveMaxReadPerPartition = currentAdaptiveMaxReadPerPartition
+          )
+
     GraphDSL.create() { implicit b =>
       import GraphDSL.Implicits.*
 
@@ -1240,6 +1294,41 @@ object TableAdmissionStage:
                   resolvedPartitionFootprint = newFootprint,
                   indexMaintenancePlan = newPlanFor(None, r.sample.deletedItemBytes)
                 )
+              case r: ShapedTransactWriteItemsRequest =>
+                val newPerItemFootprints = r.sample.items.map { item =>
+                  PartitionAccessResolver.resolve(
+                    access = item.logicalPartitionAccess,
+                    throughputDemand = TableThroughputMath.transactionalWriteCapacityUnitsFor(item.writtenItemBytes),
+                    topology = topologyState.snapshot
+                  )
+                }
+                val newPerItemPlans = r.sample.items.map { item =>
+                  IndexMaintenancePlanDerivation.derivePlans(
+                    indexMaintenanceTargets = config.indexMaintenanceTargets,
+                    gsiWriteScopes = config.gsiWriteScopes,
+                    fallbackPartitionCount = config.partitionCount,
+                    logicalPartitionAccess = item.logicalPartitionAccess,
+                    newBaseItemBytes = Some(item.writtenItemBytes),
+                    previousBaseItemBytes = item.previousItemBytes,
+                    baseTopologySnapshot = topologyState.snapshot,
+                    gsiTopologySnapshots = gsiTopologyStates.view.mapValues(_.snapshot).toMap
+                  )
+                }
+                r.copy(
+                  resolvedPartitionFootprint = mergeFootprints(newPerItemFootprints),
+                  indexMaintenancePlan = mergeIndexMaintenancePlans(newPerItemPlans),
+                  perItemResolvedFootprints = newPerItemFootprints,
+                  perItemIndexMaintenancePlans = newPerItemPlans
+                )
+              case r: ShapedTransactGetItemsRequest =>
+                val newPerItemFootprints = r.sample.items.map { item =>
+                  PartitionAccessResolver.resolve(
+                    access = item.logicalPartitionAccess,
+                    throughputDemand = TableThroughputMath.transactionalReadCapacityUnitsFor(item.itemBytes),
+                    topology = topologyState.snapshot
+                  )
+                }
+                r.copy(resolvedPartitionFootprint = mergeFootprints(newPerItemFootprints))
 
           def advanceToShaped(eventTime: SimTime): Vector[TimedEvent] =
             topologyChangedOnLastAdvance = false

@@ -195,6 +195,52 @@ object TableStorageStage:
 
           case t: TimedControlEvent => List(t)
 
+          case txn: AdmittedTransactWriteItemsSample =>
+            // Per-item LSI collection check — any rejection aborts the whole transaction
+            val lsiRejection: Option[StorageRejection] =
+              itemCollectionSizeLimitBytes.flatMap { limit =>
+                txn.perItemSamples.iterator.flatMap { item =>
+                  itemCollectionContext(item) match
+                    case None => None
+                    case Some((currentBytes, baseDelta, partitionAccess, plans)) =>
+                      val lsiDelta = plans.collect {
+                        case plan if plan.target.isInstanceOf[DynamoDbTarget.LocalSecondaryIndex] => plan.storageBytesDelta
+                      }.sum
+                      val totalDelta = baseDelta + lsiDelta
+                      val resultingBytes = currentBytes + totalDelta
+                      if totalDelta > 0 && resultingBytes > limit then
+                        Some(StorageRejection(
+                          request = txn.req,
+                          operation = DynamoDbOperationKind.TransactWriteItems,
+                          target = txn.executionTarget,
+                          logicalPartitionAccess = partitionAccess,
+                          resultingCollectionBytes = resultingBytes,
+                          limitBytes = limit
+                        ))
+                      else None
+                }.nextOption()
+              }
+            lsiRejection match
+              case Some(rejection) => List(rejection)
+              case None =>
+                val isSystemError = systemErrorRate > 0.0 && rng.exists(_.nextDouble() < systemErrorRate)
+                if isSystemError then
+                  List(StorageSystemError(txn.req, DynamoDbOperationKind.TransactWriteItems, txn.executionTarget))
+                else
+                  txn.perItemSamples.foreach { item =>
+                    stateModel.recordSuccessfulPut(item.sample.writtenItemBytes, item.sample.previousItemBytes)
+                    if item.sample.createdNewItem then
+                      ttlSampler.foreach(_.recordWrite(item.sample.writtenItemBytes, txn.req.eventTime.ticks))
+                  }
+                  List(StorageAdmitted(txn))
+
+          case txn: AdmittedTransactGetItemsSample =>
+            val isSystemError = systemErrorRate > 0.0 && rng.exists(_.nextDouble() < systemErrorRate)
+            if isSystemError then
+              List(StorageSystemError(txn.req, DynamoDbOperationKind.TransactGetItems, txn.executionTarget))
+            else
+              List(StorageAdmitted(txn))
+
           case sample: AdmittedRequestSample =>
             val outcome = validateItemCollectionLimit(sample, itemCollectionSizeLimitBytes) match
               case Left(rejection) => rejection
@@ -318,6 +364,12 @@ object TableStorageStage:
             usecase = r.usecase,
             deletedItemBytes = s.deletedItemBytes
           )
+
+        case AdmittedTransactWriteItemsSample(r, _, _, s, _, _, _, _) =>
+          TransactWriteItemsResponse(eventTime = r.eventTime, usecase = r.usecase, itemCount = s.itemCount)
+
+        case AdmittedTransactGetItemsSample(r, _, _, s, _, _) =>
+          TransactGetItemsResponse(eventTime = r.eventTime, usecase = r.usecase, items = s.items.map(_.itemBytes))
 
       val responseFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDBResponse]] {
@@ -480,6 +532,30 @@ object TableStorageStage:
             StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
             StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.DeleteItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.DeleteItem))
           )
+
+        case AdmittedTransactWriteItemsSample(r, executionTarget, _, _, _, _, _, perItemSamples) =>
+          val perItemMetrics = perItemSamples.toList.flatMap { item =>
+            List(
+              StorageMetricEvent.PutItemObserved(r.eventTime, r.usecase),
+              StorageMetricEvent.PutItemStored(r.eventTime, r.usecase, item.sample.writtenItemBytes, item.sample.createdNewItem),
+              StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, item.sample.itemCountDelta),
+              StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, item.sample.storageBytesDelta)
+            )
+          }
+          perItemMetrics ++ List(
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.TransactWriteItems, executionTarget, sampleLatencyMs(DynamoDbOperationKind.TransactWriteItems))
+          )
+
+        case AdmittedTransactGetItemsSample(r, executionTarget, _, s, _, _) =>
+          val returnedEvents = s.items.toList.flatMap { item =>
+            item.itemBytes.toList.map { bytes => StorageMetricEvent.GetItemReturned(r.eventTime, r.usecase, bytes) }
+          }
+          List(StorageMetricEvent.GetItemObserved(r.eventTime, r.usecase)) ++
+            returnedEvents ++
+            List(
+              StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.TransactGetItems, s.items.count(_.itemBytes.isDefined).toLong),
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.TransactGetItems, executionTarget, sampleLatencyMs(DynamoDbOperationKind.TransactGetItems))
+            )
 
       val metricFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[StorageMetricEvent]] {
@@ -713,6 +789,37 @@ object TableStorageStage:
             DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, executionTarget, s.storageBytesDelta)
           )
 
+        case AdmittedTransactWriteItemsSample(r, executionTarget, _, _, _, _, _, perItemSamples) =>
+          perItemSamples.toList.flatMap { item =>
+            List(
+              DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                target = executionTarget,
+                units = TableThroughputMath.transactionalWriteCapacityUnitsFor(item.sample.writtenItemBytes)
+              ),
+              DynamoDbConsumptionEvent.StorageBytesWritten(r.eventTime, r.usecase, executionTarget, item.sample.writtenItemBytes),
+              DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, executionTarget, item.sample.storageBytesDelta)
+            )
+          }
+
+        case AdmittedTransactGetItemsSample(r, executionTarget, _, s, _, _) =>
+          s.items.toList.flatMap { item =>
+            val rcuEvents = List(
+              DynamoDbConsumptionEvent.ReadCapacityConsumed(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                target = executionTarget,
+                units = TableThroughputMath.transactionalReadCapacityUnitsFor(item.itemBytes),
+                consistency = ReadConsistency.StronglyConsistent
+              )
+            )
+            val bytesEvents = item.itemBytes.toList.map { bytes =>
+              DynamoDbConsumptionEvent.StorageBytesRead(r.eventTime, r.usecase, executionTarget, bytes)
+            }
+            rcuEvents ++ bytesEvents
+          }
+
       val consumptionFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
           case t: TimedControlEvent => List(t)
@@ -742,12 +849,15 @@ object TableStorageStage:
       // suppressing any sample that was rejected by the item-collection check.
       // Downstream index-maintenance reads from this port so rejected writes do not
       // propagate maintenance effects.
+      // TransactWriteItems expands to individual per-item AdmittedPutItemSamples so the
+      // existing index-maintenance graph receives the per-item write envelopes it expects.
       val validatedSampleFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[AdmittedRequestSample]] {
           case t: TimedControlEvent => List(t)
           case _: TtlExpiry => Nil
           case _: StorageRejection => Nil
           case _: StorageSystemError => Nil
+          case StorageAdmitted(txn: AdmittedTransactWriteItemsSample) => txn.perItemSamples.toList
           case StorageAdmitted(sample) => List(sample)
         }
       )
@@ -902,6 +1012,11 @@ object TableStorageStage:
 
           case _: PartiQLQueryRequest =>
             throw new UnsupportedOperationException("PartiQL query execution is not yet supported")
+
+          case _: TransactWriteItemsRequest | _: TransactGetItemsRequest =>
+            throw new UnsupportedOperationException(
+              "TransactWriteItems/TransactGetItems require the full pipeline (TableSamplingStage + TableAdmissionStage). Use componentOfAdmitted or the full DynamoDbTable.componentOf pipeline."
+            )
 
           case t: TimedControlEvent => t
         }

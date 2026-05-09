@@ -54,7 +54,8 @@ final case class ThermostatFleetScenarioConfig(
   transferPricingRates: CrossRegionTransferPricingRates = CrossRegionTransferPricingRates(),
   pricingSchedule: PricingSchedule = PricingSchedule.default,
   tableClass: DynamoDbTable.TableClass = DynamoDbTable.TableClass.Standard,
-  systemErrorRate: Double = 0.0
+  systemErrorRate: Double = 0.0,
+  transactWriteItemsPerItemBytes: Option[Vector[Long]] = None
 ):
   require(scenarioId.nonEmpty, "scenarioId must be non-empty")
   require(simulationTicks >= 1L, "simulationTicks must be at least 1")
@@ -104,6 +105,10 @@ final case class ThermostatFleetScenarioConfig(
     schedule.validateAgainst(billingMode, simulationTicks) match
       case Left(message) => throw new IllegalArgumentException(message)
       case Right(_) => ()
+  }
+  transactWriteItemsPerItemBytes.foreach { itemBytes =>
+    require(itemBytes.nonEmpty, "transactWriteItemsPerItemBytes must be non-empty when defined")
+    require(itemBytes.forall(_ >= 1L), "transactWriteItemsPerItemBytes values must be positive")
   }
 
   def isMultiRegion: Boolean = regions.size > 1

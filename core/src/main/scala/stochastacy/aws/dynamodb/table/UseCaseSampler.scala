@@ -1,6 +1,6 @@
 package stochastacy.aws.dynamodb.table
 
-import stochastacy.aws.dynamodb.{DeleteItemRequest, GetItemRequest, PutItemRequest, QueryRequest, ScanRequest, UpdateItemRequest}
+import stochastacy.aws.dynamodb.{DeleteItemRequest, GetItemRequest, PutItemRequest, QueryRequest, ScanRequest, TransactGetItemsRequest, TransactWriteItemsRequest, UpdateItemRequest}
 
 /** Bundles table state with the current simulation tick for time-aware samplers. */
 final case class SamplerContext[T <: TableState](state: T, currentTick: Long)
@@ -31,3 +31,9 @@ trait UseCaseSampler[T <: TableState]:
 
   def deleteItem(request: DeleteItemRequest, ctx: SamplerContext[T]): DeleteItemSample =
     throw new UnsupportedOperationException(s"DeleteItem is not supported for use-case '${request.usecase}'")
+
+  def transactWriteItems(request: TransactWriteItemsRequest, ctx: SamplerContext[T]): TransactWriteItemsSample =
+    throw new UnsupportedOperationException(s"TransactWriteItems is not supported for use-case '${request.usecase}'")
+
+  def transactGetItems(request: TransactGetItemsRequest, ctx: SamplerContext[T]): TransactGetItemsSample =
+    throw new UnsupportedOperationException(s"TransactGetItems is not supported for use-case '${request.usecase}'")

@@ -81,24 +81,26 @@ object ThermostatFleetCapstoneConfig:
           systemErrorRate                  = 0.001
         )
       ),
-      // Device Commands: on-demand, low volume; uses eventual reads since ThermostatFleetBehavior
-      // generates GSI queries (which cannot be strongly consistent).
+      // Device Commands: on-demand, low volume; writes are 2-item transactions (status update + audit).
+      // Uses eventual reads since ThermostatFleetBehavior generates GSI queries (which cannot be
+      // strongly consistent). TransactWriteItems models the command dispatch + audit trail pattern.
       MultiTableEntry(
         tableName = DeviceCommandsTableName,
         config = ThermostatFleetScenarioConfig(
-          scenarioId                       = ScenarioId,
-          simulationTicks                  = 1440L,
-          trialCount                       = 1,
-          parallelism                      = 1,
-          tableName                        = DeviceCommandsTableName,
-          regions                          = Vector(DefaultRegion),
-          telemetryReportsPerDevicePerTick = 0.001,
-          customerSupportQueryRatePerTick  = 5.0,
-          fleetDashboardScanRatePerTick    = 0.0,
-          alertStormProbabilityPerTick     = 0.0,
-          billingMode                      = DynamoDbTable.BillingMode.OnDemand(),
-          readConsistency                  = ReadConsistency.EventuallyConsistent,
-          systemErrorRate                  = 0.001
+          scenarioId                          = ScenarioId,
+          simulationTicks                     = 1440L,
+          trialCount                          = 1,
+          parallelism                         = 1,
+          tableName                           = DeviceCommandsTableName,
+          regions                             = Vector(DefaultRegion),
+          telemetryReportsPerDevicePerTick    = 0.001,
+          customerSupportQueryRatePerTick     = 5.0,
+          fleetDashboardScanRatePerTick       = 0.0,
+          alertStormProbabilityPerTick        = 0.0,
+          billingMode                         = DynamoDbTable.BillingMode.OnDemand(),
+          readConsistency                     = ReadConsistency.EventuallyConsistent,
+          systemErrorRate                     = 0.001,
+          transactWriteItemsPerItemBytes      = Some(Vector(200L, 150L))
         )
       ),
       // Device Alerts: on-demand, eventual, higher alert storm rate + polar vortex spike

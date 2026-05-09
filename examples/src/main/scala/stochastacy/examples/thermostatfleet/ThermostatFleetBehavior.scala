@@ -3,6 +3,7 @@ package stochastacy.examples.thermostatfleet
 import org.apache.commons.rng.UniformRandomProvider
 import stochastacy.aws.dynamodb.*
 import stochastacy.aws.dynamodb.table.*
+import stochastacy.sim.SimTime
 
 final class ThermostatFleetBehavior(
   config: ThermostatFleetScenarioConfig,
@@ -76,6 +77,22 @@ final class ThermostatFleetBehavior(
       logicalPartitionAccess = LogicalPartitionAccess.AllPartitions
     )
 
+  override def transactWriteItems(request: TransactWriteItemsRequest, ctx: SamplerContext[TableState]): TransactWriteItemsSample =
+    val fleetSize = currentFleetSize(ctx.currentTick)
+    val perItemBytes = request.perItemBytes
+    val items: Vector[WriteItemSample] = perItemBytes.map { bytes =>
+      val variance = config.telemetryItemBytesVariance
+      val scale = 1.0 - variance + (rng.nextDouble() * 2.0 * variance)
+      val writtenBytes = math.max(1L, (bytes * scale).toLong)
+      ThermostatPutItemSample(
+        writtenItemBytes = writtenBytes,
+        previousItemBytes = None,
+        logicalPartitionAccess = LogicalPartitionAccess.SingleLogicalPartitionKey(nextDeviceKey(fleetSize)),
+        currentItemCollectionBytes = 0L
+      )
+    }
+    ThermostatTransactWriteItemsSample(items)
+
   private def estimateItemCollectionBytes(state: TableState, fleetSize: Long): Long =
     if fleetSize <= 0L || state.itemCount <= 0L then 0L
     else
@@ -98,3 +115,7 @@ private final case class ThermostatPutItemSample(
   override val logicalPartitionAccess: LogicalPartitionAccess,
   override val currentItemCollectionBytes: Long
 ) extends PutItemSample
+
+private final case class ThermostatTransactWriteItemsSample(
+  override val items: Vector[WriteItemSample]
+) extends TransactWriteItemsSample

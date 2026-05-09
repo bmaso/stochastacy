@@ -866,7 +866,11 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
 
       Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDBRequest]) ++
         Iterator.fill(telemetryCount) {
-          PutItemRequest(eventTime = SimTime.of(tick), usecase = config.scenarioId, itemBytes = config.telemetryItemMeanBytes): TimedElement[DynamoDBRequest]
+          config.transactWriteItemsPerItemBytes match
+            case Some(perItemBytes) =>
+              TransactWriteItemsRequest(eventTime = SimTime.of(tick), usecase = config.scenarioId, perItemBytes = perItemBytes): TimedElement[DynamoDBRequest]
+            case None =>
+              PutItemRequest(eventTime = SimTime.of(tick), usecase = config.scenarioId, itemBytes = config.telemetryItemMeanBytes): TimedElement[DynamoDBRequest]
         } ++
         Iterator.fill(baseQuerySampler()) {
           QueryRequest(

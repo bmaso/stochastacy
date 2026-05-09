@@ -171,3 +171,20 @@ final case class TtlExpirySample(
 
 object TtlExpirySample:
   val empty: TtlExpirySample = TtlExpirySample(0L, 0L, Map.empty, Map.empty)
+
+/** Stochastic sample for a TransactWriteItems operation (all-or-nothing set of writes). */
+trait TransactWriteItemsSample:
+  def items: Vector[WriteItemSample]
+  def itemCount: Int = items.length
+
+/** Stochastic sample for a TransactGetItems operation (all strongly-consistent reads). */
+trait TransactGetItemsSample:
+  def items: Vector[GetItemSample]
+  def itemCount: Int = items.length
+
+/** Adapts any WriteItemSample as a PutItemSample for use in AdmittedPutItemSample. */
+private[table] final case class WriteAsPutSample(ws: WriteItemSample) extends PutItemSample:
+  override val writtenItemBytes: Long = ws.writtenItemBytes
+  override val previousItemBytes: Option[Long] = ws.previousItemBytes
+  override val logicalPartitionAccess: LogicalPartitionAccess = ws.logicalPartitionAccess
+  override val currentItemCollectionBytes: Long = ws.currentItemCollectionBytes
