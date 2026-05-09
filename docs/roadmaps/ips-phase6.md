@@ -43,7 +43,7 @@ simulation.
 | 6. ReplicationLatency Metric | Done | `ReplicationMetricEvent.ReplicationLatency` emitted by `ReplicationCoordinator`; `DemoMetric.ReplicationLatency`; per-destination-region panel in multi-region dashboard |
 | 7. SystemErrors | Done | `systemErrorRate: Double` on `DynamoDbTable.Config`; Bernoulli draw in `TableStorageStage`; `StorageMetricEvent.SystemError`; `DemoMetric.SystemErrorCount`; panels in all three thermostat-fleet dashboards |
 | 8. SuccessfulRequestLatency | Done | Log-normal latency samples in `TableStorageStage`; `StorageMetricEvent.SuccessfulRequestLatency`; P50/P95/P99 rollup; latency panels in all three thermostat-fleet dashboards |
-| 9. DynamoDB Transactions | Planned | `TransactWriteItems` (2× WCU/item) and `TransactGetItems` (2× RCU/item); new request/sample types; pricing multiplier in `TableThroughputMath` |
+| 9. DynamoDB Transactions | Done | `TransactWriteItems` (2× WCU/item) and `TransactGetItems` (2× RCU/item, always strongly consistent); new request/response/sample/shaped/admitted types; `transactionalWriteCapacityUnitsFor` / `transactionalReadCapacityUnitsFor` in `TableThroughputMath`; all-or-nothing LSI limit and system-error checks; `WriteAsPutSample` adapter; per-item state mutation; Commands table in capstone uses transactions; 10 new tests |
 | 10. PITR Pricing | Planned | `pointInTimeRecoveryEnabled: Boolean` on `DynamoDbTable.Config`; continuous storage charge at ~$0.20/GB-month; `DemoMetric.TablePITRCumulativeCost`; panel in capstone dashboard |
 
 ---

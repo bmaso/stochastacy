@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-05-06 (phase 6 slices 1–6 complete: read consistency verified, TTL, reactive auto-scaling, multi-table framework, capstone demo, ReplicationLatency metric)
+Last updated: 2026-05-08 (phase 6 slices 1–9 complete; DynamoDB Transactions delivered)
 
 ## Current Position
 
@@ -216,9 +216,11 @@ The "Write Capacity: Consumed vs. Provisioned" panel shows mean, P50, P75, and P
 - [TableStorageStageQuerySpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/TableStorageStageQuerySpec.scala) — asserts `ReturnedItemCount` events including zero-count results
 - [ThermostatFleetSingleTrialRunnerSpec.scala](examples/src/test/scala/stochastacy/examples/thermostatfleet/ThermostatFleetSingleTrialRunnerSpec.scala) — end-to-end trial runner tests including ReturnedItemCount and multi-region GSI metrics
 - [ThermostatFleetMixedModeSingleTrialRunnerSpec.scala](examples/src/test/scala/stochastacy/examples/thermostatfleet/ThermostatFleetMixedModeSingleTrialRunnerSpec.scala) — reserved capacity test uses `PricingSchedule.uniform(reservedRates)`
+- [TransactionSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/table/TransactionSpec.scala) — 8 tests: `TransactWriteItems` 2× WCU billing, LSI all-or-nothing rejection, system-error no-consumption, state mutation per item; `TransactGetItems` 2× strongly-consistent RCU billing, system-error path
+- [ThermostatFleetCapstoneTransactionSpec.scala](examples/src/test/scala/stochastacy/examples/thermostatfleet/ThermostatFleetCapstoneTransactionSpec.scala) — 2 tests: capstone Commands table config uses transactions; end-to-end WCU emission from transactional writes
 - All storage stage specs (GetItem, PutItem, UpdateItem, DeleteItem, Query, Scan)
 
-Total: 295 core tests + 142 examples tests = 437 tests all passing.
+Total: 303 core tests + 171 examples tests = 474 tests all passing.
 
 ## Recommended Next Work
 
@@ -234,12 +236,15 @@ S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises
 5. **DynamoDB capstone demo** — DONE: four-table ThermoFleet-inspired simulation (Device Registry, Telemetry, Commands, Alerts); polar vortex burst (40% fleet, 5× writes); provisioned+auto-scaling on telemetry table; Grafana dashboard with per-table cost, throttle count, provisioned vs. consumed, and EstimatedItemCount panels.
 6. **ReplicationLatency metric** — DONE: `ReplicationMetricEvent.ReplicationLatency` emitted by `ReplicationCoordinator` (both zero-lag and queued paths); routed to per-destination-region metric outlets in `DynamoDbGlobalTable`; collected by multi-region runner as `DemoMetric.ReplicationLatency(region)` with MAX-per-window rollup; Grafana panel in thermostat-fleet dashboard.
 7. **SystemErrors** — Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; no-consumption no-state-mutation guarantee; `DemoMetric.SystemErrorCount`.
-8. **SuccessfulRequestLatency** — log-normal latency samples per admitted non-errored request; `DynamoDbTable.LatencyModel` config; P50/P95/P99 rollup; latency panels in both dashboards.
+8. **SuccessfulRequestLatency** — DONE: log-normal latency samples per admitted non-errored request; `DynamoDbTable.LatencyModel` config; P50/P95/P99 rollup; latency panels in both dashboards.
+9. **DynamoDB Transactions** — DONE: `TransactWriteItems` (2× WCU/item) and `TransactGetItems` (2× RCU/item, always strongly consistent); `TransactWriteItemsRequest` / `TransactGetItemsRequest` / response types in `op_events.scala`; `TransactWriteItemsSample` / `TransactGetItemsSample` sample traits; shaped and admitted types; `transactionalWriteCapacityUnitsFor` / `transactionalReadCapacityUnitsFor` in `TableThroughputMath`; all-or-nothing LSI collection limit and system-error checks; `WriteAsPutSample` adapter; `mergeFootprints` / `mergeIndexMaintenancePlans` helpers; `ThermostatFleetBehavior.transactWriteItems`; capstone Commands table uses 2-item transactions; 10 new tests.
+
+**Remaining Phase 6 work:** Slice 10 — PITR Pricing ($0.20/GB-month for PITR-enabled tables).
 
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
-- `sbt test` runs all 437 tests; `sbt "core/test"` runs the 295 core tests
+- `sbt test` runs all 474 tests; `sbt "core/test"` runs the 303 core tests
 - The canonical planning anchors are [ips-phase5.md](../roadmaps/ips-phase5.md) (complete) and [ips-phase4.md](../roadmaps/ips-phase4.md) (complete); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
 - Implement one slice at a time; use plan mode for new slices
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries
