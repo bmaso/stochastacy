@@ -547,4 +547,13 @@ class DynamoDbTableConfigSpec extends AnyWordSpec with should.Matchers:
 
       belowBaselineError.getMessage should include("requires table read adaptive max")
     }
+
+    "BillingMode.Provisioned with zero replicatedWriteCapacityUnits throws" in {
+      an[IllegalArgumentException] should be thrownBy
+        DynamoDbTable.BillingMode.Provisioned(
+          readCapacityUnits = 1L,
+          writeCapacityUnits = 1L,
+          replicatedWriteCapacityUnits = Some(0L)
+        )
+    }
   }

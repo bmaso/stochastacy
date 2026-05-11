@@ -769,6 +769,90 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
+      "description": "Replicated write capacity units (rWCU) consumed per region per window. rWCU represents inbound replicated writes from other regions and bills at a lower rate than client-originated WCU (~22% cheaper in us-east-1).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "id": 100,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Region:us-east-1:ReplicatedWriteCapacityUnits' then \"value\" end) as \"us-east-1\",\n  avg(case when metric = 'Region:eu-west-1:ReplicatedWriteCapacityUnits' then \"value\" end) as \"eu-west-1\",\n  avg(case when metric = 'Region:ap-southeast-1:ReplicatedWriteCapacityUnits' then \"value\" end) as \"ap-southeast-1\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Region:us-east-1:ReplicatedWriteCapacityUnits',\n    'Region:eu-west-1:ReplicatedWriteCapacityUnits',\n    'Region:ap-southeast-1:ReplicatedWriteCapacityUnits'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Replicated Write Capacity Units by Region",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
       "description": "Per-region RCU consumption per window (mean across trials). Multi-region only.",
       "fieldConfig": {
         "defaults": {
@@ -896,8 +980,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
-        "x": 0,
+        "w": 12,
+        "x": 12,
         "y": 27
       },
       "id": 52,
@@ -929,7 +1013,7 @@
           "refId": "A"
         }
       ],
-      "title": "Cumulative Estimated Cost by Region",
+      "title": "Cumulative Estimated Cost by Region (multi-region only)",
       "type": "timeseries"
     },
     {
@@ -1480,6 +1564,434 @@
         }
       ],
       "title": "Cumulative Cross-Region Transfer Cost",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "Mean items returned to callers per windowed period, split by operation type (Query vs Scan). In a telemetry-heavy fleet, Scan counts should be visibly lower and less frequent than Query counts. Both series will trend upward as the fleet grows.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
+      "id": 101,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"Query\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'ReturnedItemCount:Query'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"Scan\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'ReturnedItemCount:Scan'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "B"
+        }
+      ],
+      "title": "Returned Item Count by Operation (mean across trials)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "Peak replication latency (ms) per destination region per window, averaged across trials. Values are sub-second because the raw sampled lag is preserved before tick-flooring \u2014 e.g., a 0.35-tick lag appears as 350 ms, not 0 ms.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "axisLabel": "ms",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 69
+      },
+      "id": 102,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Region:us-east-1:ReplicationLatencyMs' then \"value\" end) as \"us-east-1\",\n  avg(case when metric = 'Region:eu-west-1:ReplicationLatencyMs' then \"value\" end) as \"eu-west-1\",\n  avg(case when metric = 'Region:ap-southeast-1:ReplicationLatencyMs' then \"value\" end) as \"ap-southeast-1\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Region:us-east-1:ReplicationLatencyMs',\n    'Region:eu-west-1:ReplicationLatencyMs',\n    'Region:ap-southeast-1:ReplicationLatencyMs'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Replication Latency (ms) by Destination Region",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 77
+      },
+      "id": 103,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'LatencyP50:PutItem' then \"value\" end) as \"P50\",\n  avg(case when metric = 'LatencyP95:PutItem' then \"value\" end) as \"P95\",\n  avg(case when metric = 'LatencyP99:PutItem' then \"value\" end) as \"P99\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in ('LatencyP50:PutItem', 'LatencyP95:PutItem', 'LatencyP99:PutItem')\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "PutItem Latency Percentiles (ms, mean across trials)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "Per-region DynamoDB cost breakdown: WCU cost, rWCU cost, and cross-region transfer cost (multi-region only). Reveals which regions and cost components dominate total spending.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": [],
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 85
+      },
+      "id": 104,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.97,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "orientation": "auto",
+        "stacking": "normal",
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        },
+        "xTickLabelRotation": -45,
+        "xTickLabelSpacing": 200
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select\n  split_part(metric, ':', 2) as \"Region\",\n  avg(case when metric like 'Region:%:TotalWriteCapacityCost' then \"value\" end) as \"WCU Cost\",\n  avg(case when metric like 'Region:%:TotalReplicatedWriteCapacityCost' then \"value\" end) as \"rWCU Cost\",\n  avg(case when metric like 'Region:%:TotalTransferCost' then \"value\" end) as \"Transfer Cost\"\nfrom stochastacy_demo.trial_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and (metric like 'Region:%:TotalWriteCapacityCost'\n    or metric like 'Region:%:TotalReplicatedWriteCapacityCost'\n    or metric like 'Region:%:TotalTransferCost')\ngroup by split_part(metric, ':', 2)\norder by split_part(metric, ':', 2);",
+          "refId": "A"
+        }
+      ],
+      "title": "Per-Region Cost Breakdown: WCU / rWCU / Transfer (mean across trials)",
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "System error count per time window (mean across trials). Modelled on SuccessfulRequestLatency and SystemErrors metrics from DynamoDB CloudWatch.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 93
+      },
+      "id": 105,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"SystemErrorCount\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'SystemErrorCount'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "System Error Count",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 101
+      },
+      "id": 106,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'LatencyP50:Query' then \"value\" end) as \"P50\",\n  avg(case when metric = 'LatencyP95:Query' then \"value\" end) as \"P95\",\n  avg(case when metric = 'LatencyP99:Query' then \"value\" end) as \"P99\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in ('LatencyP50:Query', 'LatencyP95:Query', 'LatencyP99:Query')\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Query Latency Percentiles (ms, mean across trials)",
+      "type": "timeseries"
+    },
+    {
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 109
+      },
+      "id": 107,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'LatencyP50:Scan' then \"value\" end) as \"P50\",\n  avg(case when metric = 'LatencyP95:Scan' then \"value\" end) as \"P95\",\n  avg(case when metric = 'LatencyP99:Scan' then \"value\" end) as \"P99\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in ('LatencyP50:Scan', 'LatencyP95:Scan', 'LatencyP99:Scan')\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Scan Latency Percentiles (ms, mean across trials)",
       "type": "timeseries"
     }
   ],

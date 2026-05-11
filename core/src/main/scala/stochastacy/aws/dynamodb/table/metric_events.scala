@@ -102,6 +102,15 @@ object StorageMetricEvent:
                                              bytes: Long
                                            ) extends StorageMetricEvent
 
+  /** Items returned to the caller from a Query or Scan. Emitted once per admitted request,
+   *  including zero-count results. */
+  final case class ReturnedItemCount(
+                                      eventTime: SimTime,
+                                      usecase: Any,
+                                      operation: DynamoDbOperationKind,
+                                      count: Long
+                                    ) extends StorageMetricEvent
+
   final case class IndexEntryInserted(
                                        eventTime: SimTime,
                                        usecase: Any,
@@ -196,3 +205,35 @@ object StorageMetricEvent:
                                                     resultingCollectionBytes: Long,
                                                     limitBytes: Long
                                                   ) extends StorageMetricEvent
+
+  /** A storage-layer system error was simulated for this admitted request. */
+  final case class SystemError(
+    eventTime: SimTime,
+    usecase: Any,
+    operation: DynamoDbOperationKind,
+    target: DynamoDbTarget
+  ) extends StorageMetricEvent
+
+  /** Latency of a successfully admitted operation, sampled from a log-normal distribution. */
+  final case class SuccessfulRequestLatency(
+    eventTime: SimTime,
+    usecase: Any,
+    operation: DynamoDbOperationKind,
+    target: DynamoDbTarget,
+    latencyMs: Double
+  ) extends StorageMetricEvent
+
+  /** TTL background expiry fired for this tick: `count` items removed, `freedBytes` reclaimed from the base table. */
+  final case class TtlItemsExpired(
+    eventTime: SimTime,
+    usecase: Any,
+    count: Long,
+    freedBytes: Long
+  ) extends StorageMetricEvent
+
+  /** Estimated live item count after applying all mutations up to and including this tick. */
+  final case class EstimatedItemCount(
+    eventTime: SimTime,
+    usecase: Any,
+    count: Long
+  ) extends StorageMetricEvent

@@ -7,7 +7,7 @@ import org.apache.pekko.stream.testkit.TestSubscriber
 import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.{DynamoDbReadTarget, RequestedReadShape, ScanRequest, ScanResponse}
+import stochastacy.aws.dynamodb.{DynamoDbOperationKind, DynamoDbReadTarget, RequestedReadShape, ScanRequest, ScanResponse}
 import stochastacy.sim.{SimTime, TimedEvent}
 
 class TableStorageStageScanSpec extends AnyWordSpec with should.Matchers:
@@ -61,6 +61,8 @@ class TableStorageStageScanSpec extends AnyWordSpec with should.Matchers:
       metricEvents.collect { case evt: StorageMetricEvent.ScanObserved => evt.target } shouldBe Vector(DynamoDbReadTarget.Table("orders"))
       metricEvents.collect { case evt: StorageMetricEvent.ScanEvaluated => evt.bytes } shouldBe Vector(12288L)
       metricEvents.collect { case evt: StorageMetricEvent.ScanReturned => evt.bytes } shouldBe Vector(2048L)
+      metricEvents.collect { case e: StorageMetricEvent.ReturnedItemCount => (e.operation, e.count) } shouldBe
+        Vector((DynamoDbOperationKind.Scan, 5L))
 
       tableState.itemCount shouldBe 7L
       tableState.totalItemBytes shouldBe 7168L

@@ -112,6 +112,21 @@ class ThermostatFleetSingleTrialRunnerSpec extends AnyWordSpec with should.Match
       first shouldBe second
     }
 
+    "emit ReturnedItemCount metrics for Query and Scan operations" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val highRateConfig = smallConfig.copy(
+        customerSupportQueryRatePerTick = 5.0,
+        fleetDashboardScanRatePerTick = 5.0
+      )
+      val result = Await.result(
+        runner.runTrial(highRateConfig, TrialRunConfig(trialId = 0, seed = 42L)),
+        30.seconds
+      )
+      val metrics = result.timeSeries.map(_.metric).toSet
+      metrics should contain(DemoMetric.ReturnedItemCount("Query"))
+      metrics should contain(DemoMetric.ReturnedItemCount("Scan"))
+    }
+
     "write capacity should exceed read capacity for telemetry-heavy workload" in {
       val runner = ThermostatFleetSingleTrialRunner()
       val result = Await.result(
@@ -202,6 +217,46 @@ class ThermostatFleetSingleTrialRunnerSpec extends AnyWordSpec with should.Match
       regionWriteSum should be >= BigDecimal(0)
       overallWrite should be >= BigDecimal(0)
     }
+
+    "emit ReturnedItemCount metrics for Query and Scan in multi-region mode" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val highRateConfig = smallMultiRegionConfig.copy(
+        customerSupportQueryRatePerTick = 5.0,
+        fleetDashboardScanRatePerTick = 5.0
+      )
+      val result = Await.result(
+        runner.runTrial(highRateConfig, TrialRunConfig(trialId = 0, seed = 42L)),
+        30.seconds
+      )
+      val metrics = result.timeSeries.map(_.metric).toSet
+      metrics should contain(DemoMetric.ReturnedItemCount("Query"))
+      metrics should contain(DemoMetric.ReturnedItemCount("Scan"))
+    }
+
+    "emit GSI capacity metrics for each region in multi-region mode" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val result = Await.result(
+        runner.runTrial(smallMultiRegionConfig, TrialRunConfig(trialId = 0, seed = 42L)),
+        30.seconds
+      )
+
+      val metrics = result.timeSeries.map(_.metric).toSet
+      metrics should contain(DemoMetric.GsiWriteCapacityUnits(ThermostatFleetScenarioConfig.CustomerDevicesGsiName))
+      metrics should contain(DemoMetric.GsiWriteCapacityUnits(ThermostatFleetScenarioConfig.FleetAlertsGsiName))
+      metrics should contain(DemoMetric.GsiWriteCapacityUnits(ThermostatFleetScenarioConfig.DeviceStatusGsiName))
+    }
+
+    "emit ReplicationLatency time-series points for each destination region" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val result = Await.result(
+        runner.runTrial(smallMultiRegionConfig, TrialRunConfig(trialId = 0, seed = 42L)),
+        30.seconds
+      )
+      val metrics = result.timeSeries.map(_.metric).toSet
+      // Both regions receive replication from the other; both should appear as destinations
+      metrics should contain(DemoMetric.ReplicationLatency("eu-west-1"))
+      metrics should contain(DemoMetric.ReplicationLatency("us-east-1"))
+    }
   }
 
   "ThermostatFleetSingleTrialRunner request generation" should {
@@ -286,5 +341,21 @@ class ThermostatFleetSingleTrialRunnerSpec extends AnyWordSpec with should.Match
       val scheduledMap = scheduled.summary.map(s => s.metric -> s.value).toMap
 
       scheduledMap(DemoMetric.FinalStorageBytes) should be < baselineMap(DemoMetric.FinalStorageBytes)
+    }
+
+    "emit SystemErrorCount metric when systemErrorRate > 0" in {
+      val runner = ThermostatFleetSingleTrialRunner()
+      val highErrorConfig = smallConfig.copy(systemErrorRate = 0.5)
+      val result = Await.result(
+        runner.runTrial(highErrorConfig, TrialRunConfig(trialId = 0, seed = 42L)),
+        30.seconds
+      )
+      val metrics = result.timeSeries.map(_.metric).toSet
+      metrics should contain(DemoMetric.SystemErrorCount)
+      val totalErrors = result.timeSeries
+        .filter(_.metric == DemoMetric.SystemErrorCount)
+        .map(_.value)
+        .sum
+      totalErrors should be > BigDecimal(0)
     }
   }

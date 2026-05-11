@@ -27,6 +27,9 @@ enum DemoMetric:
   case TotalRegionStorageByteTicks(regionName: String)
   case TotalRegionFinalStorageBytes(regionName: String)
   case TotalRegionEstimatedCost(regionName: String)
+  case TotalRegionWriteCapacityCost(regionName: String)
+  case TotalRegionReplicatedWriteCapacityCost(regionName: String)
+  case TotalRegionTransferCost(regionName: String)
   case TotalCrossRegionTransferBytes
   case TotalCrossRegionTransferCost
   case CumulativeCrossRegionTransferCost
@@ -36,6 +39,29 @@ enum DemoMetric:
   case BillingModeIndicator
   case ThrottleCount
   case AdmittedRequestCount
+  case ReturnedItemCount(operation: String)
+  case ReplicationLatency(destinationRegion: String)
+  case SystemErrorCount
+  case LatencyP50(operation: String)
+  case LatencyP95(operation: String)
+  case LatencyP99(operation: String)
+  case EstimatedItemCount
+  // Per-table metrics (multi-table demos)
+  case TableReadCapacityUnits(tableName: String)
+  case TableWriteCapacityUnits(tableName: String)
+  case TableStorageBytes(tableName: String)
+  case TableCumulativeEstimatedCost(tableName: String)
+  case TableTotalReadCapacityUnits(tableName: String)
+  case TableTotalWriteCapacityUnits(tableName: String)
+  case TableTotalStorageByteTicks(tableName: String)
+  case TableFinalStorageBytes(tableName: String)
+  case TableTotalEstimatedCost(tableName: String)
+  case TableThrottleCount(tableName: String)
+  case TableProvisionedReadCapacityUnits(tableName: String)
+  case TableProvisionedWriteCapacityUnits(tableName: String)
+  case TableEstimatedItemCount(tableName: String)
+  case TableSystemErrorCount(tableName: String)
+  case TablePITRCumulativeCost(tableName: String)
 
   def exportName: String =
     this match
@@ -64,6 +90,9 @@ enum DemoMetric:
       case DemoMetric.TotalRegionStorageByteTicks(r) => s"Region:$r:TotalStorageByteTicks"
       case DemoMetric.TotalRegionFinalStorageBytes(r) => s"Region:$r:FinalStorageBytes"
       case DemoMetric.TotalRegionEstimatedCost(r) => s"Region:$r:TotalEstimatedCost"
+      case DemoMetric.TotalRegionWriteCapacityCost(r) => s"Region:$r:TotalWriteCapacityCost"
+      case DemoMetric.TotalRegionReplicatedWriteCapacityCost(r) => s"Region:$r:TotalReplicatedWriteCapacityCost"
+      case DemoMetric.TotalRegionTransferCost(r) => s"Region:$r:TotalTransferCost"
       case DemoMetric.TotalCrossRegionTransferBytes => "TotalCrossRegionTransferBytes"
       case DemoMetric.TotalCrossRegionTransferCost => "TotalCrossRegionTransferCost"
       case DemoMetric.CumulativeCrossRegionTransferCost => "CumulativeCrossRegionTransferCost"
@@ -72,6 +101,28 @@ enum DemoMetric:
       case DemoMetric.BillingModeIndicator => "BillingModeIndicator"
       case DemoMetric.ThrottleCount => "ThrottleCount"
       case DemoMetric.AdmittedRequestCount => "AdmittedRequestCount"
+      case DemoMetric.ReturnedItemCount(op) => s"ReturnedItemCount:$op"
+      case DemoMetric.ReplicationLatency(r) => s"Region:$r:ReplicationLatencyMs"
+      case DemoMetric.SystemErrorCount => "SystemErrorCount"
+      case DemoMetric.LatencyP50(op) => s"LatencyP50:$op"
+      case DemoMetric.LatencyP95(op) => s"LatencyP95:$op"
+      case DemoMetric.LatencyP99(op) => s"LatencyP99:$op"
+      case DemoMetric.EstimatedItemCount => "EstimatedItemCount"
+      case DemoMetric.TableReadCapacityUnits(t)       => s"Table:$t:ReadCapacityUnits"
+      case DemoMetric.TableWriteCapacityUnits(t)      => s"Table:$t:WriteCapacityUnits"
+      case DemoMetric.TableStorageBytes(t)            => s"Table:$t:StorageBytes"
+      case DemoMetric.TableCumulativeEstimatedCost(t) => s"Table:$t:CumulativeEstimatedCost"
+      case DemoMetric.TableTotalReadCapacityUnits(t)  => s"Table:$t:TotalReadCapacityUnits"
+      case DemoMetric.TableTotalWriteCapacityUnits(t) => s"Table:$t:TotalWriteCapacityUnits"
+      case DemoMetric.TableTotalStorageByteTicks(t)   => s"Table:$t:TotalStorageByteTicks"
+      case DemoMetric.TableFinalStorageBytes(t)       => s"Table:$t:FinalStorageBytes"
+      case DemoMetric.TableTotalEstimatedCost(t)      => s"Table:$t:TotalEstimatedCost"
+      case DemoMetric.TableThrottleCount(t)                => s"Table:$t:ThrottleCount"
+      case DemoMetric.TableProvisionedReadCapacityUnits(t) => s"Table:$t:ProvisionedReadCapacityUnits"
+      case DemoMetric.TableProvisionedWriteCapacityUnits(t)=> s"Table:$t:ProvisionedWriteCapacityUnits"
+      case DemoMetric.TableEstimatedItemCount(t)           => s"Table:$t:EstimatedItemCount"
+      case DemoMetric.TableSystemErrorCount(t)             => s"Table:$t:SystemErrorCount"
+      case DemoMetric.TablePITRCumulativeCost(t)           => s"Table:$t:PITRCumulativeCost"
 
   def sortKey: (Int, String) =
     this match
@@ -100,6 +151,9 @@ enum DemoMetric:
       case DemoMetric.TotalRegionStorageByteTicks(r) => (22, r)
       case DemoMetric.TotalRegionFinalStorageBytes(r) => (23, r)
       case DemoMetric.TotalRegionEstimatedCost(r) => (24, r)
+      case DemoMetric.TotalRegionWriteCapacityCost(r) => (39, r)
+      case DemoMetric.TotalRegionReplicatedWriteCapacityCost(r) => (40, r)
+      case DemoMetric.TotalRegionTransferCost(r) => (41, r)
       case DemoMetric.TotalCrossRegionTransferBytes => (25, "")
       case DemoMetric.TotalCrossRegionTransferCost => (26, "")
       case DemoMetric.CumulativeCrossRegionTransferCost => (31, "")
@@ -108,6 +162,28 @@ enum DemoMetric:
       case DemoMetric.BillingModeIndicator => (29, "")
       case DemoMetric.ThrottleCount => (30, "")
       case DemoMetric.AdmittedRequestCount => (32, "")
+      case DemoMetric.ReturnedItemCount(op) => (33, op)
+      case DemoMetric.ReplicationLatency(r) => (34, r)
+      case DemoMetric.SystemErrorCount => (35, "")
+      case DemoMetric.LatencyP50(op) => (36, op)
+      case DemoMetric.LatencyP95(op) => (37, op)
+      case DemoMetric.LatencyP99(op) => (38, op)
+      case DemoMetric.EstimatedItemCount              => (42, "")
+      case DemoMetric.TableReadCapacityUnits(t)       => (43, t)
+      case DemoMetric.TableWriteCapacityUnits(t)      => (44, t)
+      case DemoMetric.TableStorageBytes(t)            => (45, t)
+      case DemoMetric.TableCumulativeEstimatedCost(t) => (46, t)
+      case DemoMetric.TableTotalReadCapacityUnits(t)  => (47, t)
+      case DemoMetric.TableTotalWriteCapacityUnits(t) => (48, t)
+      case DemoMetric.TableTotalStorageByteTicks(t)   => (49, t)
+      case DemoMetric.TableFinalStorageBytes(t)       => (50, t)
+      case DemoMetric.TableTotalEstimatedCost(t)      => (51, t)
+      case DemoMetric.TableThrottleCount(t)                => (52, t)
+      case DemoMetric.TableProvisionedReadCapacityUnits(t) => (53, t)
+      case DemoMetric.TableProvisionedWriteCapacityUnits(t)=> (54, t)
+      case DemoMetric.TableEstimatedItemCount(t)           => (55, t)
+      case DemoMetric.TableSystemErrorCount(t)             => (56, t)
+      case DemoMetric.TablePITRCumulativeCost(t)           => (57, t)
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

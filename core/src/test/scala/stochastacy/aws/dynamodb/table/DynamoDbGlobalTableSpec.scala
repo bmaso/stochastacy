@@ -512,7 +512,8 @@ class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
       val provisioned = DynamoDbTable.BillingMode.Provisioned(
         readCapacityUnits = 1000L,
         writeCapacityUnits = 100L,
-        globalSecondaryIndexReadCapacityUnits = Map(gsiName -> 1000L)
+        globalSecondaryIndexReadCapacityUnits = Map(gsiName -> 1000L),
+        replicatedWriteCapacityUnits = Some(1000L)
       )
       val regionConfigWithGsi = DynamoDbTable.Config(
         tableName = "orders",
@@ -560,6 +561,53 @@ class DynamoDbGlobalTableSpec extends AnyWordSpec with should.Matchers:
       }
       metricsByRegion.values.foreach { metrics =>
         metrics.collect { case _: AdmissionMetricEvent.ProvisionedCapacityChanged => 1 } should not be empty
+      }
+    }
+
+    "destination region's metric outlet carries ReplicationLatency events after a replicated write" in {
+      val rng = RandomSource.XO_RO_SHI_RO_128_PP.create(200L)
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(zeroLagDistribution),
+        rng = rng
+      )
+      val config = globalConfig(Seq("a", "b"), model)
+
+      val sinkMetricA = Sink.seq[TimedEvent]
+      val sinkMetricB = Sink.seq[TimedEvent]
+
+      val (metricAF, metricBF) = RunnableGraph.fromGraph(
+        GraphDSL.createGraph(sinkMetricA, sinkMetricB)((a, b) => (a, b)) {
+          implicit builder => (metAS, metBS) =>
+            import GraphDSL.Implicits.*
+            val table = builder.add(DynamoDbGlobalTable.componentOf(config))
+            Source.single[TimedElement[DynamoDBRequest]](
+              PutItemRequest(SimTime.of(1L), usecase = "put-new", itemBytes = 512L)
+            ) ~> table.regionRequestInlets("a")
+            Source.empty[TimedElement[DynamoDBRequest]] ~> table.regionRequestInlets("b")
+            table.regionResponseOutlets("a") ~> builder.add(Sink.ignore)
+            table.regionResponseOutlets("b") ~> builder.add(Sink.ignore)
+            table.regionConsumptionOutlets("a") ~> builder.add(Sink.ignore)
+            table.regionConsumptionOutlets("b") ~> builder.add(Sink.ignore)
+            table.regionMetricOutlets("a") ~> metAS
+            table.regionMetricOutlets("b") ~> metBS
+            table.transferEventsOutlet ~> builder.add(Sink.ignore)
+            ClosedShape
+        }
+      ).run()
+
+      val metricA = Await.result(metricAF, 5.seconds)
+      val metricB = Await.result(metricBF, 5.seconds)
+
+      // Origin region (a): no latency events (writes don't replicate back to origin).
+      metricA.collect { case lat: ReplicationMetricEvent.ReplicationLatency => lat } shouldBe empty
+
+      // Destination region (b): latency event for the write replicated from a→b.
+      val latencyEventsB = metricB.collect { case lat: ReplicationMetricEvent.ReplicationLatency => lat }
+      latencyEventsB should not be empty
+      latencyEventsB.foreach { lat =>
+        lat.destinationRegion shouldBe "b"
+        lat.sourceRegion shouldBe "a"
+        (lat.lagMs >= 0.0) shouldBe true
       }
     }
   }

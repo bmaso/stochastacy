@@ -72,9 +72,29 @@ object TimeWindowRollups:
           DemoMetric.CumulativeCrossRegionTransferCost =>
         points.maxBy(_.tick).value
       case DemoMetric.ThrottleCount | DemoMetric.AdmittedRequestCount |
-          DemoMetric.ProvisionedWriteCapacityUnits =>
+          DemoMetric.ProvisionedWriteCapacityUnits | DemoMetric.SystemErrorCount =>
         points.map(_.value).sum
       case DemoMetric.ProvisionedReadCapacityUnits | DemoMetric.BillingModeIndicator =>
+        points.maxBy(_.tick).value
+      case DemoMetric.ReturnedItemCount(_) =>
+        points.map(_.value).sum
+      case DemoMetric.ReplicationLatency(_) =>
+        points.map(_.value).maxOption.getOrElse(BigDecimal(0))
+      case DemoMetric.LatencyP50(_) | DemoMetric.LatencyP95(_) | DemoMetric.LatencyP99(_) =>
+        points.map(_.value).maxOption.getOrElse(BigDecimal(0))
+      case DemoMetric.EstimatedItemCount =>
+        points.maxBy(_.tick).value
+      case DemoMetric.TableReadCapacityUnits(_) | DemoMetric.TableWriteCapacityUnits(_) =>
+        points.map(_.value).sum
+      case DemoMetric.TableStorageBytes(_) =>
+        points.map(_.value).sum / BigDecimal(points.size)
+      case DemoMetric.TableCumulativeEstimatedCost(_) =>
+        points.maxBy(_.tick).value
+      case DemoMetric.TableThrottleCount(_) | DemoMetric.TableSystemErrorCount(_) =>
+        points.map(_.value).sum
+      case DemoMetric.TableProvisionedReadCapacityUnits(_) | DemoMetric.TableProvisionedWriteCapacityUnits(_) =>
+        points.map(_.value).sum
+      case DemoMetric.TableEstimatedItemCount(_) =>
         points.maxBy(_.tick).value
       case unsupported =>
         throw new IllegalArgumentException(s"windowed time-series rollups are not supported for metric: $unsupported")

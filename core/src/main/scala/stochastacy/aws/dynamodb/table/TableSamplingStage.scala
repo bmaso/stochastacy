@@ -4,6 +4,7 @@ import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.Flow
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
+import scala.collection.immutable.SortedMap
 
 /**
  * The sampling and shaping stage sits upstream of `TableAdmissionStage` in the internal
@@ -212,6 +213,62 @@ private[table] object TableSamplingStage:
             logicalPartitionAccess = access,
             resolvedPartitionFootprint = footprint,
             indexMaintenancePlan = maintenancePlan
+          )
+
+        case r: TransactWriteItemsRequest =>
+          val sample = samplerFor(r).transactWriteItems(r, SamplerContext(config.stateModel, r.eventTime.ticks))
+          val perItemSamples = sample.items
+          val perItemDemands = perItemSamples.map(item => TableThroughputMath.transactionalWriteCapacityUnitsFor(item.writtenItemBytes))
+          val totalDemand = perItemDemands.sum
+          val perItemAccess = perItemSamples.map(_.logicalPartitionAccess)
+          val perItemFootprints = perItemSamples.zip(perItemDemands).map { case (item, demand) =>
+            PartitionAccessResolver.resolve(
+              access = item.logicalPartitionAccess,
+              throughputDemand = demand,
+              topology = topologySnapshot
+            )
+          }
+          val perItemPlans = perItemSamples.map { item =>
+            deriveIndexMaintenancePlan(
+              logicalPartitionAccess = item.logicalPartitionAccess,
+              newBaseItemBytes = Some(item.writtenItemBytes),
+              previousBaseItemBytes = item.previousItemBytes,
+              baseTopologySnapshot = topologySnapshot,
+              topologySnapshotsByIndex = gsiTopologySnapshots
+            )
+          }
+          ShapedTransactWriteItemsRequest(
+            req = r,
+            executionTarget = config.executionTarget,
+            admissionTarget = config.admissionTarget,
+            sample = sample,
+            throughputDemand = totalDemand,
+            logicalPartitionAccess = LogicalPartitionAccess.AllPartitions,
+            resolvedPartitionFootprint = mergeFootprints(perItemFootprints),
+            indexMaintenancePlan = mergeIndexMaintenancePlans(perItemPlans),
+            perItemResolvedFootprints = perItemFootprints,
+            perItemIndexMaintenancePlans = perItemPlans
+          )
+
+        case r: TransactGetItemsRequest =>
+          val sample = samplerFor(r).transactGetItems(r, SamplerContext(config.stateModel, r.eventTime.ticks))
+          val perItemDemands = sample.items.map(item => TableThroughputMath.transactionalReadCapacityUnitsFor(item.itemBytes))
+          val totalDemand = perItemDemands.sum
+          val perItemFootprints = sample.items.zip(perItemDemands).map { case (item, demand) =>
+            PartitionAccessResolver.resolve(
+              access = item.logicalPartitionAccess,
+              throughputDemand = demand,
+              topology = topologySnapshot
+            )
+          }
+          ShapedTransactGetItemsRequest(
+            req = r,
+            executionTarget = config.executionTarget,
+            admissionTarget = config.admissionTarget,
+            sample = sample,
+            throughputDemand = totalDemand,
+            logicalPartitionAccess = LogicalPartitionAccess.AllPartitions,
+            resolvedPartitionFootprint = mergeFootprints(perItemFootprints)
           )
 
         case _: PartiQLQueryRequest =>

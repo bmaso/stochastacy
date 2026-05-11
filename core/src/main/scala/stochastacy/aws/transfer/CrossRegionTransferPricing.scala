@@ -84,15 +84,32 @@ object CrossRegionTransferCostBreakdown:
              totals: CrossRegionTransferUsageTotals,
              rates: CrossRegionTransferPricingRates
            ): CrossRegionTransferCostBreakdown =
-    val costByPair: Map[(String, String), BigDecimal] =
-      totals.byDirectionalPair.map { case (pair @ (sourceRegion, _), pairTotals) =>
-        val tiers = rates.tiersFor(sourceRegion)
-        pair -> priceBytes(pairTotals.totalBytes, tiers)
+    // Aggregate bytes per source region across all destinations before applying tiers.
+    // AWS data-transfer tiers are per source region (not per directional pair), so a source
+    // sending to N destinations uses a single shared tier counter.
+    val bytesPerSource: Map[String, Long] =
+      totals.byDirectionalPair
+        .groupBy { case ((src, _), _) => src }
+        .view.mapValues(_.values.map(_.totalBytes).sum)
+        .toMap
+
+    val costPerSource: Map[String, BigDecimal] =
+      bytesPerSource.map { case (src, totalBytes) =>
+        src -> priceBytes(totalBytes, rates.tiersFor(src))
       }
 
-    val totalCost = costByPair.values.foldLeft(BigDecimal(0))(_ + _)
+    // Distribute per-source cost to directional pairs proportionally by byte fraction.
+    val costByPair: Map[(String, String), BigDecimal] =
+      totals.byDirectionalPair.map { case (pair @ (src, _), pairTotals) =>
+        val srcTotal = bytesPerSource.getOrElse(src, 0L)
+        val pairCost =
+          if srcTotal == 0L then BigDecimal(0)
+          else costPerSource(src) * BigDecimal(pairTotals.totalBytes) / BigDecimal(srcTotal)
+        pair -> pairCost
+      }
 
+    // totalCost from costPerSource (not costByPair) to avoid rounding from proportional split.
     CrossRegionTransferCostBreakdown(
-      totalCost = totalCost,
+      totalCost = costPerSource.values.foldLeft(BigDecimal(0))(_ + _),
       costByDirectionalPair = costByPair
     )

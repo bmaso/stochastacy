@@ -25,7 +25,8 @@ object ThermostatFleetBridgeCommand:
     simulationTicks: Long,
     mode: String,
     initialProvisionedWcu: Long,
-    adjustedProvisionedWcu: Long
+    adjustedProvisionedWcu: Long,
+    maxWaitMinutes: Int = 10
   ) extends ThermostatFleetBridgeCommand
 
   final case class Stage(
@@ -45,11 +46,11 @@ object ThermostatFleetBridgeCommand:
 
 object ThermostatFleetBridgeCli:
   private val GenerateUsage =
-    "usage: ThermostatFleetBridge generate --output <path> --mode <single-region|multi-region|mixed-mode> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>] [--initial-provisioned-wcu <long>] [--adjusted-provisioned-wcu <long>]"
+    "usage: ThermostatFleetBridge generate --output <path> --mode <single-region|multi-region|mixed-mode|multi-table|capstone> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>] [--initial-provisioned-wcu <long>] [--adjusted-provisioned-wcu <long>] [--max-wait-minutes <int>]"
   private val StageUsage =
-    "usage: ThermostatFleetBridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--mode <single-region|multi-region|mixed-mode>]"
+    "usage: ThermostatFleetBridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--mode <single-region|multi-region|mixed-mode|multi-table|capstone>]"
   private val ViewUsage =
-    "usage: ThermostatFleetBridge view --batch-id <id> [--mode <single-region|multi-region|mixed-mode>] [--grafana-base-url <url>]"
+    "usage: ThermostatFleetBridge view --batch-id <id> [--mode <single-region|multi-region|mixed-mode|multi-table|capstone>] [--grafana-base-url <url>]"
   private val TopLevelUsage =
     s"""usage:
        |  $GenerateUsage
@@ -82,7 +83,8 @@ object ThermostatFleetBridgeCli:
       simulationTicks: Option[Long],
       mode: Option[String],
       initialProvisionedWcu: Option[Long],
-      adjustedProvisionedWcu: Option[Long]
+      adjustedProvisionedWcu: Option[Long],
+      maxWaitMinutes: Option[Int]
     ): Either[String, ThermostatFleetBridgeCommand.Generate] =
       remaining match
         case Nil =>
@@ -99,45 +101,51 @@ object ThermostatFleetBridgeCli:
             simulationTicks = simulationTicks.getOrElse(defaults.simulationTicks),
             mode = m,
             initialProvisionedWcu = initialProvisionedWcu.getOrElse(mmDefaults.initialProvisionedWcu),
-            adjustedProvisionedWcu = adjustedProvisionedWcu.getOrElse(mmDefaults.adjustedProvisionedWcu)
+            adjustedProvisionedWcu = adjustedProvisionedWcu.getOrElse(mmDefaults.adjustedProvisionedWcu),
+            maxWaitMinutes = maxWaitMinutes.getOrElse(10)
           )
 
         case "--output" :: value :: tail =>
           if outputPath.nonEmpty then Left(s"duplicate flag: --output\n$GenerateUsage")
-          else loop(tail, Some(Path.of(value)), batchId, trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu)
+          else loop(tail, Some(Path.of(value)), batchId, trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu, maxWaitMinutes)
 
         case "--batch-id" :: value :: tail =>
           if batchId.nonEmpty then Left(s"duplicate flag: --batch-id\n$GenerateUsage")
-          else loop(tail, outputPath, Some(value), trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu)
+          else loop(tail, outputPath, Some(value), trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu, maxWaitMinutes)
 
         case "--trial-count" :: value :: tail =>
           if trialCount.nonEmpty then Left(s"duplicate flag: --trial-count\n$GenerateUsage")
           else parseIntFlag("--trial-count", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, Some(parsed), parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu))
+            loop(tail, outputPath, batchId, Some(parsed), parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu, maxWaitMinutes))
 
         case "--parallelism" :: value :: tail =>
           if parallelism.nonEmpty then Left(s"duplicate flag: --parallelism\n$GenerateUsage")
           else parseIntFlag("--parallelism", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, trialCount, Some(parsed), simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu))
+            loop(tail, outputPath, batchId, trialCount, Some(parsed), simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu, maxWaitMinutes))
 
         case "--simulation-ticks" :: value :: tail =>
           if simulationTicks.nonEmpty then Left(s"duplicate flag: --simulation-ticks\n$GenerateUsage")
           else parseLongFlag("--simulation-ticks", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, trialCount, parallelism, Some(parsed), mode, initialProvisionedWcu, adjustedProvisionedWcu))
+            loop(tail, outputPath, batchId, trialCount, parallelism, Some(parsed), mode, initialProvisionedWcu, adjustedProvisionedWcu, maxWaitMinutes))
 
         case "--mode" :: value :: tail =>
           if mode.nonEmpty then Left(s"duplicate flag: --mode\n$GenerateUsage")
-          else loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, Some(value), initialProvisionedWcu, adjustedProvisionedWcu)
+          else loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, Some(value), initialProvisionedWcu, adjustedProvisionedWcu, maxWaitMinutes)
 
         case "--initial-provisioned-wcu" :: value :: tail =>
           if initialProvisionedWcu.nonEmpty then Left(s"duplicate flag: --initial-provisioned-wcu\n$GenerateUsage")
           else parseLongFlag("--initial-provisioned-wcu", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, mode, Some(parsed), adjustedProvisionedWcu))
+            loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, mode, Some(parsed), adjustedProvisionedWcu, maxWaitMinutes))
 
         case "--adjusted-provisioned-wcu" :: value :: tail =>
           if adjustedProvisionedWcu.nonEmpty then Left(s"duplicate flag: --adjusted-provisioned-wcu\n$GenerateUsage")
           else parseLongFlag("--adjusted-provisioned-wcu", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, Some(parsed)))
+            loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, Some(parsed), maxWaitMinutes))
+
+        case "--max-wait-minutes" :: value :: tail =>
+          if maxWaitMinutes.nonEmpty then Left(s"duplicate flag: --max-wait-minutes\n$GenerateUsage")
+          else parseIntFlag("--max-wait-minutes", value, GenerateUsage).flatMap(parsed =>
+            loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, mode, initialProvisionedWcu, adjustedProvisionedWcu, Some(parsed)))
 
         case flag :: Nil if flag.startsWith("--") =>
           Left(s"missing value for flag: $flag\n$GenerateUsage")
@@ -148,7 +156,7 @@ object ThermostatFleetBridgeCli:
         case value :: _ =>
           Left(s"unexpected argument: $value\n$GenerateUsage")
 
-    loop(args, None, None, None, None, None, None, None, None)
+    loop(args, None, None, None, None, None, None, None, None, None)
 
   private def parseStage(args: List[String]): Either[String, ThermostatFleetBridgeCommand.Stage] =
     def loop(
@@ -184,6 +192,12 @@ object ThermostatFleetBridgeCli:
               case "multi-region" =>
                 val c = ThermostatFleetScenarioConfig.multiRegionDefault
                 (c.scenarioId, ThermostatFleetDemoRunner.BaseSeed, c.readConsistency.toString, c.tableName)
+              case "multi-table" =>
+                val c = MultiTableScenarioConfig.twoTableDefault
+                (c.scenarioId, ThermostatFleetMultiTableDemoRunner.BaseSeed, "EventuallyConsistent", "multi-table")
+              case "capstone" =>
+                val c = ThermostatFleetCapstoneConfig.capstoneDefault
+                (c.scenarioId, ThermostatFleetCapstoneDemoRunner.BaseSeed, "EventuallyConsistent", "capstone")
               case _ =>
                 val c = ThermostatFleetScenarioConfig.singleRegionDefault
                 (c.scenarioId, ThermostatFleetDemoRunner.BaseSeed, c.readConsistency.toString, c.tableName)
@@ -249,6 +263,8 @@ object ThermostatFleetBridgeCli:
             val scenarioId = resolvedMode match
               case "mixed-mode"   => ThermostatFleetMixedModeConfig().scenarioId
               case "multi-region" => ThermostatFleetScenarioConfig.multiRegionDefault.scenarioId
+              case "multi-table"  => MultiTableScenarioConfig.twoTableDefault.scenarioId
+              case "capstone"     => ThermostatFleetCapstoneConfig.capstoneDefault.scenarioId
               case _              => ThermostatFleetScenarioConfig.singleRegionDefault.scenarioId
             ThermostatFleetBridgeCommand.View(
               grafanaBaseUrl = grafanaBaseUrl.getOrElse("http://localhost:3000"),
@@ -273,8 +289,8 @@ object ThermostatFleetBridgeCli:
     loop(args, None, None, None)
 
   private def validateMode(mode: String, usage: String): Either[String, Unit] =
-    if mode == "single-region" || mode == "multi-region" || mode == "mixed-mode" then Right(())
-    else Left(s"--mode must be 'single-region', 'multi-region', or 'mixed-mode', got: $mode\n$usage")
+    if Set("single-region", "multi-region", "mixed-mode", "multi-table", "capstone").contains(mode) then Right(())
+    else Left(s"--mode must be 'single-region', 'multi-region', 'mixed-mode', 'multi-table', or 'capstone', got: $mode\n$usage")
 
   private def parseIntFlag(name: String, value: String, usage: String): Either[String, Int] =
     Try(value.toInt).toEither.left.map(_ => s"invalid integer for $name: $value\n$usage").flatMap { parsed =>
@@ -433,6 +449,339 @@ object ThermostatFleetGrafanaView:
   private def encode(value: String): String =
     URLEncoder.encode(value, StandardCharsets.UTF_8)
 
+object ThermostatFleetMixedModeDemoRunner:
+  val BaseSeed: Long = 20260426L
+
+  def generateToFile(
+    outputPath: Path,
+    trialCount: Int,
+    parallelism: Int,
+    simulationTicks: Long,
+    initialProvisionedWcu: Long,
+    adjustedProvisionedWcu: Long
+  )(using ActorSystem, Materializer, ExecutionContext): Future[String] =
+    import org.apache.pekko.stream.scaladsl.{Source => PekkoSource}
+    import org.json4s.jackson.Serialization
+    given org.json4s.DefaultFormats = org.json4s.DefaultFormats
+
+    val modeSwitchTick    = simulationTicks / 3
+    val capacityAdjustTick = simulationTicks * 2 / 3
+    val config = ThermostatFleetMixedModeConfig(
+      trialCount             = trialCount,
+      parallelism            = parallelism,
+      simulationTicks        = simulationTicks,
+      modeSwitchTick         = modeSwitchTick,
+      capacityAdjustTick     = capacityAdjustTick,
+      initialProvisionedWcu  = initialProvisionedWcu,
+      adjustedProvisionedWcu = adjustedProvisionedWcu
+    )
+    val runner = ThermostatFleetMixedModeSingleTrialRunner()
+    val exec   = TrialExecutionConfig(trialCount, parallelism, BaseSeed)
+
+    val writer = new java.io.BufferedWriter(
+      new java.io.OutputStreamWriter(
+        java.nio.file.Files.newOutputStream(outputPath),
+        java.nio.charset.StandardCharsets.UTF_8
+      )
+    )
+
+    case class AggState(
+      mcAgg: IncrementalMonteCarloAgg,
+      windowedAgg: Map[WindowSizeSeconds, IncrementalWindowedAgg],
+      recordCount: Int,
+      completedTrials: Int
+    )
+
+    val initState = AggState(
+      mcAgg = IncrementalMonteCarloAgg(config.scenarioId),
+      windowedAgg = WindowSizeSeconds.phase1Values.map(ws => ws -> IncrementalWindowedAgg(ws)).toMap,
+      recordCount = 0,
+      completedTrials = 0
+    )
+
+    def writeRecord(rec: DemoExportRecord): Unit =
+      writer.write(Serialization.write(rec))
+      writer.newLine()
+
+    val barWidth = 40
+    def printProgress(completed: Int): Unit =
+      val pct    = if trialCount == 0 then 100 else (completed * 100) / trialCount
+      val filled = if trialCount == 0 then barWidth else (completed * barWidth) / trialCount
+      val bar    = "█" * filled + "░" * (barWidth - filled)
+      print(s"\r[$bar] $completed/$trialCount ($pct%)")
+      System.out.flush()
+
+    printProgress(0)
+
+    PekkoSource(exec.trialRunConfigs)
+      .mapAsync(parallelism)(run => runner.runTrial(config, run))
+      .runFold(initState) { (state, trial) =>
+        val perTrialRecs =
+          DemoExportRecord.fromTrialResult(trial) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromWindowedTrialTimeSeries(
+                trial.scenarioId, trial.trialId,
+                TimeWindowRollups.rollupTrialTimeSeries(trial.timeSeries, ws)
+              )
+            }
+        perTrialRecs.foreach(writeRecord)
+        val newCompleted = state.completedTrials + 1
+        printProgress(newCompleted)
+        state.copy(
+          mcAgg = state.mcAgg.addTrial(trial),
+          windowedAgg = state.windowedAgg.map { case (ws, wagg) => ws -> wagg.addTrial(trial.timeSeries) },
+          recordCount = state.recordCount + perTrialRecs.size,
+          completedTrials = newCompleted
+        )
+      }
+      .map { finalState =>
+        val mcResult = finalState.mcAgg.toMonteCarloResult
+        val aggRecs =
+          DemoExportRecord.fromMonteCarloResult(mcResult) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromAggregatedWindowedTimeSeries(
+                mcResult.scenarioId, mcResult.trialCount,
+                finalState.windowedAgg(ws).toAggregatedWindowedPoints
+              )
+            }
+        aggRecs.foreach(writeRecord)
+        writer.flush()
+        writer.close()
+        println()
+        s"wrote ${finalState.recordCount + aggRecs.size} records for scenario ${mcResult.scenarioId} to $outputPath"
+      }
+      .andThen { case scala.util.Failure(_) => println(); scala.util.Try(writer.close()) }(ExecutionContext.parasitic)
+
+object ThermostatFleetMixedModeGrafanaView:
+  private val DashboardUid  = "ips-phase4-mixed-mode"
+  private val DashboardSlug = "thermostat-fleet-mixed-billing-mode-demo"
+
+  def url(grafanaBaseUrl: String, batchId: String, scenarioId: String): String =
+    val base = grafanaBaseUrl.stripSuffix("/")
+    s"$base/d/$DashboardUid/$DashboardSlug?var-batch_id=${encode(batchId)}&var-scenarioId=${encode(scenarioId)}"
+
+  private def encode(value: String): String =
+    URLEncoder.encode(value, StandardCharsets.UTF_8)
+
+object ThermostatFleetMultiTableGrafanaView:
+  private val DashboardUid  = "ips-phase6-multi-table"
+  private val DashboardSlug = "thermostat-fleet-multi-table-demo"
+
+  def url(grafanaBaseUrl: String, batchId: String, scenarioId: String): String =
+    val base = grafanaBaseUrl.stripSuffix("/")
+    s"$base/d/$DashboardUid/$DashboardSlug?var-batch_id=${encode(batchId)}&var-scenarioId=${encode(scenarioId)}"
+
+  private def encode(value: String): String =
+    URLEncoder.encode(value, StandardCharsets.UTF_8)
+
+object ThermostatFleetMultiTableDemoRunner:
+  val BaseSeed: Long = 20260426L
+
+  def generateToFile(
+    outputPath: java.nio.file.Path,
+    trialCount: Int,
+    parallelism: Int,
+    simulationTicks: Long
+  )(using org.apache.pekko.actor.ActorSystem, org.apache.pekko.stream.Materializer, scala.concurrent.ExecutionContext): scala.concurrent.Future[String] =
+    import org.apache.pekko.stream.scaladsl.{Source => PekkoSource}
+    import org.json4s.jackson.Serialization
+    given org.json4s.DefaultFormats = org.json4s.DefaultFormats
+
+    val config = MultiTableScenarioConfig.twoTableDefault.copy(
+      trialCount      = trialCount,
+      parallelism     = parallelism,
+      simulationTicks = simulationTicks,
+      tables = MultiTableScenarioConfig.twoTableDefault.tables.map { entry =>
+        entry.copy(config = entry.config.copy(simulationTicks = simulationTicks))
+      }
+    )
+    val runner = ThermostatFleetMultiTableSingleTrialRunner()
+    val exec   = stochastacy.demo.TrialExecutionConfig(trialCount, parallelism, BaseSeed)
+
+    val writer = new java.io.BufferedWriter(
+      new java.io.OutputStreamWriter(
+        java.nio.file.Files.newOutputStream(outputPath),
+        java.nio.charset.StandardCharsets.UTF_8
+      )
+    )
+
+    case class AggState(
+      mcAgg: stochastacy.demo.IncrementalMonteCarloAgg,
+      windowedAgg: Map[WindowSizeSeconds, stochastacy.demo.IncrementalWindowedAgg],
+      recordCount: Int,
+      completedTrials: Int
+    )
+
+    val initState = AggState(
+      mcAgg        = stochastacy.demo.IncrementalMonteCarloAgg(config.scenarioId),
+      windowedAgg  = WindowSizeSeconds.phase1Values.map(ws => ws -> stochastacy.demo.IncrementalWindowedAgg(ws)).toMap,
+      recordCount  = 0,
+      completedTrials = 0
+    )
+
+    def writeRecord(rec: DemoExportRecord): Unit =
+      writer.write(Serialization.write(rec))
+      writer.newLine()
+
+    val barWidth = 40
+    def printProgress(completed: Int): Unit =
+      val pct    = if trialCount == 0 then 100 else (completed * 100) / trialCount
+      val filled = if trialCount == 0 then barWidth else (completed * barWidth) / trialCount
+      val bar    = "█" * filled + "░" * (barWidth - filled)
+      print(s"\r[$bar] $completed/$trialCount ($pct%)")
+      System.out.flush()
+
+    printProgress(0)
+
+    PekkoSource(exec.trialRunConfigs)
+      .mapAsync(parallelism)(run => runner.runTrial(config, run))
+      .runFold(initState) { (state, trial) =>
+        val perTrialRecs =
+          DemoExportRecord.fromTrialResult(trial) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromWindowedTrialTimeSeries(
+                trial.scenarioId, trial.trialId,
+                TimeWindowRollups.rollupTrialTimeSeries(trial.timeSeries, ws)
+              )
+            }
+        perTrialRecs.foreach(writeRecord)
+        val newCompleted = state.completedTrials + 1
+        printProgress(newCompleted)
+        state.copy(
+          mcAgg       = state.mcAgg.addTrial(trial),
+          windowedAgg = state.windowedAgg.map { case (ws, wagg) => ws -> wagg.addTrial(trial.timeSeries) },
+          recordCount = state.recordCount + perTrialRecs.size,
+          completedTrials = newCompleted
+        )
+      }
+      .map { finalState =>
+        val mcResult = finalState.mcAgg.toMonteCarloResult
+        val aggRecs =
+          DemoExportRecord.fromMonteCarloResult(mcResult) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromAggregatedWindowedTimeSeries(
+                mcResult.scenarioId, mcResult.trialCount,
+                finalState.windowedAgg(ws).toAggregatedWindowedPoints
+              )
+            }
+        aggRecs.foreach(writeRecord)
+        writer.flush()
+        writer.close()
+        println()
+        s"wrote ${finalState.recordCount + aggRecs.size} records for scenario ${mcResult.scenarioId} to $outputPath"
+      }
+      .andThen { case scala.util.Failure(_) => println(); scala.util.Try(writer.close()) }(scala.concurrent.ExecutionContext.parasitic)
+
+object ThermostatFleetCapstoneGrafanaView:
+  private val DashboardUid  = "ips-phase6-capstone"
+  private val DashboardSlug = "thermostat-fleet-capstone-demo"
+
+  def url(grafanaBaseUrl: String, batchId: String, scenarioId: String): String =
+    val base = grafanaBaseUrl.stripSuffix("/")
+    s"$base/d/$DashboardUid/$DashboardSlug?var-batch_id=${encode(batchId)}&var-scenarioId=${encode(scenarioId)}"
+
+  private def encode(value: String): String =
+    java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8)
+
+object ThermostatFleetCapstoneDemoRunner:
+  val BaseSeed: Long = 20260426L
+
+  def generateToFile(
+    outputPath: java.nio.file.Path,
+    trialCount: Int,
+    parallelism: Int,
+    simulationTicks: Long
+  )(using org.apache.pekko.actor.ActorSystem, org.apache.pekko.stream.Materializer, scala.concurrent.ExecutionContext): scala.concurrent.Future[String] =
+    import org.apache.pekko.stream.scaladsl.{Source => PekkoSource}
+    import org.json4s.jackson.Serialization
+    given org.json4s.DefaultFormats = org.json4s.DefaultFormats
+
+    val base = ThermostatFleetCapstoneConfig.capstoneDefault
+    val config = base.copy(
+      trialCount      = trialCount,
+      parallelism     = parallelism,
+      simulationTicks = simulationTicks,
+      tables = base.tables.map { entry =>
+        entry.copy(config = entry.config.copy(simulationTicks = simulationTicks))
+      }
+    )
+    val runner = ThermostatFleetCapstoneSingleTrialRunner()
+    val exec   = stochastacy.demo.TrialExecutionConfig(trialCount, parallelism, BaseSeed)
+
+    val writer = new java.io.BufferedWriter(
+      new java.io.OutputStreamWriter(
+        java.nio.file.Files.newOutputStream(outputPath),
+        java.nio.charset.StandardCharsets.UTF_8
+      )
+    )
+
+    case class AggState(
+      mcAgg: stochastacy.demo.IncrementalMonteCarloAgg,
+      windowedAgg: Map[WindowSizeSeconds, stochastacy.demo.IncrementalWindowedAgg],
+      recordCount: Int,
+      completedTrials: Int
+    )
+
+    val initState = AggState(
+      mcAgg        = stochastacy.demo.IncrementalMonteCarloAgg(config.scenarioId),
+      windowedAgg  = WindowSizeSeconds.phase1Values.map(ws => ws -> stochastacy.demo.IncrementalWindowedAgg(ws)).toMap,
+      recordCount  = 0,
+      completedTrials = 0
+    )
+
+    def writeRecord(rec: DemoExportRecord): Unit =
+      writer.write(Serialization.write(rec))
+      writer.newLine()
+
+    val barWidth = 40
+    def printProgress(completed: Int): Unit =
+      val pct    = if trialCount == 0 then 100 else (completed * 100) / trialCount
+      val filled = if trialCount == 0 then barWidth else (completed * barWidth) / trialCount
+      val bar    = "█" * filled + "░" * (barWidth - filled)
+      print(s"\r[$bar] $completed/$trialCount ($pct%)")
+      System.out.flush()
+
+    printProgress(0)
+
+    PekkoSource(exec.trialRunConfigs)
+      .mapAsync(parallelism)(run => runner.runTrial(config, run))
+      .runFold(initState) { (state, trial) =>
+        val perTrialRecs =
+          DemoExportRecord.fromTrialResult(trial) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromWindowedTrialTimeSeries(
+                trial.scenarioId, trial.trialId,
+                TimeWindowRollups.rollupTrialTimeSeries(trial.timeSeries, ws)
+              )
+            }
+        perTrialRecs.foreach(writeRecord)
+        val newCompleted = state.completedTrials + 1
+        printProgress(newCompleted)
+        state.copy(
+          mcAgg       = state.mcAgg.addTrial(trial),
+          windowedAgg = state.windowedAgg.map { case (ws, wagg) => ws -> wagg.addTrial(trial.timeSeries) },
+          recordCount = state.recordCount + perTrialRecs.size,
+          completedTrials = newCompleted
+        )
+      }
+      .map { finalState =>
+        val mcResult = finalState.mcAgg.toMonteCarloResult
+        val aggRecs =
+          DemoExportRecord.fromMonteCarloResult(mcResult) ++
+            WindowSizeSeconds.phase1Values.flatMap { ws =>
+              DemoExportRecord.fromAggregatedWindowedTimeSeries(
+                mcResult.scenarioId, mcResult.trialCount,
+                finalState.windowedAgg(ws).toAggregatedWindowedPoints
+              )
+            }
+        aggRecs.foreach(writeRecord)
+        writer.flush()
+        writer.close()
+        println()
+        s"wrote ${finalState.recordCount + aggRecs.size} records for scenario ${mcResult.scenarioId} to $outputPath"
+      }
+      .andThen { case scala.util.Failure(_) => println(); scala.util.Try(writer.close()) }(scala.concurrent.ExecutionContext.parasitic)
+
 @main def ThermostatFleetBridge(args: String*): Unit =
   ThermostatFleetBridgeCli.parseArgs(args) match
     case Left(error) =>
@@ -458,6 +807,20 @@ object ThermostatFleetGrafanaView:
                     initialProvisionedWcu = generate.initialProvisionedWcu,
                     adjustedProvisionedWcu = generate.adjustedProvisionedWcu
                   )
+                else if generate.mode == "multi-table" then
+                  ThermostatFleetMultiTableDemoRunner.generateToFile(
+                    outputPath      = generate.outputPath,
+                    trialCount      = generate.trialCount,
+                    parallelism     = generate.parallelism,
+                    simulationTicks = generate.simulationTicks
+                  )
+                else if generate.mode == "capstone" then
+                  ThermostatFleetCapstoneDemoRunner.generateToFile(
+                    outputPath      = generate.outputPath,
+                    trialCount      = generate.trialCount,
+                    parallelism     = generate.parallelism,
+                    simulationTicks = generate.simulationTicks
+                  )
                 else
                   ThermostatFleetDemoRunner.generateToFile(
                     outputPath      = generate.outputPath,
@@ -466,7 +829,7 @@ object ThermostatFleetGrafanaView:
                     simulationTicks = generate.simulationTicks,
                     mode            = generate.mode
                   )
-              val message = Await.result(generateF, 10.minutes)
+              val message = Await.result(generateF, generate.maxWaitMinutes.minutes)
               println(message)
               println(s"generated batch ${generate.batchId} (${generate.mode}) to ${generate.outputPath}")
               Success(())
@@ -510,16 +873,29 @@ object ThermostatFleetGrafanaView:
 
         case view: ThermostatFleetBridgeCommand.View =>
           println(
-            if view.mode == "mixed-mode" then
-              ThermostatFleetMixedModeGrafanaView.url(
-                grafanaBaseUrl = view.grafanaBaseUrl,
-                batchId        = view.batchId,
-                scenarioId     = view.scenarioId
-              )
-            else
-              ThermostatFleetGrafanaView.url(
-                grafanaBaseUrl = view.grafanaBaseUrl,
-                batchId        = view.batchId,
-                scenarioId     = view.scenarioId
-              )
+            view.mode match
+              case "mixed-mode" =>
+                ThermostatFleetMixedModeGrafanaView.url(
+                  grafanaBaseUrl = view.grafanaBaseUrl,
+                  batchId        = view.batchId,
+                  scenarioId     = view.scenarioId
+                )
+              case "multi-table" =>
+                ThermostatFleetMultiTableGrafanaView.url(
+                  grafanaBaseUrl = view.grafanaBaseUrl,
+                  batchId        = view.batchId,
+                  scenarioId     = view.scenarioId
+                )
+              case "capstone" =>
+                ThermostatFleetCapstoneGrafanaView.url(
+                  grafanaBaseUrl = view.grafanaBaseUrl,
+                  batchId        = view.batchId,
+                  scenarioId     = view.scenarioId
+                )
+              case _ =>
+                ThermostatFleetGrafanaView.url(
+                  grafanaBaseUrl = view.grafanaBaseUrl,
+                  batchId        = view.batchId,
+                  scenarioId     = view.scenarioId
+                )
           )

@@ -56,3 +56,6 @@ object DynamoDbUsageTotals:
 
       case DynamoDbConsumptionEvent.StorageBytesDelta(_, _, _, bytesDelta) =>
         acc.copy(storageBytesDelta = acc.storageBytesDelta + bytesDelta)
+
+      case _: DynamoDbConsumptionEvent.PITRStorageBytesDelta =>
+        acc

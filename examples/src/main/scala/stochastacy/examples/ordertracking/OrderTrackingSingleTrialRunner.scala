@@ -360,9 +360,9 @@ final class OrderTrackingSingleTrialRunner(
                         ): BigDecimal =
     val bytesPerGiB = BigDecimal(1024).pow(3)
 
-    (readUnits * pricingRates.readCapacityUnitPrice) +
-      (writeUnits * pricingRates.writeCapacityUnitPrice) +
-      (BigDecimal(storageByteTicks) * pricingRates.storagePricePerGiBSecond / bytesPerGiB)
+    (readUnits * pricingRates.standard.readCapacityUnitPrice) +
+      (writeUnits * pricingRates.standard.writeCapacityUnitPrice) +
+      (BigDecimal(storageByteTicks) * pricingRates.standard.storagePricePerGiBSecond / bytesPerGiB)
 
   private final case class OrderTrackingBehavior(
                                                   config: OrderTrackingScenarioConfig,

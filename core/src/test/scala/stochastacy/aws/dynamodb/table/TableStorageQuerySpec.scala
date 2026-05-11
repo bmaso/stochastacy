@@ -7,7 +7,7 @@ import org.apache.pekko.stream.testkit.TestSubscriber
 import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.aws.dynamodb.{DynamoDbReadTarget, QueryRequest, QueryResponse, RequestedReadShape}
+import stochastacy.aws.dynamodb.{DynamoDbOperationKind, DynamoDbReadTarget, QueryRequest, QueryResponse, RequestedReadShape}
 import stochastacy.sim.{SimTime, TimedEvent}
 
 class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
@@ -61,6 +61,8 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       metricEvents.collect { case evt: StorageMetricEvent.QueryObserved => evt.target } shouldBe Vector(DynamoDbReadTarget.Table("orders"))
       metricEvents.collect { case evt: StorageMetricEvent.QueryEvaluated => evt.bytes } shouldBe Vector(8192L)
       metricEvents.collect { case evt: StorageMetricEvent.QueryReturned => evt.bytes } shouldBe Vector(1024L)
+      metricEvents.collect { case e: StorageMetricEvent.ReturnedItemCount => (e.operation, e.count) } shouldBe
+        Vector((DynamoDbOperationKind.Query, 2L))
 
       tableState.itemCount shouldBe 5L
       tableState.totalItemBytes shouldBe 5120L
@@ -104,6 +106,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       val metricEvents = drainMetricEvents(metricsProbe)
       metricEvents.collect { case _: StorageMetricEvent.QueryReturned => 1 } shouldBe empty
       metricEvents.collect { case evt: StorageMetricEvent.QueryEvaluated => evt.itemCount } shouldBe Vector(4L)
+      metricEvents.collect { case e: StorageMetricEvent.ReturnedItemCount => e.count } shouldBe Vector(0L)
     }
 
     "limit a GSI query to projected bytes without fetching from the base table" in {

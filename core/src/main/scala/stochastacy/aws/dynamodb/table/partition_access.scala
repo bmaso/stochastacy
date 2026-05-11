@@ -75,6 +75,10 @@ private[table] object PartitionAccessResolver:
       case _: stochastacy.aws.dynamodb.PartiQLQueryRequest =>
         ()
 
+      case _: stochastacy.aws.dynamodb.TransactWriteItemsRequest |
+           _: stochastacy.aws.dynamodb.TransactGetItemsRequest =>
+        ()
+
   def resolve(
                access: LogicalPartitionAccess,
                throughputDemand: BigDecimal,

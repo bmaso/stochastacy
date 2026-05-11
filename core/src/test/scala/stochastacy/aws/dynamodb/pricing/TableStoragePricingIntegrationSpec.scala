@@ -68,9 +68,11 @@ class TableStorageStagePricingIntegrationSpec extends AnyWordSpec with should.Ma
           timeBasedUsage = timeBasedTotals
         ),
         rates = DynamoDbPricingRates(
-          readCapacityUnitPrice = BigDecimal(2.0),
-          writeCapacityUnitPrice = BigDecimal(5.0),
-          storagePricePerGiBSecond = BigDecimal(4.0)
+          standard = DynamoDbPricingRates.RateSet(
+            readCapacityUnitPrice = BigDecimal(2.0),
+            writeCapacityUnitPrice = BigDecimal(5.0),
+            storagePricePerGiBSecond = BigDecimal(4.0)
+          )
         )
       )
 

@@ -21,6 +21,8 @@ object DynamoDbOperationKind:
   case object Query extends DynamoDbOperationKind
   case object Scan extends DynamoDbOperationKind
   case object PartiQLQuery extends DynamoDbOperationKind
+  case object TransactWriteItems extends DynamoDbOperationKind
+  case object TransactGetItems extends DynamoDbOperationKind
 
   def fromRequest(request: DynamoDBRequest): DynamoDbOperationKind =
     request match
@@ -31,6 +33,8 @@ object DynamoDbOperationKind:
       case _: QueryRequest => Query
       case _: ScanRequest => Scan
       case _: PartiQLQueryRequest => PartiQLQuery
+      case _: TransactWriteItemsRequest => TransactWriteItems
+      case _: TransactGetItemsRequest => TransactGetItems
 
 sealed trait DynamoDbThroughputDimension
 
@@ -53,6 +57,7 @@ object DynamoDbThrottleReason:
   case object TableWriteProvisionedThroughputExceeded extends DynamoDbThrottleReason
   case object GlobalSecondaryIndexReadProvisionedThroughputExceeded extends DynamoDbThrottleReason
   case object GlobalSecondaryIndexWriteProvisionedThroughputExceeded extends DynamoDbThrottleReason
+  case object ReplicatedWriteCapacityExceeded extends DynamoDbThrottleReason
 
 sealed trait DynamoDBRequest extends AWSServiceRequestEvent
 sealed trait DynamoDBResponse extends AWSServiceResponseEvent
@@ -195,6 +200,18 @@ case class ItemCollectionSizeLimitExceededResponse(
                                                   ) extends DynamoDBResponse
 
 /**
+ * Emitted when the storage layer simulates a transient internal error for an otherwise
+ * admitted request. Parallels real DynamoDB's `InternalServerError`. No capacity is
+ * consumed and no state is mutated. Rate is controlled by `DynamoDbTable.Config.systemErrorRate`.
+ */
+final case class SystemErrorResponse(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  operation: DynamoDbOperationKind,
+  target: stochastacy.aws.dynamodb.table.DynamoDbTarget
+) extends DynamoDBResponse
+
+/**
  * Emitted when a management-API reconfiguration event is rejected. The simulator enforces
  * real DynamoDB constraints (e.g., the 24-hour billing mode switch cooldown) and emits this
  * response instead of applying the change when the constraint is violated.
@@ -204,3 +221,39 @@ final case class ReconfigurationRejectedResponse(
                                                   override val usecase: Any,
                                                   reason: String
                                                 ) extends DynamoDBResponse
+
+/**
+ * A transactional write containing multiple sub-item writes (puts/updates). All items are
+ * admitted all-or-nothing. Total WCU cost is 2× per item (DynamoDB transaction pricing).
+ */
+case class TransactWriteItemsRequest(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  perItemBytes: Vector[Long]
+) extends DynamoDBRequest:
+  require(perItemBytes.nonEmpty, "TransactWriteItemsRequest.perItemBytes must be non-empty")
+  require(perItemBytes.forall(_ >= 0L), "TransactWriteItemsRequest.perItemBytes values must be non-negative")
+
+/**
+ * A transactional read containing multiple sub-item gets. All reads are strongly consistent
+ * (DynamoDB requirement). Total RCU cost is 2× per item.
+ */
+case class TransactGetItemsRequest(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  itemCount: Int
+) extends DynamoDBRequest:
+  require(itemCount > 0, s"TransactGetItemsRequest.itemCount must be positive, got $itemCount")
+
+case class TransactWriteItemsResponse(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  itemCount: Int
+) extends DynamoDBResponse
+
+case class TransactGetItemsResponse(
+  override val eventTime: SimTime,
+  override val usecase: Any,
+  items: Vector[Option[Long]]
+) extends DynamoDBResponse:
+  require(items.nonEmpty, "TransactGetItemsResponse.items must be non-empty")

@@ -1,0 +1,474 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Thermostat Fleet multi-table demo — two independent DynamoDB tables (device-registry and device-telemetry) simulated in a single Monte Carlo run",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "panels": [],
+      "title": "Scenario Summary",
+      "type": "row"
+    },
+    {
+      "datasource": null,
+      "description": "Multi-table demo overview and batch context.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "id": 2,
+      "options": {
+        "code": { "language": "markdown", "showLineNumbers": false, "showMiniMap": false },
+        "content": "# Thermostat Fleet — Multi-Table Demo\n\nMonte Carlo simulation of two independent DynamoDB tables in a single graph:\n- **device-registry**: low-write, read-heavy (customer-support queries and fleet-dashboard scans dominate)\n- **device-telemetry**: high-write (continuous IoT telemetry ingest from a growing device fleet)\n\nPanels overlay both tables so you can compare capacity consumption and cost side-by-side across the same simulated time window.\n\n- Batch ID: `${batch_id}`\n- Scenario ID: `${scenarioId}`\n- Trial Count: `${trialCount}`\n- Simulation Ticks: `${simulationTicks}`\n- Window Size (s): `${windowSizeSeconds}`",
+        "mode": "markdown"
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [],
+      "title": "Demo Overview",
+      "type": "text"
+    },
+    {
+      "datasource": null,
+      "description": "Mean total estimated cost per table across all trials, plus one standard deviation.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 3,
+      "options": {
+        "code": { "language": "markdown", "showLineNumbers": false, "showMiniMap": false },
+        "content": "## Total Estimated Cost (mean ± stddev)\n\n**device-registry:** ${registryTotalCost}\n\n**device-telemetry:** ${telemetryTotalCost}",
+        "mode": "markdown"
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [],
+      "title": "Total Cost per Table",
+      "type": "text"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 4,
+      "panels": [],
+      "title": "Capacity Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+      "description": "Mean read capacity units consumed per time window for each table. The registry table is read-heavy (customer-support queries); the telemetry table consumes fewer reads relative to its write volume.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "RCU (window total)",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "device-registry" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "device-telemetry" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "id": 5,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"device-registry\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-registry:ReadCapacityUnits'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"device-telemetry\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-telemetry:ReadCapacityUnits'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "B"
+        }
+      ],
+      "title": "Read Capacity Units by Window",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+      "description": "Mean write capacity units consumed per time window for each table. The telemetry table dominates write consumption due to continuous IoT ingest; the registry table has minimal writes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "WCU (window total)",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "device-registry" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "device-telemetry" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"device-registry\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-registry:WriteCapacityUnits'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"device-telemetry\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-telemetry:WriteCapacityUnits'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "B"
+        }
+      ],
+      "title": "Write Capacity Units by Window",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 7,
+      "panels": [],
+      "title": "Storage",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+      "description": "Cumulative storage bytes for each table over the simulation. The telemetry table grows rapidly as device readings accumulate; the registry table grows slowly as devices are provisioned.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Storage (bytes)",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "device-registry" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "device-telemetry" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 19 },
+      "id": 8,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"device-registry\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-registry:StorageBytes'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"device-telemetry\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-telemetry:StorageBytes'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "B"
+        }
+      ],
+      "title": "Storage Bytes",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "id": 9,
+      "panels": [],
+      "title": "Cost Trajectory",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+      "description": "Cumulative estimated cost over the simulation for each table (mean across trials). The gap between the two lines shows the cost split between read-heavy and write-heavy workloads.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Cumulative cost (USD)",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "min": 0,
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "device-registry" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "device-telemetry" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 28 },
+      "id": 10,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"device-registry\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-registry:CumulativeEstimatedCost'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select\n  to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"device-telemetry\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-telemetry:CumulativeEstimatedCost'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\n  and window_start_tick <= cast('${simulationTicks}' as bigint)\ngroup by window_start_tick\norder by window_start_tick;",
+          "refId": "B"
+        }
+      ],
+      "title": "Cumulative Estimated Cost",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 39,
+  "tags": ["stochastacy", "dynamodb", "thermostat-fleet", "phase-6", "multi-table"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Batch ID",
+        "multi": false,
+        "name": "batch_id",
+        "options": [],
+        "query": "",
+        "skipUrlSync": false,
+        "type": "textbox"
+      },
+      {
+        "current": { "selected": true, "text": "60", "value": "60" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Window Size (s)",
+        "multi": false,
+        "name": "windowSizeSeconds",
+        "options": [
+          { "selected": true, "text": "60", "value": "60" },
+          { "selected": false, "text": "300", "value": "300" }
+        ],
+        "query": "60,300",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+        "definition": "select distinct scenario_id __text, scenario_id __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}' order by scenario_id",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Scenario ID",
+        "multi": false,
+        "name": "scenarioId",
+        "options": [],
+        "query": "select distinct scenario_id __text, scenario_id __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}' order by scenario_id",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+        "definition": "select trial_count::text __text, trial_count::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Trial Count",
+        "multi": false,
+        "name": "trialCount",
+        "options": [],
+        "query": "select trial_count::text __text, trial_count::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+        "definition": "select simulation_ticks::text __text, simulation_ticks::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Simulation Ticks",
+        "multi": false,
+        "name": "simulationTicks",
+        "options": [],
+        "query": "select simulation_ticks::text __text, simulation_ticks::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+        "definition": "with stats as ( select max(case when statistic = 'mean' then value end) as mean_val, max(case when statistic = 'stddev' then value end) as stddev_val from stochastacy_demo.aggregate_summary where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and metric = 'Table:device-registry:TotalEstimatedCost' ) select concat(to_char(mean_val, 'FM$0.00000'), ' +/- ', to_char(stddev_val, 'FM$0.00000')) __text, concat(to_char(mean_val, 'FM$0.00000'), ' +/- ', to_char(stddev_val, 'FM$0.00000')) __value from stats",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Registry Total Cost",
+        "multi": false,
+        "name": "registryTotalCost",
+        "options": [],
+        "query": "with stats as ( select max(case when statistic = 'mean' then value end) as mean_val, max(case when statistic = 'stddev' then value end) as stddev_val from stochastacy_demo.aggregate_summary where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and metric = 'Table:device-registry:TotalEstimatedCost' ) select concat(to_char(mean_val, 'FM$0.00000'), ' +/- ', to_char(stddev_val, 'FM$0.00000')) __text, concat(to_char(mean_val, 'FM$0.00000'), ' +/- ', to_char(stddev_val, 'FM$0.00000')) __value from stats",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "datasource": { "type": "postgres", "uid": "stochastacy-postgres" },
+        "definition": "with stats as ( select max(case when statistic = 'mean' then value end) as mean_val, max(case when statistic = 'stddev' then value end) as stddev_val from stochastacy_demo.aggregate_summary where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and metric = 'Table:device-telemetry:TotalEstimatedCost' ) select concat(to_char(mean_val, 'FM$0.00000'), ' +/- ', to_char(stddev_val, 'FM$0.00000')) __text, concat(to_char(mean_val, 'FM$0.00000'), ' +/- ', to_char(stddev_val, 'FM$0.00000')) __value from stats",
+        "hide": 2,
+        "includeAll": false,
+        "label": "Telemetry Total Cost",
+        "multi": false,
+        "name": "telemetryTotalCost",
+        "options": [],
+        "query": "with stats as ( select max(case when statistic = 'mean' then value end) as mean_val, max(case when statistic = 'stddev' then value end) as stddev_val from stochastacy_demo.aggregate_summary where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and metric = 'Table:device-telemetry:TotalEstimatedCost' ) select concat(to_char(mean_val, 'FM$0.00000'), ' +/- ', to_char(stddev_val, 'FM$0.00000')) __text, concat(to_char(mean_val, 'FM$0.00000'), ' +/- ', to_char(stddev_val, 'FM$0.00000')) __value from stats",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "1970-01-01T00:00:00Z",
+    "to": "1970-01-01T00:20:00Z"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Thermostat Fleet Multi-Table Demo",
+  "uid": "ips-phase6-multi-table",
+  "version": 1
+}

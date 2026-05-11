@@ -6,7 +6,7 @@ import org.apache.pekko.stream.Materializer
 import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
 import org.apache.pekko.stream.ClosedShape
 import stochastacy.aws.dynamodb.*
-import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates}
+import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingInputs, DynamoDbPricingRates, ProvisionedCapacityData, ReservedCapacity}
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.dynamodb.usage.{DynamoDbTargetTimeBasedUsageTotals, DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 import stochastacy.demo.*
@@ -27,6 +27,8 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
 
   private case class ConsAcc(
     usageTotals: DynamoDbUsageTotals = DynamoDbUsageTotals(),
+    onDemandUsageTotals: DynamoDbUsageTotals = DynamoDbUsageTotals(),
+    currentTick: Long = 0L,
     currentStorageBytes: Long = 0L,
     cumStorageByteTicks: BigInt = BigInt(0),
     activeBucket: Option[TickBucket] = None,
@@ -44,26 +46,38 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     throttleCount: Int = 0,
     admittedCount: Int = 0,
     consumedReadUnits: BigDecimal = BigDecimal(0),
-    consumedWriteUnits: BigDecimal = BigDecimal(0)
+    consumedWriteUnits: BigDecimal = BigDecimal(0),
+    systemErrorCount: Int = 0
   )
 
-  private case class MetricAcc(byTick: Map[Long, MetricTickData] = Map.empty)
+  private case class MetricAcc(
+    byTick: Map[Long, MetricTickData] = Map.empty,
+    retItemByOpAndTick: Map[(String, Long), Long] = Map.empty,
+    latencySamplesByOpAndTick: Map[(String, Long), Vector[Double]] = Map.empty,
+    totalProvisionedRcuTicks: BigInt = BigInt(0),
+    totalProvisionedWcuTicks: BigInt = BigInt(0),
+    discountedRcuTicks: BigInt = BigInt(0),
+    standardRcuTicks: BigInt = BigInt(0),
+    discountedWcuTicks: BigInt = BigInt(0),
+    standardWcuTicks: BigInt = BigInt(0)
+  )
 
   // ── Fold helpers ──────────────────────────────────────────────────────────
 
   private val bytesPerGiB = BigDecimal(1024).pow(3)
 
-  private def finalizeBucket(acc: ConsAcc, rates: DynamoDbPricingRates): ConsAcc =
+  private def finalizeBucket(acc: ConsAcc, rates: DynamoDbPricingRates, tableClass: DynamoDbTable.TableClass): ConsAcc =
     acc.activeBucket match
       case None => acc
       case Some(bucket) =>
         val nextRead  = acc.cumReadUnits  + bucket.readUnits
         val nextWrite = acc.cumWriteUnits + bucket.writeUnits
         val nextByteTicks = acc.cumStorageByteTicks + BigInt(math.max(0L, acc.currentStorageBytes))
+        val r = rates.forClass(tableClass)
         val cumulativeCost =
-          (nextRead  * rates.readCapacityUnitPrice) +
-          (nextWrite * rates.writeCapacityUnitPrice) +
-          (BigDecimal(nextByteTicks) * rates.storagePricePerGiBSecond / bytesPerGiB)
+          (nextRead  * r.readCapacityUnitPrice) +
+          (nextWrite * r.writeCapacityUnitPrice) +
+          (BigDecimal(nextByteTicks) * r.storagePricePerGiBSecond / bytesPerGiB)
         acc.copy(
           activeBucket      = None,
           cumReadUnits      = nextRead,
@@ -78,35 +92,63 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
   private def updateConsAcc(
     acc: ConsAcc,
     evt: TimedElement[DynamoDbConsumptionEvent],
-    rates: DynamoDbPricingRates
+    rates: DynamoDbPricingRates,
+    tableClass: DynamoDbTable.TableClass,
+    modeSwitchTick: Long
   ): ConsAcc =
     evt match
       case tick: TimedControlEvent.Tick =>
-        val finalized = finalizeBucket(acc, rates)
-        finalized.copy(activeBucket = Some(TickBucket(tick = tick.eventTime.ticks)))
+        val finalized = finalizeBucket(acc, rates, tableClass)
+        finalized.copy(
+          currentTick   = tick.eventTime.ticks,
+          activeBucket  = Some(TickBucket(tick = tick.eventTime.ticks))
+        )
 
       case cons: DynamoDbConsumptionEvent =>
         val acc1 = acc.copy(usageTotals = DynamoDbUsageTotals.accumulate(acc.usageTotals, cons))
+        val acc2 =
+          if acc.currentTick <= modeSwitchTick then
+            acc1.copy(onDemandUsageTotals = DynamoDbUsageTotals.accumulate(acc1.onDemandUsageTotals, cons))
+          else acc1
         cons match
           case DynamoDbConsumptionEvent.ReadCapacityConsumed(_, _, _, units, _) =>
-            acc1.copy(activeBucket = acc1.activeBucket.map(b => b.copy(readUnits = b.readUnits + units)))
+            acc2.copy(activeBucket = acc2.activeBucket.map(b => b.copy(readUnits = b.readUnits + units)))
           case DynamoDbConsumptionEvent.WriteCapacityConsumed(_, _, _, units) =>
-            acc1.copy(activeBucket = acc1.activeBucket.map(b => b.copy(writeUnits = b.writeUnits + units)))
+            acc2.copy(activeBucket = acc2.activeBucket.map(b => b.copy(writeUnits = b.writeUnits + units)))
           case DynamoDbConsumptionEvent.StorageBytesDelta(_, _, _, delta) =>
-            acc1.copy(currentStorageBytes = acc1.currentStorageBytes + delta)
-          case _ => acc1
+            acc2.copy(currentStorageBytes = acc2.currentStorageBytes + delta)
+          case _ => acc2
 
       case _ => acc
 
-  private def updateMetricAcc(acc: MetricAcc, evt: TimedElement[TableMetricEvent]): MetricAcc =
+  private def updateMetricAcc(acc: MetricAcc, evt: TimedElement[TableMetricEvent], reservedCapacity: Option[ReservedCapacity]): MetricAcc =
     evt match
       case util: AdmissionMetricEvent.ProvisionedCapacityUtilization =>
         val t   = util.eventTime.ticks
         val old = acc.byTick.getOrElse(t, MetricTickData())
-        acc.copy(byTick = acc.byTick.updated(t, old.copy(
-          provisionedRcu = Some(util.provisionedReadCapacityUnits),
-          provisionedWcu = Some(util.provisionedWriteCapacityUnits)
-        )))
+        // In the mixed-mode demo, GSI provisioned capacity = 0, so total == base-table.
+        // Per-tick split is required for correctness when capacity changes mid-simulation.
+        val baseRcu = util.provisionedReadCapacityUnits
+        val baseWcu = util.provisionedWriteCapacityUnits
+        val (discRcu, stdRcu, discWcu, stdWcu) = reservedCapacity.fold {
+          (BigInt(0), BigInt(baseRcu), BigInt(0), BigInt(baseWcu))
+        } { rc =>
+          val dr = BigInt(math.min(baseRcu, rc.reservedReadCapacityUnits))
+          val dw = BigInt(math.min(baseWcu, rc.reservedWriteCapacityUnits))
+          (dr, BigInt(baseRcu) - dr, dw, BigInt(baseWcu) - dw)
+        }
+        acc.copy(
+          byTick = acc.byTick.updated(t, old.copy(
+            provisionedRcu = Some(util.provisionedReadCapacityUnits),
+            provisionedWcu = Some(util.provisionedWriteCapacityUnits)
+          )),
+          totalProvisionedRcuTicks = acc.totalProvisionedRcuTicks + BigInt(util.provisionedReadCapacityUnits),
+          totalProvisionedWcuTicks = acc.totalProvisionedWcuTicks + BigInt(util.provisionedWriteCapacityUnits),
+          discountedRcuTicks = acc.discountedRcuTicks + discRcu,
+          standardRcuTicks   = acc.standardRcuTicks   + stdRcu,
+          discountedWcuTicks = acc.discountedWcuTicks + discWcu,
+          standardWcuTicks   = acc.standardWcuTicks   + stdWcu
+        )
       case snap: AdmissionMetricEvent.BillingModeSnapshot =>
         val t   = snap.eventTime.ticks
         val old = acc.byTick.getOrElse(t, MetricTickData())
@@ -126,6 +168,20 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
           consumedReadUnits  = old.consumedReadUnits  + snap.consumedReadUnits,
           consumedWriteUnits = old.consumedWriteUnits + snap.consumedWriteUnits
         )))
+      case ric: StorageMetricEvent.ReturnedItemCount =>
+        val key = (ric.operation.toString, ric.eventTime.ticks)
+        acc.copy(retItemByOpAndTick = acc.retItemByOpAndTick.updated(
+          key, acc.retItemByOpAndTick.getOrElse(key, 0L) + ric.count
+        ))
+      case lat: StorageMetricEvent.SuccessfulRequestLatency =>
+        val key = (lat.operation.toString, lat.eventTime.ticks)
+        acc.copy(latencySamplesByOpAndTick = acc.latencySamplesByOpAndTick.updated(
+          key, acc.latencySamplesByOpAndTick.getOrElse(key, Vector.empty) :+ lat.latencyMs
+        ))
+      case err: StorageMetricEvent.SystemError =>
+        val t   = err.eventTime.ticks
+        val old = acc.byTick.getOrElse(t, MetricTickData())
+        acc.copy(byTick = acc.byTick.updated(t, old.copy(systemErrorCount = old.systemErrorCount + 1)))
       case _ => acc
 
   // ── Run trial ─────────────────────────────────────────────────────────────
@@ -144,19 +200,19 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     val behaviors: Map[Any, UseCaseSampler[TableState]] = Map(scenarioConfig.scenarioId -> behavior)
 
     val tableConfig = buildTableConfig(scenarioConfig, tableState, behaviors)
-    // In provisioned mode each GSI has its own capacity pool. ProvisionedCapacityUtilization only
-    // carries the base-table rate, so multiply by (1 + numGsis) to get the total provisioned
-    // capacity that is comparable to the all-inclusive WriteCapacityUnits / ReadCapacityUnits
-    // consumed metrics (which include base-table + all GSI maintenance writes).
-    val numGsis = tableConfig.globalSecondaryIndexes.size
     val requestIterator    = delegate.generateRequestsForRegion(scenarioConfig, region, requestRng)
     val managementIterator = delegate.managementEventsFor(scenarioConfig.simulationTicks, schedule)
 
-    val consFoldSink: Sink[TimedElement[DynamoDbConsumptionEvent], Future[ConsAcc]] =
-      Sink.fold(ConsAcc()) { (acc, evt) => updateConsAcc(acc, evt, scenarioConfig.pricingRates) }
+    val rates = scenarioConfig.pricingSchedule.ratesAt(
+      scenarioConfig.regions.head.regionName,
+      scenarioConfig.simulationTicks
+    )
+    val rc = rates.reservedCapacity
 
+    val consFoldSink: Sink[TimedElement[DynamoDbConsumptionEvent], Future[ConsAcc]] =
+      Sink.fold(ConsAcc()) { (acc, evt) => updateConsAcc(acc, evt, rates, scenarioConfig.tableClass, config.modeSwitchTick) }
     val metricFoldSink: Sink[TimedElement[TableMetricEvent], Future[MetricAcc]] =
-      Sink.fold(MetricAcc()) { (acc, evt) => updateMetricAcc(acc, evt) }
+      Sink.fold(MetricAcc()) { (acc, evt) => updateMetricAcc(acc, evt, rc) }
 
     val (consAccF, metricAccF) = RunnableGraph.fromGraph(
       GraphDSL.createGraph(consFoldSink, metricFoldSink)((a, b) => (a, b)) {
@@ -176,15 +232,31 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
       rawConsAcc  <- consAccF
       metricAcc   <- metricAccF
     yield
-      val consAcc = finalizeBucket(rawConsAcc, scenarioConfig.pricingRates)
+      val consAcc = finalizeBucket(rawConsAcc, rates, scenarioConfig.tableClass)
 
       val timeBasedUsage = DynamoDbTimeBasedUsageTotals(
         overallStorageByteTicks    = consAcc.cumStorageByteTicks,
         endingOverallStorageBytes  = math.max(0L, consAcc.currentStorageBytes)
       )
+      val provisionedCapacity =
+        Option.when(metricAcc.totalProvisionedRcuTicks > 0 || metricAcc.totalProvisionedWcuTicks > 0)(
+          ProvisionedCapacityData(
+            totalProvisionedReadCapacityUnitTicks  = metricAcc.totalProvisionedRcuTicks,
+            totalProvisionedWriteCapacityUnitTicks = metricAcc.totalProvisionedWcuTicks,
+            discountedReadCapacityUnitTicks  = metricAcc.discountedRcuTicks,
+            standardReadCapacityUnitTicks    = metricAcc.standardRcuTicks,
+            discountedWriteCapacityUnitTicks = metricAcc.discountedWcuTicks,
+            standardWriteCapacityUnitTicks   = metricAcc.standardWcuTicks
+          )
+        )
       val costBreakdown = DynamoDbCostBreakdown.price(
-        DynamoDbPricingInputs(usage = consAcc.usageTotals, timeBasedUsage = timeBasedUsage),
-        scenarioConfig.pricingRates
+        DynamoDbPricingInputs(
+          usage               = consAcc.onDemandUsageTotals,
+          timeBasedUsage      = timeBasedUsage,
+          provisionedCapacity = provisionedCapacity
+        ),
+        rates,
+        scenarioConfig.tableClass
       )
 
       val metricTimeSeries: Vector[SimulationTimeSeriesPoint] =
@@ -195,7 +267,8 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
             SimulationTimeSeriesPoint(tick, DemoMetric.ReadCapacityUnits,     data.consumedReadUnits),
             SimulationTimeSeriesPoint(tick, DemoMetric.WriteCapacityUnits,    data.consumedWriteUnits),
             SimulationTimeSeriesPoint(tick, DemoMetric.ThrottleCount,         BigDecimal(data.throttleCount)),
-            SimulationTimeSeriesPoint(tick, DemoMetric.AdmittedRequestCount,  BigDecimal(data.admittedCount))
+            SimulationTimeSeriesPoint(tick, DemoMetric.AdmittedRequestCount,  BigDecimal(data.admittedCount)),
+            SimulationTimeSeriesPoint(tick, DemoMetric.SystemErrorCount,      BigDecimal(data.systemErrorCount))
           )
         }
 
@@ -209,10 +282,28 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
           SimulationTimeSeriesPoint(tick, DemoMetric.BillingModeIndicator, BigDecimal(modeCode))
         }.toVector
 
+      val retItemTimeSeries: Vector[SimulationTimeSeriesPoint] =
+        metricAcc.retItemByOpAndTick.map { case ((op, tick), count) =>
+          SimulationTimeSeriesPoint(tick, DemoMetric.ReturnedItemCount(op), BigDecimal(count))
+        }.toVector
+
+      val latencyTimeSeries: Vector[SimulationTimeSeriesPoint] =
+        metricAcc.latencySamplesByOpAndTick.flatMap { case ((op, tick), samples) =>
+          val sorted = samples.sorted
+          val p50 = sorted((sorted.size * 0.50).toInt.min(sorted.size - 1))
+          val p95 = sorted((sorted.size * 0.95).toInt.min(sorted.size - 1))
+          val p99 = sorted((sorted.size * 0.99).toInt.min(sorted.size - 1))
+          Vector(
+            SimulationTimeSeriesPoint(tick, DemoMetric.LatencyP50(op), BigDecimal.decimal(p50)),
+            SimulationTimeSeriesPoint(tick, DemoMetric.LatencyP95(op), BigDecimal.decimal(p95)),
+            SimulationTimeSeriesPoint(tick, DemoMetric.LatencyP99(op), BigDecimal.decimal(p99))
+          )
+        }.toVector
+
       TrialResult(
         scenarioId = scenarioConfig.scenarioId,
         trialId    = run.trialId,
-        timeSeries = consAcc.points ++ metricTimeSeries ++ billingModeTimeSeries,
+        timeSeries = consAcc.points ++ metricTimeSeries ++ billingModeTimeSeries ++ retItemTimeSeries ++ latencyTimeSeries,
         summary = Vector(
           TrialSummaryValue(DemoMetric.TotalReadCapacityUnits,  consAcc.usageTotals.overall.readCapacityUnits),
           TrialSummaryValue(DemoMetric.TotalWriteCapacityUnits, consAcc.usageTotals.overall.writeCapacityUnits),
@@ -261,5 +352,6 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
       hotPartitionModel               = config.hotPartitionModel,
       burstCapacityModel              = config.burstCapacityModel,
       adaptiveCapacityModel           = config.adaptiveCapacityModel,
-      dynamicPartitionTopologyModel   = config.dynamicPartitionTopologyModel
+      dynamicPartitionTopologyModel   = config.dynamicPartitionTopologyModel,
+      systemErrorRate                 = config.systemErrorRate
     )

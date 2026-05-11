@@ -101,3 +101,14 @@ object AdmissionMetricEvent:
                                         usecase: Any,
                                         billingModeCode: Int  // 0 = on-demand, 1 = provisioned
                                       ) extends AdmissionMetricEvent
+
+sealed trait ReplicationMetricEvent extends TableMetricEvent
+
+object ReplicationMetricEvent:
+  final case class ReplicationLatency(
+    eventTime: SimTime,
+    usecase: Any,
+    sourceRegion: String,
+    destinationRegion: String,
+    lagMs: Double
+  ) extends ReplicationMetricEvent

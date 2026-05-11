@@ -16,3 +16,9 @@ object DynamoDbManagementEvent:
     override val usecase: Any,
     newCapacity: DynamoDbTable.BillingMode.Provisioned
   ) extends DynamoDbManagementEvent
+
+  final case class TogglePITR(
+    override val eventTime: SimTime,
+    override val usecase: Any,
+    enabled: Boolean
+  ) extends DynamoDbManagementEvent

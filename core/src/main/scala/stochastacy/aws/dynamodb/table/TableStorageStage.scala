@@ -1,5 +1,7 @@
 package stochastacy.aws.dynamodb.table
 
+import org.apache.commons.rng.UniformRandomProvider
+import org.apache.commons.statistics.distribution.{ContinuousDistribution, LogNormalDistribution}
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.scaladsl.{Broadcast, Flow, GraphDSL}
 import org.apache.pekko.stream.{FanOutShape3, FanOutShape4, Graph}
@@ -93,6 +95,24 @@ object TableStorageStage:
     override val eventTime: SimTime = request.eventTime
     override val usecase: Any = request.usecase
 
+  private[table] final case class StorageSystemError(
+                                                      request: DynamoDBRequest,
+                                                      operation: DynamoDbOperationKind,
+                                                      target: DynamoDbTarget
+                                                    ) extends StorageOutcome:
+    override val eventTime: SimTime = request.eventTime
+    override val usecase: Any = request.usecase
+
+  private[table] final case class TtlExpiry(
+    override val eventTime: SimTime,
+    sample: TtlExpirySample,
+    remainingItemCount: Long
+  ) extends StorageOutcome:
+    override val usecase: Any = TtlExpiry.Usecase
+
+  private[table] object TtlExpiry:
+    case object Usecase
+
   private def itemCollectionContext(
                                      sample: AdmittedRequestSample
                                    ): Option[(Long, Long, LogicalPartitionAccess, Vector[IndexMaintenancePlan])] =
@@ -137,7 +157,13 @@ object TableStorageStage:
   private[table] def componentOfAdmitted(
                                           stateModel: TableState,
                                           indexProjection: Option[DynamoDbTable.IndexProjection] = None,
-                                          itemCollectionSizeLimitBytes: Option[Long] = None
+                                          itemCollectionSizeLimitBytes: Option[Long] = None,
+                                          systemErrorRate: Double = 0.0,
+                                          rng: Option[UniformRandomProvider] = None,
+                                          latencyModel: DynamoDbTable.LatencyModel = DynamoDbTable.LatencyModel.awsDefault,
+                                          latencyRng: UniformRandomProvider = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(0L),
+                                          ttlSampler: Option[TtlSampler] = None,
+                                          pitrStateRef: Option[PITRStateRef] = None
                                         ): Graph[
     FanOutShape4[
       TimedElement[AdmittedRequestSample],
@@ -156,32 +182,108 @@ object TableStorageStage:
       // Validate-then-mutate: per write, check the LSI item-collection-size limit
       // before applying any state mutation. Rejected writes flow downstream as
       // StorageRejection records; admitted writes/reads flow as StorageAdmitted
-      // with state already updated.
+      // with state already updated. Tick events additionally produce a TtlExpiry
+      // record when a TTL sampler is configured.
       val decisionFlow = b.add(
-        Flow[TimedElement[AdmittedRequestSample]].map[TimedElement[StorageOutcome]] {
-          case t: TimedControlEvent => t
+        Flow[TimedElement[AdmittedRequestSample]].mapConcat[TimedElement[StorageOutcome]] {
+          case t: TimedControlEvent.Tick =>
+            ttlSampler match
+              case None => List(t)
+              case Some(sampler) =>
+                val ttlSample = sampler.expiryAt(TtlSamplerContext(t.eventTime.ticks))
+                stateModel.recordTtlExpiry(ttlSample.expiredItemCount, ttlSample.baseTableBytesFreed)
+                List(t, TtlExpiry(t.eventTime, ttlSample, stateModel.itemCount))
+
+          case t: TimedControlEvent => List(t)
+
+          case txn: AdmittedTransactWriteItemsSample =>
+            // Per-item LSI collection check — any rejection aborts the whole transaction
+            val lsiRejection: Option[StorageRejection] =
+              itemCollectionSizeLimitBytes.flatMap { limit =>
+                txn.perItemSamples.iterator.flatMap { item =>
+                  itemCollectionContext(item) match
+                    case None => None
+                    case Some((currentBytes, baseDelta, partitionAccess, plans)) =>
+                      val lsiDelta = plans.collect {
+                        case plan if plan.target.isInstanceOf[DynamoDbTarget.LocalSecondaryIndex] => plan.storageBytesDelta
+                      }.sum
+                      val totalDelta = baseDelta + lsiDelta
+                      val resultingBytes = currentBytes + totalDelta
+                      if totalDelta > 0 && resultingBytes > limit then
+                        Some(StorageRejection(
+                          request = txn.req,
+                          operation = DynamoDbOperationKind.TransactWriteItems,
+                          target = txn.executionTarget,
+                          logicalPartitionAccess = partitionAccess,
+                          resultingCollectionBytes = resultingBytes,
+                          limitBytes = limit
+                        ))
+                      else None
+                }.nextOption()
+              }
+            lsiRejection match
+              case Some(rejection) => List(rejection)
+              case None =>
+                val isSystemError = systemErrorRate > 0.0 && rng.exists(_.nextDouble() < systemErrorRate)
+                if isSystemError then
+                  List(StorageSystemError(txn.req, DynamoDbOperationKind.TransactWriteItems, txn.executionTarget))
+                else
+                  txn.perItemSamples.foreach { item =>
+                    stateModel.recordSuccessfulPut(item.sample.writtenItemBytes, item.sample.previousItemBytes)
+                    if item.sample.createdNewItem then
+                      ttlSampler.foreach(_.recordWrite(item.sample.writtenItemBytes, txn.req.eventTime.ticks))
+                  }
+                  List(StorageAdmitted(txn))
+
+          case txn: AdmittedTransactGetItemsSample =>
+            val isSystemError = systemErrorRate > 0.0 && rng.exists(_.nextDouble() < systemErrorRate)
+            if isSystemError then
+              List(StorageSystemError(txn.req, DynamoDbOperationKind.TransactGetItems, txn.executionTarget))
+            else
+              List(StorageAdmitted(txn))
 
           case sample: AdmittedRequestSample =>
-            validateItemCollectionLimit(sample, itemCollectionSizeLimitBytes) match
+            val outcome = validateItemCollectionLimit(sample, itemCollectionSizeLimitBytes) match
               case Left(rejection) => rejection
               case Right(admitted) =>
-                admitted match
-                  case r: Replicated[?] => r.sample match
+                val isSystemError = systemErrorRate > 0.0 && rng.exists(_.nextDouble() < systemErrorRate)
+                if isSystemError then
+                  StorageSystemError(
+                    request = admitted.req,
+                    operation = DynamoDbOperationKind.fromRequest(admitted.req),
+                    target = admitted.executionTarget
+                  )
+                else
+                  admitted match
+                    case r: Replicated[?] => r.sample match
+                      case s: AdmittedPutItemSample =>
+                        stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                        if s.sample.createdNewItem then
+                          ttlSampler.foreach(_.recordWrite(s.sample.writtenItemBytes, admitted.req.eventTime.ticks))
+                      case s: AdmittedUpdateItemSample =>
+                        stateModel.recordSuccessfulUpdate(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                        if s.sample.createdNewItem then
+                          ttlSampler.foreach(_.recordWrite(s.sample.writtenItemBytes, admitted.req.eventTime.ticks))
+                      case s: AdmittedDeleteItemSample =>
+                        stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
+                        if s.sample.deletedExistingItem then
+                          ttlSampler.foreach(_.recordDelete(admitted.req.eventTime.ticks))
+                      case _ => ()
                     case s: AdmittedPutItemSample =>
                       stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                      if s.sample.createdNewItem then
+                        ttlSampler.foreach(_.recordWrite(s.sample.writtenItemBytes, admitted.req.eventTime.ticks))
                     case s: AdmittedUpdateItemSample =>
                       stateModel.recordSuccessfulUpdate(s.sample.writtenItemBytes, s.sample.previousItemBytes)
+                      if s.sample.createdNewItem then
+                        ttlSampler.foreach(_.recordWrite(s.sample.writtenItemBytes, admitted.req.eventTime.ticks))
                     case s: AdmittedDeleteItemSample =>
                       stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
+                      if s.sample.deletedExistingItem then
+                        ttlSampler.foreach(_.recordDelete(admitted.req.eventTime.ticks))
                     case _ => ()
-                  case s: AdmittedPutItemSample =>
-                    stateModel.recordSuccessfulPut(s.sample.writtenItemBytes, s.sample.previousItemBytes)
-                  case s: AdmittedUpdateItemSample =>
-                    stateModel.recordSuccessfulUpdate(s.sample.writtenItemBytes, s.sample.previousItemBytes)
-                  case s: AdmittedDeleteItemSample =>
-                    stateModel.recordSuccessfulDelete(s.sample.deletedItemBytes)
-                  case _ => ()
-                StorageAdmitted(admitted)
+                  StorageAdmitted(admitted)
+            List(outcome)
         }
       )
 
@@ -264,32 +366,56 @@ object TableStorageStage:
             deletedItemBytes = s.deletedItemBytes
           )
 
+        case AdmittedTransactWriteItemsSample(r, _, _, s, _, _, _, _) =>
+          TransactWriteItemsResponse(eventTime = r.eventTime, usecase = r.usecase, itemCount = s.itemCount)
+
+        case AdmittedTransactGetItemsSample(r, _, _, s, _, _) =>
+          TransactGetItemsResponse(eventTime = r.eventTime, usecase = r.usecase, items = s.items.map(_.itemBytes))
+
       val responseFlow = b.add(
-        Flow[TimedElement[StorageOutcome]].map[TimedElement[DynamoDBResponse]] {
-          case t: TimedControlEvent => t
+        Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDBResponse]] {
+          case t: TimedControlEvent => List(t)
+          case _: TtlExpiry => Nil
           case rejection: StorageRejection =>
-            ItemCollectionSizeLimitExceededResponse(
+            List(ItemCollectionSizeLimitExceededResponse(
               eventTime = rejection.eventTime,
               usecase = rejection.usecase,
               operation = rejection.operation,
               target = rejection.target,
               resultingCollectionBytes = rejection.resultingCollectionBytes,
               limitBytes = rejection.limitBytes
-            )
-          case StorageAdmitted(sample) => responseForSample(sample)
+            ))
+          case err: StorageSystemError =>
+            List(SystemErrorResponse(
+              eventTime = err.eventTime,
+              usecase = err.usecase,
+              operation = err.operation,
+              target = err.target
+            ))
+          case StorageAdmitted(sample) => List(responseForSample(sample))
         }
       )
 
+      val latSamplers: Map[DynamoDbOperationKind, ContinuousDistribution.Sampler] =
+        latencyModel.params.map { case (op, params) =>
+          op -> LogNormalDistribution.of(params.mu, params.sigma).createSampler(latencyRng)
+        }
+
+      def sampleLatencyMs(op: DynamoDbOperationKind): Double =
+        latSamplers.get(op).map(_.sample()).getOrElse(0.0)
+
       def metricsForSample(sample: AdmittedRequestSample): List[StorageMetricEvent] = sample match
         case r: Replicated[?] => metricsForSample(r.sample)
-        case AdmittedGetItemSample(r, _, _, _, s, _, _) =>
+        case AdmittedGetItemSample(r, executionTarget, _, _, s, _, _) =>
           val returnedEvents =
             s.itemBytes.toList.map { itemBytes =>
               StorageMetricEvent.GetItemReturned(r.eventTime, r.usecase, itemBytes)
             }
           List(
             StorageMetricEvent.GetItemObserved(r.eventTime, r.usecase)
-          ) ++ returnedEvents
+          ) ++ returnedEvents ++ List(
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.GetItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.GetItem))
+          )
 
         case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
           val effectiveSample =
@@ -328,7 +454,11 @@ object TableStorageStage:
           List(
             StorageMetricEvent.QueryObserved(r.eventTime, r.usecase, r.target),
             StorageMetricEvent.QueryEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
-          ) ++ returnedEvents ++ projectionEvents
+          ) ++ returnedEvents ++ projectionEvents ++
+            List(
+              StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Query, s.returnedItemCount),
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.Query, executionTarget, sampleLatencyMs(DynamoDbOperationKind.Query))
+            )
 
         case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
           val effectiveSample =
@@ -367,25 +497,31 @@ object TableStorageStage:
           List(
             StorageMetricEvent.ScanObserved(r.eventTime, r.usecase, r.target),
             StorageMetricEvent.ScanEvaluated(r.eventTime, r.usecase, r.target, s.evaluatedItemCount, s.evaluatedBytes)
-          ) ++ returnedEvents ++ projectionEvents
+          ) ++ returnedEvents ++ projectionEvents ++
+            List(
+              StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, s.returnedItemCount),
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, executionTarget, sampleLatencyMs(DynamoDbOperationKind.Scan))
+            )
 
-        case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
+        case AdmittedPutItemSample(r, executionTarget, _, s, _, _, _) =>
           List(
             StorageMetricEvent.PutItemObserved(r.eventTime, r.usecase),
             StorageMetricEvent.PutItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.PutItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.PutItem))
           )
 
-        case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
+        case AdmittedUpdateItemSample(r, executionTarget, _, s, _, _, _) =>
           List(
             StorageMetricEvent.UpdateItemObserved(r.eventTime, r.usecase),
             StorageMetricEvent.UpdateItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.UpdateItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.UpdateItem))
           )
 
-        case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
+        case AdmittedDeleteItemSample(r, executionTarget, _, s, _, _, _) =>
           val deleteEvents =
             s.deletedItemBytes.toList.map { bytes =>
               StorageMetricEvent.DeleteItemDeleted(r.eventTime, r.usecase, bytes)
@@ -394,12 +530,45 @@ object TableStorageStage:
             StorageMetricEvent.DeleteItemObserved(r.eventTime, r.usecase)
           ) ++ deleteEvents ++ List(
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
-            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta)
+            StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.DeleteItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.DeleteItem))
           )
+
+        case AdmittedTransactWriteItemsSample(r, executionTarget, _, _, _, _, _, perItemSamples) =>
+          val perItemMetrics = perItemSamples.toList.flatMap { item =>
+            List(
+              StorageMetricEvent.PutItemObserved(r.eventTime, r.usecase),
+              StorageMetricEvent.PutItemStored(r.eventTime, r.usecase, item.sample.writtenItemBytes, item.sample.createdNewItem),
+              StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, item.sample.itemCountDelta),
+              StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, item.sample.storageBytesDelta)
+            )
+          }
+          perItemMetrics ++ List(
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.TransactWriteItems, executionTarget, sampleLatencyMs(DynamoDbOperationKind.TransactWriteItems))
+          )
+
+        case AdmittedTransactGetItemsSample(r, executionTarget, _, s, _, _) =>
+          val returnedEvents = s.items.toList.flatMap { item =>
+            item.itemBytes.toList.map { bytes => StorageMetricEvent.GetItemReturned(r.eventTime, r.usecase, bytes) }
+          }
+          List(StorageMetricEvent.GetItemObserved(r.eventTime, r.usecase)) ++
+            returnedEvents ++
+            List(
+              StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.TransactGetItems, s.items.count(_.itemBytes.isDefined).toLong),
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.TransactGetItems, executionTarget, sampleLatencyMs(DynamoDbOperationKind.TransactGetItems))
+            )
 
       val metricFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[StorageMetricEvent]] {
           case t: TimedControlEvent => List(t)
+          case expiry: TtlExpiry =>
+            val ttlEvents: List[TimedElement[StorageMetricEvent]] =
+              if expiry.sample.expiredItemCount > 0L then
+                List(StorageMetricEvent.TtlItemsExpired(expiry.eventTime, expiry.usecase, expiry.sample.expiredItemCount, expiry.sample.baseTableBytesFreed))
+              else Nil
+            val countEvent: TimedElement[StorageMetricEvent] =
+              StorageMetricEvent.EstimatedItemCount(expiry.eventTime, expiry.usecase, expiry.remainingItemCount)
+            ttlEvents :+ countEvent
           case rejection: StorageRejection =>
             List(
               StorageMetricEvent.ItemCollectionSizeLimitExceeded(
@@ -410,6 +579,15 @@ object TableStorageStage:
                 logicalPartitionAccess = rejection.logicalPartitionAccess,
                 resultingCollectionBytes = rejection.resultingCollectionBytes,
                 limitBytes = rejection.limitBytes
+              )
+            )
+          case err: StorageSystemError =>
+            List(
+              StorageMetricEvent.SystemError(
+                eventTime = err.eventTime,
+                usecase = err.usecase,
+                operation = err.operation,
+                target = err.target
               )
             )
           case StorageAdmitted(sample) => metricsForSample(sample)
@@ -612,11 +790,67 @@ object TableStorageStage:
             DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, executionTarget, s.storageBytesDelta)
           )
 
+        case AdmittedTransactWriteItemsSample(r, executionTarget, _, _, _, _, _, perItemSamples) =>
+          perItemSamples.toList.flatMap { item =>
+            List(
+              DynamoDbConsumptionEvent.WriteCapacityConsumed(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                target = executionTarget,
+                units = TableThroughputMath.transactionalWriteCapacityUnitsFor(item.sample.writtenItemBytes)
+              ),
+              DynamoDbConsumptionEvent.StorageBytesWritten(r.eventTime, r.usecase, executionTarget, item.sample.writtenItemBytes),
+              DynamoDbConsumptionEvent.StorageBytesDelta(r.eventTime, r.usecase, executionTarget, item.sample.storageBytesDelta)
+            )
+          }
+
+        case AdmittedTransactGetItemsSample(r, executionTarget, _, s, _, _) =>
+          s.items.toList.flatMap { item =>
+            val rcuEvents = List(
+              DynamoDbConsumptionEvent.ReadCapacityConsumed(
+                eventTime = r.eventTime,
+                usecase = r.usecase,
+                target = executionTarget,
+                units = TableThroughputMath.transactionalReadCapacityUnitsFor(item.itemBytes),
+                consistency = ReadConsistency.StronglyConsistent
+              )
+            )
+            val bytesEvents = item.itemBytes.toList.map { bytes =>
+              DynamoDbConsumptionEvent.StorageBytesRead(r.eventTime, r.usecase, executionTarget, bytes)
+            }
+            rcuEvents ++ bytesEvents
+          }
+
+      def addPitrEvents(events: List[TimedElement[DynamoDbConsumptionEvent]]): List[TimedElement[DynamoDbConsumptionEvent]] =
+        if !pitrStateRef.exists(_.pitrEnabled) then events
+        else events.flatMap {
+          case d: DynamoDbConsumptionEvent.StorageBytesDelta =>
+            List(d, DynamoDbConsumptionEvent.PITRStorageBytesDelta(d.eventTime, d.usecase, d.target, d.bytesDelta))
+          case other => List(other)
+        }
+
       val consumptionFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDbConsumptionEvent]] {
           case t: TimedControlEvent => List(t)
+          case expiry: TtlExpiry =>
+            val s = expiry.sample
+            if s.expiredItemCount <= 0L then Nil
+            else
+              val baseTableTarget = DynamoDbTarget.Table("table")
+              val baseDelta: TimedElement[DynamoDbConsumptionEvent] =
+                DynamoDbConsumptionEvent.StorageBytesDelta(expiry.eventTime, expiry.usecase, baseTableTarget, -s.baseTableBytesFreed)
+              val gsiDeltas: List[TimedElement[DynamoDbConsumptionEvent]] =
+                s.gsiStorageFreed.toList.map { case (indexName, bytes) =>
+                  DynamoDbConsumptionEvent.StorageBytesDelta(expiry.eventTime, expiry.usecase, DynamoDbTarget.GlobalSecondaryIndex("table", indexName), -bytes)
+                }
+              val lsiDeltas: List[TimedElement[DynamoDbConsumptionEvent]] =
+                s.lsiStorageFreed.toList.map { case (indexName, bytes) =>
+                  DynamoDbConsumptionEvent.StorageBytesDelta(expiry.eventTime, expiry.usecase, DynamoDbTarget.LocalSecondaryIndex("table", indexName), -bytes)
+                }
+              addPitrEvents(baseDelta :: gsiDeltas ++ lsiDeltas)
           case _: StorageRejection => Nil
-          case StorageAdmitted(sample) => consumptionForSample(sample)
+          case _: StorageSystemError => Nil
+          case StorageAdmitted(sample) => addPitrEvents(consumptionForSample(sample))
         }
       )
 
@@ -624,10 +858,15 @@ object TableStorageStage:
       // suppressing any sample that was rejected by the item-collection check.
       // Downstream index-maintenance reads from this port so rejected writes do not
       // propagate maintenance effects.
+      // TransactWriteItems expands to individual per-item AdmittedPutItemSamples so the
+      // existing index-maintenance graph receives the per-item write envelopes it expects.
       val validatedSampleFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[AdmittedRequestSample]] {
           case t: TimedControlEvent => List(t)
+          case _: TtlExpiry => Nil
           case _: StorageRejection => Nil
+          case _: StorageSystemError => Nil
+          case StorageAdmitted(txn: AdmittedTransactWriteItemsSample) => txn.perItemSamples.toList
           case StorageAdmitted(sample) => List(sample)
         }
       )
@@ -782,6 +1021,11 @@ object TableStorageStage:
 
           case _: PartiQLQueryRequest =>
             throw new UnsupportedOperationException("PartiQL query execution is not yet supported")
+
+          case _: TransactWriteItemsRequest | _: TransactGetItemsRequest =>
+            throw new UnsupportedOperationException(
+              "TransactWriteItems/TransactGetItems require the full pipeline (TableSamplingStage + TableAdmissionStage). Use componentOfAdmitted or the full DynamoDbTable.componentOf pipeline."
+            )
 
           case t: TimedControlEvent => t
         }

@@ -5,6 +5,7 @@ import org.apache.pekko.stream.Materializer
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
+import stochastacy.aws.dynamodb.pricing.{DynamoDbPricingRates, PricingSchedule, ReservedCapacity}
 import stochastacy.demo.{DemoMetric, TrialRunConfig}
 
 import scala.concurrent.duration.*
@@ -154,5 +155,35 @@ class ThermostatFleetMixedModeSingleTrialRunnerSpec
       val first  = Await.result(runner.runTrial(smallConfig, run), 30.seconds)
       val second = Await.result(runner.runTrial(smallConfig, run), 30.seconds)
       first shouldBe second
+    }
+
+    "produce lower TotalEstimatedCost with reserved capacity covering all provisioned base-table capacity" in {
+      val baseConfig = ThermostatFleetMixedModeConfig(
+        simulationTicks    = 10L,
+        trialCount         = 2,
+        parallelism        = 2,
+        modeSwitchTick     = 3L,
+        capacityAdjustTick = 7L,
+        initialProvisionedRcu  = 100L,
+        initialProvisionedWcu  = 100L,
+        adjustedProvisionedRcu = 100L,
+        adjustedProvisionedWcu = 100L
+      )
+      val reservedRates = DynamoDbPricingRates.phase1Default.copy(
+        reservedCapacity = Some(ReservedCapacity(
+          reservedReadCapacityUnits       = 100L,
+          reservedWriteCapacityUnits      = 100L,
+          discountedReadCapacityUnitPrice  = DynamoDbPricingRates.awsDefaultStandard.readCapacityUnitPrice  / 2,
+          discountedWriteCapacityUnitPrice = DynamoDbPricingRates.awsDefaultStandard.writeCapacityUnitPrice / 2
+        ))
+      )
+      val runner = ThermostatFleetMixedModeSingleTrialRunner()
+      val run    = TrialRunConfig(trialId = 1, seed = 42L)
+      val withoutReserved = Await.result(runner.runTrial(baseConfig, run), 30.seconds)
+      val withReserved    = Await.result(runner.runTrial(baseConfig.copy(pricingSchedule = PricingSchedule.uniform(reservedRates)), run), 30.seconds)
+
+      val costWithout = withoutReserved.summary.find(_.metric == DemoMetric.TotalEstimatedCost).get.value
+      val costWith    = withReserved.summary.find(_.metric == DemoMetric.TotalEstimatedCost).get.value
+      costWith should be < costWithout
     }
   }

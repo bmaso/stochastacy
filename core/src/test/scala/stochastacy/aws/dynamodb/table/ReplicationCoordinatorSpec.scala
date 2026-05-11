@@ -301,4 +301,54 @@ class ReplicationCoordinatorSpec extends AnyWordSpec with should.Matchers:
       results.collect { case _: ReplicationCoordinator.ReplicatedWriteForRegion => 1 } shouldBe empty
       results.collect { case _: ReplicationCoordinator.TransferEventOutput => 1 } shouldBe empty
     }
+
+    "emit ReplicationLatencyOutput with lagMs = 0.0 for zero-lag distribution" in {
+      val regions = Seq("a", "b")
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(zeroLagDistribution),
+        rng = seededRng
+      )
+      val sample = admittedPut(SimTime.of(1L), 100L, "a")
+      val results = runCoordinator(
+        regions,
+        model,
+        Seq(
+          TimedControlEvent.Tick(SimTime.of(1L)),
+          ReplicationCoordinator.OriginTaggedReplicationEvent("a", sample)
+        )
+      )
+
+      val latencyOutputs = results.collect {
+        case lo: ReplicationCoordinator.ReplicationLatencyOutput => lo
+      }
+      latencyOutputs should have size 1
+      latencyOutputs.head.destinationRegion shouldBe "b"
+      latencyOutputs.head.event.lagMs shouldBe 0.0
+    }
+
+    "emit ReplicationLatencyOutput with fractional-tick lagMs for sub-integer lag distribution" in {
+      val regions = Seq("a", "b")
+      val model = ReplicationModel(
+        defaultLagDistribution = Some(fixedLagDistribution(0.5)),
+        rng = seededRng
+      )
+      val sample = admittedPut(SimTime.of(1L), 100L, "a")
+      val results = runCoordinator(
+        regions,
+        model,
+        Seq(
+          TimedControlEvent.Tick(SimTime.of(1L)),
+          ReplicationCoordinator.OriginTaggedReplicationEvent("a", sample),
+          TimedControlEvent.Tick(SimTime.of(2L))
+        )
+      )
+
+      // lag = 0.5 ticks → floors to 0 → applied immediately at tick 1
+      val latencyOutputs = results.collect {
+        case lo: ReplicationCoordinator.ReplicationLatencyOutput => lo
+      }
+      latencyOutputs should have size 1
+      latencyOutputs.head.destinationRegion shouldBe "b"
+      latencyOutputs.head.event.lagMs shouldBe 500.0 +- 0.001
+    }
   }

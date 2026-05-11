@@ -49,13 +49,21 @@ private[table] object ReplicationCoordinator:
     override val eventTime: SimTime = event.eventTime
     override val usecase: Any = event.usecase
 
+  final case class ReplicationLatencyOutput(
+    destinationRegion: String,
+    event: ReplicationMetricEvent.ReplicationLatency
+  ) extends ReplicationOutputEvent:
+    override val eventTime: SimTime = event.eventTime
+    override val usecase: Any = event.usecase
+
   // Internal queue entry for a pending replicated effect.
   private final case class PendingReplication(
                                                sourceRegion: String,
                                                destinationRegion: String,
                                                applyTick: Long,
                                                originSample: AdmittedRequestSample,
-                                               transferBytes: Long
+                                               transferBytes: Long,
+                                               lagMs: Double  // raw sampled ticks × 1000; preserved for sub-second resolution
                                              )
 
   private def restampSample(sample: AdmittedRequestSample, applyEventTime: SimTime): AdmittedRequestSample =
@@ -103,9 +111,9 @@ private[table] object ReplicationCoordinator:
         def samplerFor(source: String, dest: String): ContinuousDistribution.Sampler =
           samplerCache.getOrElseUpdate((source, dest), model.distributionFor(source, dest).createSampler(model.rng))
 
-        def sampleLagTicks(source: String, dest: String): Long =
+        def sampleLag(source: String, dest: String): (Long, Double) =
           val raw = samplerFor(source, dest).sample()
-          math.max(0L, math.floor(raw).toLong)
+          (math.max(0L, math.floor(raw).toLong), math.max(0.0, raw) * 1000.0)
 
         def drainTo(currentT: Long, applyEventTime: SimTime): Vector[ReplicationOutputEvent] =
           val drained = Vector.newBuilder[ReplicationOutputEvent]
@@ -122,6 +130,16 @@ private[table] object ReplicationCoordinator:
                   destinationRegion = pending.destinationRegion,
                   sourceService = "DynamoDB",
                   bytes = pending.transferBytes
+                )
+              )
+              drained += ReplicationLatencyOutput(
+                pending.destinationRegion,
+                ReplicationMetricEvent.ReplicationLatency(
+                  eventTime         = applyEventTime,
+                  usecase           = pending.originSample.usecase,
+                  sourceRegion      = pending.sourceRegion,
+                  destinationRegion = pending.destinationRegion,
+                  lagMs             = pending.lagMs
                 )
               )
           drained.result()
@@ -146,8 +164,8 @@ private[table] object ReplicationCoordinator:
             val bytes = replicatedBytesFor(sample)
             val immediates = Vector.newBuilder[ReplicationOutputEvent]
             for destRegion <- regions if destRegion != srcRegion do
-              val lag = sampleLagTicks(srcRegion, destRegion)
-              val applyTick = tickNow + lag
+              val (lagTicks, lagMs) = sampleLag(srcRegion, destRegion)
+              val applyTick = tickNow + lagTicks
               if applyTick <= tickNow then
                 // Zero-lag: apply immediately at the current tick's eventTime.
                 val restamped = restampSample(sample, tickNowEventTime)
@@ -162,14 +180,25 @@ private[table] object ReplicationCoordinator:
                     bytes = bytes
                   )
                 )
+                immediates += ReplicationLatencyOutput(
+                  destRegion,
+                  ReplicationMetricEvent.ReplicationLatency(
+                    eventTime         = tickNowEventTime,
+                    usecase           = sample.usecase,
+                    sourceRegion      = srcRegion,
+                    destinationRegion = destRegion,
+                    lagMs             = lagMs
+                  )
+                )
               else
                 lagQueues(destRegion).enqueue(
                   PendingReplication(
-                    sourceRegion = srcRegion,
+                    sourceRegion      = srcRegion,
                     destinationRegion = destRegion,
-                    applyTick = applyTick,
-                    originSample = sample,
-                    transferBytes = bytes
+                    applyTick         = applyTick,
+                    originSample      = sample,
+                    transferBytes     = bytes,
+                    lagMs             = lagMs
                   )
                 )
             immediates.result()

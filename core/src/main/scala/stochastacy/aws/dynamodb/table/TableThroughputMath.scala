@@ -20,3 +20,11 @@ private[table] object TableThroughputMath:
       if itemBytes > 0 then ((itemBytes - 1L) / BytesPerWriteCapacityUnitChunk) + 1L
       else 1L
     BigDecimal(chunkCount)
+
+  // Transactional writes cost 2× WCU per item (DynamoDB pricing)
+  def transactionalWriteCapacityUnitsFor(itemBytes: Long): BigDecimal =
+    writeCapacityUnitsFor(itemBytes) * 2
+
+  // Transactional reads are always strongly consistent and cost 2× RCU per item
+  def transactionalReadCapacityUnitsFor(itemBytes: Option[Long]): BigDecimal =
+    readCapacityUnitsFor(itemBytes, ReadConsistency.StronglyConsistent) * 2

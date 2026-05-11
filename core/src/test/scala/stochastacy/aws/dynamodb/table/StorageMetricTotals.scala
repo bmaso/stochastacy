@@ -109,3 +109,21 @@ object StorageMetricTotals:
 
       case _: StorageMetricEvent.ScanFetchedFromBaseTable =>
         acc
+
+      case _: StorageMetricEvent.ReturnedItemCount =>
+        acc
+
+      case _: StorageMetricEvent.ItemCollectionSizeLimitExceeded =>
+        acc
+
+      case _: StorageMetricEvent.SystemError =>
+        acc
+
+      case _: StorageMetricEvent.SuccessfulRequestLatency =>
+        acc
+
+      case _: StorageMetricEvent.TtlItemsExpired =>
+        acc
+
+      case _: StorageMetricEvent.EstimatedItemCount =>
+        acc

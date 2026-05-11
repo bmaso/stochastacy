@@ -1,5 +1,6 @@
 package stochastacy.aws.dynamodb.table
 
+import scala.collection.immutable.SortedMap
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.{SimTime, TimedEvent}
 
@@ -95,6 +96,63 @@ private[table] final case class ShapedDeleteItemRequest(
   override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Write
 
 /**
+ * Shaped envelope for a TransactWriteItems request. Carries both the merged (aggregated)
+ * footprint and maintenance plan for whole-transaction admission, plus per-item data needed
+ * to build individual admitted samples for downstream index maintenance.
+ */
+private[table] final case class ShapedTransactWriteItemsRequest(
+  req: TransactWriteItemsRequest,
+  executionTarget: DynamoDbTarget,
+  admissionTarget: DynamoDbTarget,
+  sample: TransactWriteItemsSample,
+  throughputDemand: BigDecimal,
+  logicalPartitionAccess: LogicalPartitionAccess,
+  resolvedPartitionFootprint: ResolvedPartitionFootprint,
+  indexMaintenancePlan: Vector[IndexMaintenancePlan],
+  perItemResolvedFootprints: Vector[ResolvedPartitionFootprint],
+  perItemIndexMaintenancePlans: Vector[Vector[IndexMaintenancePlan]]
+) extends ShapedWriteRequest:
+  override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Write
+
+/**
+ * Shaped envelope for a TransactGetItems request. All reads are strongly consistent.
+ */
+private[table] final case class ShapedTransactGetItemsRequest(
+  req: TransactGetItemsRequest,
+  executionTarget: DynamoDbTarget,
+  admissionTarget: DynamoDbTarget,
+  sample: TransactGetItemsSample,
+  throughputDemand: BigDecimal,
+  logicalPartitionAccess: LogicalPartitionAccess,
+  resolvedPartitionFootprint: ResolvedPartitionFootprint
+) extends ShapedRequest:
+  override val throughputDimension: DynamoDbThroughputDimension = DynamoDbThroughputDimension.Read
+
+/** Merges multiple partition footprints by summing per-partition demand. */
+private[table] def mergeFootprints(footprints: Vector[ResolvedPartitionFootprint]): ResolvedPartitionFootprint =
+  require(footprints.nonEmpty, "mergeFootprints requires at least one footprint")
+  val totalPartitionCount = footprints.head.totalPartitionCount
+  val merged = footprints.foldLeft(SortedMap.empty[Int, BigDecimal]) { (acc, fp) =>
+    fp.partitionDemandById.foldLeft(acc) { case (a, (pid, demand)) =>
+      a.updated(pid, a.getOrElse(pid, BigDecimal(0)) + demand)
+    }
+  }
+  ResolvedPartitionFootprint(totalPartitionCount, merged)
+
+/** Merges per-item index maintenance plans into one plan per target, summing throughput demand. */
+private[table] def mergeIndexMaintenancePlans(perItemPlans: Vector[Vector[IndexMaintenancePlan]]): Vector[IndexMaintenancePlan] =
+  val allPlans = perItemPlans.flatten
+  if allPlans.isEmpty then return Vector.empty
+  allPlans.groupBy(_.target).map { case (_, plans) =>
+    plans.head.copy(
+      throughputDemand = plans.map(_.throughputDemand).sum,
+      storageBytesDelta = plans.map(_.storageBytesDelta).sum,
+      logicalPartitionAccess = LogicalPartitionAccess.AllPartitions,
+      resolvedPartitionFootprint = mergeFootprints(plans.map(_.resolvedPartitionFootprint))
+    )
+  }.toVector
+
+/**
  * A shared mutable reference for the current partition topology snapshots.
  * Owned and updated by the admission stage (TableAdmissionStage) at tick boundaries.
  * Read by the sampling stage (TableSamplingStage) when resolving partition footprints.
@@ -117,6 +175,10 @@ private[table] class TopologySnapshotRef(
  *
  * Thread-safety: all stages run fused in the same Pekko actor.
  */
+/** Shared mutable PITR flag. Written by management processor on TogglePITR; read by
+ *  TableStorageStage when deciding whether to emit PITRStorageBytesDelta events. */
+private[table] class PITRStateRef(@volatile var pitrEnabled: Boolean)
+
 private[table] class BillingModeRef(
   @volatile var currentMode: DynamoDbTable.BillingMode,
   @volatile var lastSwitchTick: Option[Long] = None
