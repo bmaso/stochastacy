@@ -1,10 +1,10 @@
 # IPS Hand-Off
 
-Last updated: 2026-05-08 (phase 6 slices 1–10 complete; PITR Pricing delivered; all Phase 6 slices done)
+Last updated: 2026-05-08 (Phase 6 complete — all 10 slices; Phase 7 roadmap written; 482 tests passing)
 
 ## Current Position
 
-The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phases 1–5 are all complete. **Phase 5** (accuracy and metric completeness) shipped all planned pricing-accuracy slices (9–11, 11b, 12) plus the earlier simulation-accuracy slices (1–5). Three originally-planned Phase 5 slices (ReplicationLatency, SystemErrors, SuccessfulRequestLatency) were deferred to Phase 6.
+The project is a DynamoDB Monte Carlo simulator (Scala 3 / sbt / Pekko Streams). Phases 1–6 are all complete. **Phase 6** (Close the Gap) shipped 10 slices covering read consistency, TTL, reactive auto-scaling, a multi-table simulation framework, a DynamoDB capstone demo, ReplicationLatency, SystemErrors, SuccessfulRequestLatency, DynamoDB Transactions, and PITR Pricing.
 
 The simulator supports:
 
@@ -227,29 +227,36 @@ Total: 309 core tests + 173 examples tests = 482 tests all passing.
 
 ## Recommended Next Work
 
-Phase 6 — "Close the Gap" — five slices targeting features required for the final ThermoFleet
-multi-service demo. The full ThermoFleet demo requires API Gateway, Lambda, SQS, DynamoDB, and
-S3; Phase 6 delivers only the DynamoDB layer plus a capstone demo that exercises it. See
-[ips-phase6.md](../roadmaps/ips-phase6.md) for the full spec.
+**Phase 7 — Composable Workloads.** See [ips-phase7.md](../roadmaps/ips-phase7.md) for the full spec.
 
-1. **Read consistency RCU accounting** — DONE (verified): `TableThroughputMath` already applies 0.5× for eventually-consistent reads.
-2. **TTL** — DONE: `TtlSampler`/`SimpleTtlSampler` ring-buffer; `TtlExpiry` StorageOutcome at tick boundaries; `TtlItemsExpired`+`EstimatedItemCount` metrics; `StorageBytesDelta` cascade for GSI/LSI; `DynamoDbTable.Config.ttlSampler`; 12 new tests.
-3. **Reactive auto-scaling** — DONE: `DynamoDbAutoScaler` actor-based external coordinator; `Policy` config (separate scale-up/down reaction delays and cooldowns, rolling window, min/max bounds); `ThermostatFleetScenarioConfig.autoScalerPolicy` field; 3-way runner path (auto-scaler / schedule / plain); 7 new tests.
-4. **Multi-table simulation framework** — DONE: composable runner for N parallel table instances with shared tick clock and per-table namespaced metrics (`Table:<name>:*`); `MultiTableScenarioConfig`, `MultiTableEntry`, `ThermostatFleetMultiTableSingleTrialRunner`.
-5. **DynamoDB capstone demo** — DONE: four-table ThermoFleet-inspired simulation (Device Registry, Telemetry, Commands, Alerts); polar vortex burst (40% fleet, 5× writes); provisioned+auto-scaling on telemetry table; Grafana dashboard with per-table cost, throttle count, provisioned vs. consumed, and EstimatedItemCount panels.
-6. **ReplicationLatency metric** — DONE: `ReplicationMetricEvent.ReplicationLatency` emitted by `ReplicationCoordinator` (both zero-lag and queued paths); routed to per-destination-region metric outlets in `DynamoDbGlobalTable`; collected by multi-region runner as `DemoMetric.ReplicationLatency(region)` with MAX-per-window rollup; Grafana panel in thermostat-fleet dashboard.
-7. **SystemErrors** — Bernoulli error model in `TableStorageStage`; `SystemErrorResponse`; no-consumption no-state-mutation guarantee; `DemoMetric.SystemErrorCount`.
-8. **SuccessfulRequestLatency** — DONE: log-normal latency samples per admitted non-errored request; `DynamoDbTable.LatencyModel` config; P50/P95/P99 rollup; latency panels in both dashboards.
-9. **DynamoDB Transactions** — DONE: `TransactWriteItems` (2× WCU/item) and `TransactGetItems` (2× RCU/item, always strongly consistent); `TransactWriteItemsRequest` / `TransactGetItemsRequest` / response types in `op_events.scala`; `TransactWriteItemsSample` / `TransactGetItemsSample` sample traits; shaped and admitted types; `transactionalWriteCapacityUnitsFor` / `transactionalReadCapacityUnitsFor` in `TableThroughputMath`; all-or-nothing LSI collection limit and system-error checks; `WriteAsPutSample` adapter; `mergeFootprints` / `mergeIndexMaintenancePlans` helpers; `ThermostatFleetBehavior.transactWriteItems`; capstone Commands table uses 2-item transactions; 10 new tests.
-10. **PITR Pricing** — DONE: `pointInTimeRecoveryEnabled: Boolean` on `DynamoDbTable.Config`; `TogglePITR` management event in `DynamoDbManagementEvent`; `PITRStateRef` shared mutable ref (follows `BillingModeRef` pattern); `PITRStorageBytesDelta` consumption event mirrors `StorageBytesDelta` only when PITR is on; `pitrStorageByteTicks` field on `DynamoDbTimeBasedUsageTotals` + `PerRegionAcc`; `pitrStoragePricePerGiBSecond` on `DynamoDbPricingRates.RateSet` (default: $0.20/GiB-month); `pitrCost` on `DynamoDbCostBreakdown` included in `totalCost`; `DemoMetric.TablePITRCumulativeCost(tableName)` emitted per tick; DeviceTelemetry table in capstone opts in (`pointInTimeRecoveryEnabled = true`); 8 new tests.
+Phase 7 delivers a composable, declarative workload system plus a lightweight web-based visualizer:
 
-**Phase 6 is complete.** All 10 slices delivered.
+1. **Core sampler hierarchy** (Slice 1) — `Sampler[S, T]` trait; `StatelessSampler[T]` type alias; distribution samplers (`PoissonSampler`, `NormalSampler`, `LogNormalSampler`, `BinomialSampler`, `UniformSampler`, `BernoulliSampler`, `ConstantSampler`); temporal shape functions (`dailySinusoid`, `linearGrowth`, `triangularPeak`, `timeWindow`, `weekdayMask`); `RandomBurstSampler` (the one stateful case). All with companion `constant(...)` factories and unit tests.
+2. **Workload definition model** (Slice 2) — `RequestShapeDefinition` (request type + rate sampler + param samplers); `WorkloadDefinition` (table name + request vector); request-stream generator replacing `generateRequestsForRegion`.
+3. **Demo migration** (Slice 3) — all existing demos migrated to `WorkloadDefinition`; open question: whether `UseCaseSampler` implementations align with the new `Sampler[S, T]` hierarchy (minimum requirement: preserve existing behavior).
+4. **YAML DSL** (Slice 4) — YAML schema + parser (`WorkloadDefinition` from YAML); stateless samplers and temporal shape functions only; round-trip tests.
+5. **Workload visualizer** (Slices 5+, not yet broken into slices) — web tool accepting workload YAML; timeline view, decomposition view, parameter inspection; designed for Tauri desktop packaging.
+
+### Phase 6 Status (complete — all 10 slices)
+
+1. **Read consistency RCU accounting** — DONE: `TableThroughputMath` applies 0.5× for eventually-consistent reads.
+2. **TTL** — DONE: `TtlSampler`/`SimpleTtlSampler` ring-buffer; `TtlExpiry` StorageOutcome; `TtlItemsExpired`+`EstimatedItemCount` metrics; 12 new tests.
+3. **Reactive auto-scaling** — DONE: `DynamoDbAutoScaler` actor-based external coordinator; `Policy` config; `ThermostatFleetScenarioConfig.autoScalerPolicy`; 7 new tests.
+4. **Multi-table simulation framework** — DONE: `MultiTableScenarioConfig`, `MultiTableEntry`, `ThermostatFleetMultiTableSingleTrialRunner`; per-table namespaced metrics (`Table:<name>:*`).
+5. **DynamoDB capstone demo** — DONE: four-table simulation (Device Registry, Telemetry, Commands, Alerts); polar vortex burst; provisioned+auto-scaling on Telemetry; capstone Grafana dashboard.
+6. **ReplicationLatency metric** — DONE: emitted by `ReplicationCoordinator`; `DemoMetric.ReplicationLatency(region)` with MAX-per-window rollup; Grafana panel.
+7. **SystemErrors** — DONE: Bernoulli error model; `SystemErrorResponse`; `DemoMetric.SystemErrorCount`.
+8. **SuccessfulRequestLatency** — DONE: log-normal latency samples; P50/P95/P99 rollup; latency panels in both dashboards.
+9. **DynamoDB Transactions** — DONE: `TransactWriteItems` (2× WCU/item) and `TransactGetItems` (2× RCU/item); all-or-nothing LSI check; capstone Commands table uses 2-item transactions; 10 new tests.
+10. **PITR Pricing** — DONE: `pointInTimeRecoveryEnabled` on `DynamoDbTable.Config`; `TogglePITR` management event; `PITRStateRef`; `PITRStorageBytesDelta`; `pitrCost` in `DynamoDbCostBreakdown`; `DemoMetric.TablePITRCumulativeCost(tableName)`; DeviceTelemetry opts in; 8 new tests.
+
+**Note:** Slices 9 (Transactions) and 10 (PITR Pricing) passed all tests but were never visually verified by running the full `generate → stage → view` pipeline and inspecting Grafana output. The Grafana capstone dashboard also has no PITR cost panel.
 
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
 - `sbt test` runs all 482 tests; `sbt "core/test"` runs the 309 core tests
-- The canonical planning anchors are [ips-phase5.md](../roadmaps/ips-phase5.md) (complete) and [ips-phase4.md](../roadmaps/ips-phase4.md) (complete); the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
+- The canonical next-work anchor is [ips-phase7.md](../roadmaps/ips-phase7.md); earlier phases ([ips-phase5.md](../roadmaps/ips-phase5.md), [ips-phase6.md](../roadmaps/ips-phase6.md)) are complete; the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
 - Implement one slice at a time; use plan mode for new slices
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries
 - `componentOfManaged` is the factory for any table that needs mid-simulation reconfiguration; `componentOf` and `componentOfReplicated` do not accept management events
