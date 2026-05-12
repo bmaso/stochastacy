@@ -1,6 +1,6 @@
 # IPS Hand-Off
 
-Last updated: 2026-05-08 (Phase 6 complete — all 10 slices; Phase 7 roadmap written; 482 tests passing)
+Last updated: 2026-05-11 (Phase 7 Slices 1–3 complete — sampler hierarchy, workload model, demo migration; 490 tests passing)
 
 ## Current Position
 
@@ -69,6 +69,40 @@ The simulator supports:
 | 7. Demo Scenario + Grafana Panels | **Done** | Mixed-mode thermostat fleet: `ThermostatFleetMixedModeBridge`, `DemoMetric` cases, mixed-mode Grafana dashboard, "right-sizing trap" narrative |
 
 ## Key Architectural Concepts
+
+### Workload System (Phase 7)
+
+The `stochastacy.workload` package provides a composable, declarative layer for defining request streams. It is separate from and upstream of the DynamoDB table simulator.
+
+**`Sampler[S, T]`** is the unified abstraction for both stateless and stateful value generation:
+```
+trait Sampler[S, T]:
+  def initialState: S
+  def sample(tick: Long, rng: UniformRandomProvider, state: S): (T, S)
+type StatelessSampler[T] = Sampler[Unit, T]
+```
+The N-kinded hierarchy:
+- 0-kinded (primitives): `ConstantSampler`, distribution samplers, `Sampler.deterministic(Long => T)`
+- 1-kinded (tick/output transform): `MappedSampler(base, tickTransform, outputTransform)` — `outputTransform` receives the ORIGINAL tick
+- 2-kinded (combining): `CombiningSampler(baseA, baseB, combineOutput)` — named constructors: `sum`, `product`, `overlay(condition: Long => Boolean)`
+
+**`RandomBurstSampler[S]`** is the one stateful primitive. It wraps a lambda-producing `Sampler[S, Double]` and adds a stochastic burst: `burstAmount(tick)` is added to the base lambda during burst ticks, with the Poisson draw done internally. State is `(ticksRemaining: Int, innerState: S)`. Used for the thermostat fleet alert storm pattern.
+
+**`ErasedSampler.of[S, T](sampler)`** adapts any `Sampler[S, T]` into a `StatelessSampler[T]` by managing its own state as a mutable `var`. This allows stateful rate samplers (like `RandomBurstSampler`) to satisfy `RequestShapeDefinition.rate: StatelessSampler[Int]`. Single-use, not thread-safe; `WorkloadRequestStream` guarantees single-call-per-tick semantics.
+
+**`WorkloadDefinition`** is a declarative request-stream description:
+- `RequestShape` sealed ADT encodes the request type and its typed parameters: `GetItem`, `DeleteItem`, `PutItem(itemBytes)`, `UpdateItem(itemBytes)`, `Query(target, readConsistency)`, `Scan(target, readConsistency)`, `TransactWriteItems(perItemBytes)`, `TransactGetItems(itemCount)`
+- `RequestShapeDefinition(rate: StatelessSampler[Int], shape: RequestShape)` — rate is orthogonal to shape; `copy(rate = ...)` works without pattern-matching
+- `WorkloadDefinition(tableName, usecase, requests)` — a table name, use-case identifier, and vector of shapes
+
+**`WorkloadRequestStream`** produces `Iterator[TimedElement[DynamoDBRequest]]` from a `WorkloadDefinition`. Output structure is identical to the old `generateRequestsForRegion`: each tick begins with a `Tick` control event followed by all requests for that tick, plus a final `Tick(simulationTicks + 1)`. Two independent RNGs are split per shape (one for rate draws, one for parameter draws) so that changing a param sampler does not affect rate draws.
+
+**Workload / UseCaseSampler boundary:**
+- `WorkloadDefinition` / `WorkloadRequestStream` controls **arrival**: which request types arrive, at what rate, with what parameters (item size, target index, read consistency).
+- `UseCaseSampler[T <: TableState]` controls **outcomes**: given an arrived request and current table state, what stochastically happened in storage (bytes read, hit/miss, partition access).
+- They meet at the `DynamoDBRequest` handoff. `UseCaseSampler` is intentionally not aligned with `Sampler[S, T]` — they serve different pipeline stages with incompatible input types and different RNG lifecycle patterns.
+
+**`ThermostatFleetScenarioConfig.toWorkloadDefinition(region: RegionFleetConfig): WorkloadDefinition`** is the translation point from scenario config scalars to composable samplers. It builds the telemetry rate as `ErasedSampler.of(RandomBurstSampler(baseLambda, ...))` where `baseLambda` encodes fleet growth + spike multipliers + polar vortex, and handles the `transactWriteItemsPerItemBytes` branch. Runners call this method and pass the result to `WorkloadRequestStream`.
 
 ### BillingMode
 
@@ -172,6 +206,16 @@ The "Write Capacity: Consumed vs. Provisioned" panel shows mean, P50, P75, and P
 
 ## Key Code Locations
 
+### Workload System (Phase 7)
+- [Sampler.scala](core/src/main/scala/stochastacy/workload/Sampler.scala) — `Sampler[S, T]` trait, `StatelessSampler[T]` alias, `stateless` / `deterministic` constructors
+- [DistributionSamplers.scala](core/src/main/scala/stochastacy/workload/DistributionSamplers.scala) — 7 distribution samplers + `ConstantSampler`
+- [SamplerCombinators.scala](core/src/main/scala/stochastacy/workload/SamplerCombinators.scala) — `MappedSampler`, `CombiningSampler` with `sum`/`product`/`overlay`
+- [TemporalShapeFunctions.scala](core/src/main/scala/stochastacy/workload/TemporalShapeFunctions.scala) — `sinusoid`, `linearFactor`, `triangularFactor`, `weekdays`
+- [RandomBurstSampler.scala](core/src/main/scala/stochastacy/workload/RandomBurstSampler.scala) — stateful burst pattern; lambda-space additive burst; output `Int`
+- [ErasedSampler.scala](core/src/main/scala/stochastacy/workload/ErasedSampler.scala) — adapts `Sampler[S, T]` → `StatelessSampler[T]` via mutable state
+- [WorkloadDefinition.scala](core/src/main/scala/stochastacy/workload/WorkloadDefinition.scala) — `RequestShape` ADT, `RequestShapeDefinition`, `WorkloadDefinition`
+- [WorkloadRequestStream.scala](core/src/main/scala/stochastacy/workload/WorkloadRequestStream.scala) — stream generator; two RNGs per shape; `Tick`-framed output
+
 ### Core Table Simulator
 - [DynamoDbTable.scala](core/src/main/scala/stochastacy/aws/dynamodb/table/DynamoDbTable.scala) — public component (`componentOf`, `componentOfReplicated`, `componentOfManaged`), `BillingMode` sealed type
 - [TableSamplingStage.scala](core/src/main/scala/stochastacy/aws/dynamodb/table/TableSamplingStage.scala) — sampling/shaping stage
@@ -223,19 +267,25 @@ The "Write Capacity: Consumed vs. Provisioned" panel shows mean, P50, P75, and P
 - [PITRPricingSpec.scala](core/src/test/scala/stochastacy/aws/dynamodb/pricing/PITRPricingSpec.scala) — 6 tests: pitrStorageByteTicks accumulation, zero PITR without events, proportional byte-ticks, zero pitrCost when no PITR events, correct per-GiB cost for 1 GiB/30-day, pitrCost in totalCost
 - PITR integration via `ThermostatFleetCapstoneSingleTrialRunnerSpec` — 2 new tests: PITR-enabled DeviceTelemetry emits `TablePITRCumulativeCost`; PITR-disabled tables emit 0
 
-Total: 309 core tests + 173 examples tests = 482 tests all passing.
+Total: 317 core tests + 173 examples tests = 490 tests all passing.
 
 ## Recommended Next Work
 
-**Phase 7 — Composable Workloads.** See [ips-phase7.md](../roadmaps/ips-phase7.md) for the full spec.
+**Phase 7 Slice 4 — YAML DSL.** Slices 1–3 are complete. See [ips-phase7.md](../roadmaps/ips-phase7.md) for the full Phase 7 spec.
 
-Phase 7 delivers a composable, declarative workload system plus a lightweight web-based visualizer:
+Slice 4 delivers a YAML schema and parser that produces a `WorkloadDefinition` from a YAML document, making workloads portable and independent of Scala code. Scope: stateless samplers only (all seven distribution samplers + `ConstantSampler`); all temporal shape functions from `TemporalShapeFunctions`; `WorkloadDefinition` and `RequestShapeDefinition` structure. Stateful samplers (`RandomBurstSampler`, `ErasedSampler`) remain available programmatically but are not representable in YAML. Round-trip tests verify that parsing a YAML document produces a definition whose sampled output matches the equivalent programmatically-constructed definition.
 
-1. **Core sampler hierarchy** (Slice 1) — `Sampler[S, T]` trait; `StatelessSampler[T]` type alias; distribution samplers (`PoissonSampler`, `NormalSampler`, `LogNormalSampler`, `BinomialSampler`, `UniformSampler`, `BernoulliSampler`, `ConstantSampler`); temporal shape functions (`dailySinusoid`, `linearGrowth`, `triangularPeak`, `timeWindow`, `weekdayMask`); `RandomBurstSampler` (the one stateful case). All with companion `constant(...)` factories and unit tests.
-2. **Workload definition model** (Slice 2) — `RequestShapeDefinition` (request type + rate sampler + param samplers); `WorkloadDefinition` (table name + request vector); request-stream generator replacing `generateRequestsForRegion`.
-3. **Demo migration** (Slice 3) — all existing demos migrated to `WorkloadDefinition`; open question: whether `UseCaseSampler` implementations align with the new `Sampler[S, T]` hierarchy (minimum requirement: preserve existing behavior).
-4. **YAML DSL** (Slice 4) — YAML schema + parser (`WorkloadDefinition` from YAML); stateless samplers and temporal shape functions only; round-trip tests.
-5. **Workload visualizer** (Slices 5+, not yet broken into slices) — web tool accepting workload YAML; timeline view, decomposition view, parameter inspection; designed for Tauri desktop packaging.
+After Slice 4, Phase 7 continues with Slices 5+ (web-based workload visualizer, to be broken into slices once the DSL is complete).
+
+### Phase 7 Status
+
+| Slice | Status | Summary |
+|-------|--------|---------|
+| 1. Core sampler hierarchy | **Done** | `Sampler[S, T]` trait; `StatelessSampler[T]` alias; 7 distribution samplers; `MappedSampler` / `CombiningSampler` combinators; `TemporalShapeFunctions`; `RandomBurstSampler`; `ErasedSampler` |
+| 2. Workload definition model | **Done** | `RequestShape` sealed ADT; `RequestShapeDefinition`; `WorkloadDefinition`; `WorkloadRequestStream` generator |
+| 3. Demo migration | **Done** | All runners use `WorkloadRequestStream`; `toWorkloadDefinition(region)` on `ThermostatFleetScenarioConfig`; `generateRequestsForRegion` deleted |
+| 4. YAML DSL | Planned | YAML schema + parser; stateless samplers only; round-trip tests |
+| 5+ Workload visualizer | To be sliced | Web tool; timeline + decomposition views; Tauri desktop packaging |
 
 ### Phase 6 Status (complete — all 10 slices)
 
@@ -255,8 +305,11 @@ Phase 7 delivers a composable, declarative workload system plus a lightweight we
 ## Notes For A Fresh Session
 
 - The mutable table state is intentionally stochastic-summary-oriented, not key-accurate
-- `sbt test` runs all 482 tests; `sbt "core/test"` runs the 309 core tests
-- The canonical next-work anchor is [ips-phase7.md](../roadmaps/ips-phase7.md); earlier phases ([ips-phase5.md](../roadmaps/ips-phase5.md), [ips-phase6.md](../roadmaps/ips-phase6.md)) are complete; the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
+- `sbt test` runs all 490 tests; `sbt "core/test"` runs the 317 core tests
+- The canonical next-work anchor is [ips-phase7.md](../roadmaps/ips-phase7.md) (Slice 4 — YAML DSL is next); earlier phases ([ips-phase5.md](../roadmaps/ips-phase5.md), [ips-phase6.md](../roadmaps/ips-phase6.md)) are complete; the architecture reference is [dynamodb-table.md](../architecture/dynamodb-table.md)
+- The workload system (`stochastacy.workload`) is separate from the table simulator. `WorkloadRequestStream` produces `DynamoDBRequest` events; `UseCaseSampler` controls what happens to those requests inside the table. Do not conflate them.
+- `ErasedSampler` is intentionally mutable: it manages stateful sampler state across ticks. It is correct only when `sample` is called once per tick in order — `WorkloadRequestStream` guarantees this.
+- `ThermostatFleetScenarioConfig.toWorkloadDefinition(region)` is the only place where config scalars are translated into composed samplers. Runners do not construct samplers directly.
 - Implement one slice at a time; use plan mode for new slices
 - The management event pipeline uses a shared `BillingModeRef` pattern (analogous to `TopologySnapshotRef`): management processor writes to the ref, admission stages read it at tick boundaries
 - `componentOfManaged` is the factory for any table that needs mid-simulation reconfiguration; `componentOf` and `componentOfReplicated` do not accept management events

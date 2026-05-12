@@ -31,9 +31,9 @@ Concretely, Phase 7 delivers:
 
 | Slice | Status | Summary |
 |-------|--------|---------|
-| 1. Core sampler hierarchy | Planned | `Sampler[S, T]` trait; `StatelessSampler[T]` alias; distribution samplers; temporal shape functions |
-| 2. Workload definition model | Planned | `RequestShapeDefinition`; `WorkloadDefinition`; request stream generator |
-| 3. Demo migration | Planned | All existing demos migrated to `WorkloadDefinition`; open question on `UseCaseSampler` alignment |
+| 1. Core sampler hierarchy | **Done** | `Sampler[S, T]` trait; `StatelessSampler[T]` alias; 7 distribution samplers + `ConstantSampler`; `MappedSampler` + `CombiningSampler` combinators; `TemporalShapeFunctions` pure factory functions; `RandomBurstSampler` (stateful burst pattern); `ErasedSampler` (stateful → stateless adapter) |
+| 2. Workload definition model | **Done** | `RequestShape` sealed ADT (8 variants); `RequestShapeDefinition(rate, shape)`; `WorkloadDefinition(tableName, usecase, requests)`; `WorkloadRequestStream` generator with per-shape split RNGs |
+| 3. Demo migration | **Done** | `ThermostatFleetScenarioConfig.toWorkloadDefinition(region)` translates config scalars to composed samplers; all four demo runners call `WorkloadRequestStream`; `generateRequestsForRegion`, `computeSpikeMultiplier`, `poissonSampler` deleted; `UseCaseSampler` boundary documented and left unchanged |
 | 4. YAML DSL | Planned | YAML schema + parser for all stateless sampler types; round-trip tests |
 | 5+ Workload visualizer | To be sliced | Lightweight web tool; visual workload timeline; sampler decomposition; Tauri desktop packaging |
 
@@ -110,8 +110,7 @@ case class RandomBurstSampler[S](
 ) extends Sampler[(Int, S), Double]
 ```
 
-**Deliverables:** trait + type alias + convenience constructor; all distribution samplers with
-companion factories; all temporal shape functions; `RandomBurstSampler`; unit tests for each.
+**Deliverables (complete):** `Sampler[S, T]` trait + `StatelessSampler[T]` alias + `stateless`/`deterministic` constructors; all distribution samplers with companion `constant(...)` factories; `MappedSampler` and `CombiningSampler` combinators with named constructors; `TemporalShapeFunctions` pure factory functions; `RandomBurstSampler` (stateful, produces `Int`, wraps a lambda-producing sampler); `ErasedSampler` (adapts any `Sampler[S, T]` to `StatelessSampler[T]` via mutable state — needed to use stateful rate samplers in `RequestShapeDefinition.rate`); unit tests for each.
 
 ---
 
@@ -137,8 +136,7 @@ The request stream generator takes a `WorkloadDefinition` and produces the same
 `Iterator[TimedElement[DynamoDBRequest]]` that `generateRequestsForRegion` currently produces,
 but driven entirely by the sampler definitions rather than hardcoded logic.
 
-**Deliverables:** `RequestShapeDefinition`; `WorkloadDefinition`; stream generator; unit tests
-verifying that a known workload definition produces the expected request type distribution.
+**Deliverables (complete):** `RequestShape` sealed ADT with 8 variants; `RequestShapeDefinition(rate, shape)` with convenience constructors; `WorkloadDefinition(tableName, usecase, requests)`; `WorkloadRequestStream` generator (two RNGs per shape, `Tick`-framed output); 19 unit tests covering tick framing, request counts, request types, parameter propagation, and metadata.
 
 ---
 
@@ -157,8 +155,7 @@ from the new hierarchy, but the exact relationship is to be determined during th
 The minimum requirement is that existing `UseCaseSampler` behavior is preserved; alignment
 with the new hierarchy is a stretch goal.
 
-**Deliverables:** all demo workloads expressed as `WorkloadDefinition`; all existing tests
-passing; `generateRequestsForRegion` removed.
+**Deliverables (complete):** `ThermostatFleetScenarioConfig.toWorkloadDefinition(region)` translates config scalars into composed samplers (fleet growth, spike multipliers, polar vortex, alert storm via `RandomBurstSampler`, `transactWriteItemsPerItemBytes` branch); all four demo runners (`ThermostatFleetSingleTrialRunner` ×2, `ThermostatFleetMixedModeSingleTrialRunner`, `ThermostatFleetMultiTableSingleTrialRunner`, `ThermostatFleetCapstoneSingleTrialRunner`) call `WorkloadRequestStream`; `generateRequestsForRegion`, `computeSpikeMultiplier`, and `poissonSampler` deleted; `UseCaseSampler` boundary documented and left unchanged; all 490 tests pass.
 
 ---
 
