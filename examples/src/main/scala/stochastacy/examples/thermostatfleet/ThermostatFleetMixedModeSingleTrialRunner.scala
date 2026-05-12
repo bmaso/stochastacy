@@ -11,6 +11,7 @@ import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.dynamodb.usage.{DynamoDbTargetTimeBasedUsageTotals, DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 import stochastacy.demo.*
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent, ticks}
+import stochastacy.workload.WorkloadRequestStream
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -200,7 +201,7 @@ final class ThermostatFleetMixedModeSingleTrialRunner()(using ActorSystem, Mater
     val behaviors: Map[Any, UseCaseSampler[TableState]] = Map(scenarioConfig.scenarioId -> behavior)
 
     val tableConfig = buildTableConfig(scenarioConfig, tableState, behaviors)
-    val requestIterator    = delegate.generateRequestsForRegion(scenarioConfig, region, requestRng)
+    val requestIterator    = WorkloadRequestStream(scenarioConfig.toWorkloadDefinition(region), requestRng, scenarioConfig.simulationTicks)
     val managementIterator = delegate.managementEventsFor(scenarioConfig.simulationTicks, schedule)
 
     val rates = scenarioConfig.pricingSchedule.ratesAt(

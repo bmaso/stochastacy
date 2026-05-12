@@ -2,7 +2,8 @@ package stochastacy.examples.thermostatfleet
 
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
-import org.apache.commons.statistics.distribution.{DiscreteDistribution, LogNormalDistribution, PoissonDistribution}
+import org.apache.commons.statistics.distribution.LogNormalDistribution
+import stochastacy.workload.WorkloadRequestStream
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, Materializer}
 import org.apache.pekko.stream.scaladsl.{Flow, GraphDSL, Merge, RunnableGraph, Sink, Source}
@@ -354,7 +355,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
     val tableState = SummaryTableState(initialItemCount = 0L, initialTotalItemBytes = 0L)
     val behavior = ThermostatFleetBehavior(config, behaviorRng, region.initialDeviceCount, region.deviceGrowthPerTick)
     val behaviors: Map[Any, UseCaseSampler[TableState]] = Map(config.scenarioId -> behavior)
-    val requestIterator = generateRequestsForRegion(config, region, requestRng)
+    val requestIterator = WorkloadRequestStream(config.toWorkloadDefinition(region), requestRng, config.simulationTicks)
 
     val gsiNames = Vector(
       ThermostatFleetScenarioConfig.CustomerDevicesGsiName,
@@ -485,7 +486,7 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
 
     val requestStreamIterators: Map[String, Iterator[TimedElement[DynamoDBRequest]]] =
       sortedRegions.map { region =>
-        region.regionName -> generateRequestsForRegion(config, region, regionRngs(region.regionName))
+        region.regionName -> WorkloadRequestStream(config.toWorkloadDefinition(region), regionRngs(region.regionName), config.simulationTicks)
       }.toMap
 
     val behaviors: Map[String, Map[Any, UseCaseSampler[TableState]]] =
@@ -837,107 +838,6 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
         eventsByTick.get(tick).iterator
     } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(simulationTicks + 1L)): TimedElement[DynamoDbManagementEvent])
 
-  // ── Request generation ──────────────────────────────────────────────────────
-
-  private[thermostatfleet] def generateRequestsForRegion(
-    config: ThermostatFleetScenarioConfig,
-    region: RegionFleetConfig,
-    rng: UniformRandomProvider
-  ): Iterator[TimedElement[DynamoDBRequest]] =
-    val telemetryRng = RandomSource.KISS.create(rng.nextLong())
-    val queryRng = RandomSource.KISS.create(rng.nextLong())
-    val scanRng = RandomSource.KISS.create(rng.nextLong())
-    val stormRng = RandomSource.KISS.create(rng.nextLong())
-
-    val baseQuerySampler = poissonSampler(config.customerSupportQueryRatePerTick, queryRng)
-    val baseScanSampler = poissonSampler(config.fleetDashboardScanRatePerTick, scanRng)
-
-    var alertStormTicksRemaining = 0
-
-    (1L to config.simulationTicks).iterator.flatMap { tick =>
-      val isAlertStorm =
-        if alertStormTicksRemaining > 0 then
-          alertStormTicksRemaining -= 1
-          true
-        else if stormRng.nextDouble() < config.alertStormProbabilityPerTick then
-          alertStormTicksRemaining = config.alertStormDurationTicks - 1
-          true
-        else
-          false
-
-      val fleetSize = math.max(1L, region.initialDeviceCount + (region.deviceGrowthPerTick * tick).toLong)
-      val spikeMultiplier = computeSpikeMultiplier(tick, config)
-      val effectiveRate = config.telemetryReportsPerDevicePerTick * spikeMultiplier * fleetSize.toDouble
-      val telemetrySampler = poissonSampler(effectiveRate, telemetryRng)
-
-      val stormCount =
-        if isAlertStorm then
-          poissonSampler(
-            config.telemetryReportsPerDevicePerTick * (config.alertStormWriteMultiplier - 1.0) * fleetSize.toDouble,
-            telemetryRng
-          )()
-        else 0
-
-      val telemetryCount = telemetrySampler() + stormCount
-
-      Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDBRequest]) ++
-        Iterator.fill(telemetryCount) {
-          config.transactWriteItemsPerItemBytes match
-            case Some(perItemBytes) =>
-              TransactWriteItemsRequest(eventTime = SimTime.of(tick), usecase = config.scenarioId, perItemBytes = perItemBytes): TimedElement[DynamoDBRequest]
-            case None =>
-              PutItemRequest(eventTime = SimTime.of(tick), usecase = config.scenarioId, itemBytes = config.telemetryItemMeanBytes): TimedElement[DynamoDBRequest]
-        } ++
-        Iterator.fill(baseQuerySampler()) {
-          QueryRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId,
-            target = DynamoDbReadTarget.GlobalSecondaryIndex(
-              config.tableName,
-              ThermostatFleetScenarioConfig.CustomerDevicesGsiName
-            ),
-            readConsistency = config.readConsistency
-          ): TimedElement[DynamoDBRequest]
-        } ++
-        Iterator.fill(baseScanSampler()) {
-          ScanRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId,
-            target = DynamoDbReadTarget.GlobalSecondaryIndex(
-              config.tableName,
-              ThermostatFleetScenarioConfig.FleetAlertsGsiName
-            ),
-            readConsistency = config.readConsistency
-          ): TimedElement[DynamoDBRequest]
-        }
-    } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(config.simulationTicks + 1L)))
-
-  private def computeSpikeMultiplier(tick: Long, config: ThermostatFleetScenarioConfig): Double =
-    val (morningStart, morningEnd) = config.morningSpikePeakTickRange
-    val (eveningStart, eveningEnd) = config.eveningSpikePeakTickRange
-
-    def triangularPeak(start: Long, end: Long, multiplier: Double): Double =
-      if tick < start || tick > end then 1.0
-      else if start == end then multiplier
-      else
-        val mid = (start + end) / 2.0
-        val halfWidth = (end - start) / 2.0
-        1.0 + (multiplier - 1.0) * (1.0 - math.abs(tick.toDouble - mid) / halfWidth)
-
-    val baseMultiplier = math.max(
-      triangularPeak(morningStart, morningEnd, config.morningSpikePeakMultiplier),
-      triangularPeak(eveningStart, eveningEnd, config.eveningSpikePeakMultiplier)
-    )
-
-    val (vortexStart, vortexEnd) = config.polarVortexTickRange
-    val polarMultiplier =
-      if vortexStart > 0L && tick >= vortexStart && tick <= vortexEnd then
-        // Only the affected fraction of devices writes at the elevated rate; the rest continue at 1×.
-        1.0 + config.polarVortexAffectedFraction * (config.polarVortexWriteMultiplier - 1.0)
-      else 1.0
-
-    baseMultiplier * polarMultiplier
-
   // ── Table config builder ────────────────────────────────────────────────────
 
   private[thermostatfleet] def buildTableConfig(
@@ -989,8 +889,3 @@ final class ThermostatFleetSingleTrialRunner()(using ActorSystem, Materializer, 
       rng = rng
     )
 
-  private def poissonSampler(mean: Double, rng: UniformRandomProvider): () => Int =
-    if mean <= 0.0 then () => 0
-    else
-      val sampler: DiscreteDistribution.Sampler = PoissonDistribution.of(mean).createSampler(rng)
-      () => sampler.sample()

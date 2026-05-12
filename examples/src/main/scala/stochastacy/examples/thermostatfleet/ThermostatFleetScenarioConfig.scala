@@ -3,7 +3,9 @@ package stochastacy.examples.thermostatfleet
 import stochastacy.aws.dynamodb.autoscaling.DynamoDbAutoScaler
 import stochastacy.aws.dynamodb.pricing.{DynamoDbPricingRates, PricingSchedule}
 import stochastacy.aws.dynamodb.table.*
+import stochastacy.aws.dynamodb.{DynamoDbReadTarget}
 import stochastacy.aws.transfer.CrossRegionTransferPricingRates
+import stochastacy.workload.*
 
 final case class RegionFleetConfig(
   regionName: String,
@@ -115,6 +117,53 @@ final case class ThermostatFleetScenarioConfig(
   def isMultiRegion: Boolean = regions.size > 1
 
   def totalInitialDeviceCount: Long = regions.map(_.initialDeviceCount).sum
+
+  def toWorkloadDefinition(region: RegionFleetConfig): WorkloadDefinition =
+
+    def fleetSize(tick: Long): Long =
+      math.max(1L, region.initialDeviceCount + (region.deviceGrowthPerTick * tick).toLong)
+
+    val baseTelemetryLambda: StatelessSampler[Double] = Sampler.deterministic { tick =>
+      val morning = TemporalShapeFunctions.triangularFactor(
+        morningSpikePeakTickRange._1, morningSpikePeakTickRange._2, morningSpikePeakMultiplier)(tick)
+      val evening = TemporalShapeFunctions.triangularFactor(
+        eveningSpikePeakTickRange._1, eveningSpikePeakTickRange._2, eveningSpikePeakMultiplier)(tick)
+      val spike = math.max(morning, evening)
+      val (vs, ve) = polarVortexTickRange
+      val polar =
+        if vs > 0L && tick >= vs && tick <= ve then
+          1.0 + polarVortexAffectedFraction * (polarVortexWriteMultiplier - 1.0)
+        else 1.0
+      telemetryReportsPerDevicePerTick * spike * polar * fleetSize(tick).toDouble
+    }
+
+    val stormBurstAmount: Long => Double = tick =>
+      telemetryReportsPerDevicePerTick * (alertStormWriteMultiplier - 1.0) * fleetSize(tick).toDouble
+
+    val telemetryRateSampler: StatelessSampler[Int] = ErasedSampler.of(
+      RandomBurstSampler(baseTelemetryLambda, alertStormProbabilityPerTick,
+                         alertStormDurationTicks, stormBurstAmount)
+    )
+
+    val telemetryShape: RequestShapeDefinition = transactWriteItemsPerItemBytes match
+      case Some(perItemBytes) =>
+        RequestShapeDefinition.transactWriteItems(telemetryRateSampler,
+          perItemBytes.map(b => ConstantSampler(b)))
+      case None =>
+        RequestShapeDefinition.putItem(telemetryRateSampler, ConstantSampler(telemetryItemMeanBytes))
+
+    val queryShape = RequestShapeDefinition.query(
+      PoissonSampler.constant(customerSupportQueryRatePerTick),
+      DynamoDbReadTarget.GlobalSecondaryIndex(tableName, ThermostatFleetScenarioConfig.CustomerDevicesGsiName),
+      readConsistency
+    )
+
+    val scanShape = RequestShapeDefinition.scan(
+      PoissonSampler.constant(fleetDashboardScanRatePerTick),
+      DynamoDbReadTarget.GlobalSecondaryIndex(tableName, ThermostatFleetScenarioConfig.FleetAlertsGsiName)
+    )
+
+    WorkloadDefinition(tableName, scenarioId, Vector(telemetryShape, queryShape, scanShape))
 
 object ThermostatFleetScenarioConfig:
 

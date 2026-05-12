@@ -10,6 +10,7 @@ import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingI
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.demo.*
 import stochastacy.sim.{TimedElement, ticks}
+import stochastacy.workload.WorkloadRequestStream
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -104,7 +105,7 @@ final class ThermostatFleetCapstoneSingleTrialRunner()(using ActorSystem, Materi
             val behaviors: Map[Any, UseCaseSampler[TableState]] =
               Map(entry.config.scenarioId -> behavior)
             val tableConfig     = helper.buildTableConfig(entry.config, state, behaviors)
-            val reqSrc          = Source.fromIterator(() => helper.generateRequestsForRegion(entry.config, region, reqRng))
+            val reqSrc          = Source.fromIterator(() => WorkloadRequestStream(entry.config.toWorkloadDefinition(region), reqRng, entry.config.simulationTicks))
             val consTagFlow     = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (entry.tableName, e)))
             val metricTagFlow   = b.add(Flow[TimedElement[TableMetricEvent]].map(e => (entry.tableName, e)))
             val autoScalerOpt   = autoScalers(i)

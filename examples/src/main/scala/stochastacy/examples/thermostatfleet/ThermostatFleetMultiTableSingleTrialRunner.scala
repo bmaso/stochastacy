@@ -9,6 +9,7 @@ import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingI
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.demo.*
 import stochastacy.sim.TimedElement
+import stochastacy.workload.WorkloadRequestStream
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -48,7 +49,7 @@ final class ThermostatFleetMultiTableSingleTrialRunner()(using ActorSystem, Mate
           val tableComp = b.add(DynamoDbTable.componentOf(helper.buildTableConfig(entry.config, state, behaviors)))
           val tagFlow   = b.add(Flow[TimedElement[DynamoDbConsumptionEvent]].map(e => (entry.tableName, e)))
 
-          Source.fromIterator(() => helper.generateRequestsForRegion(entry.config, region, reqRng)) ~> tableComp.in
+          Source.fromIterator(() => WorkloadRequestStream(entry.config.toWorkloadDefinition(region), reqRng, entry.config.simulationTicks)) ~> tableComp.in
           tableComp.out0 ~> b.add(Sink.ignore)
           tableComp.out1 ~> tagFlow ~> merge.in(i)
           tableComp.out2 ~> b.add(Sink.ignore)

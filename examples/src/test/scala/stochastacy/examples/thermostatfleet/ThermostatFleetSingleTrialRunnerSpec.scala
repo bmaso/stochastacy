@@ -9,6 +9,7 @@ import stochastacy.aws.dynamodb.table.{DynamoDbManagementEvent, DynamoDbTable, R
 import stochastacy.demo.{DemoMetric, TrialRunConfig}
 import stochastacy.sim.TimedControlEvent
 import stochastacy.sim.SimTime
+import stochastacy.workload.WorkloadRequestStream
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext}
@@ -262,20 +263,21 @@ class ThermostatFleetSingleTrialRunnerSpec extends AnyWordSpec with should.Match
   "ThermostatFleetSingleTrialRunner request generation" should {
 
     "generate Tick events at every simulated tick" in {
-      val runner = ThermostatFleetSingleTrialRunner()
       val config = smallConfig
       val rng = org.apache.commons.rng.simple.RandomSource.KISS.create(42L)
-      val requests = runner.generateRequestsForRegion(config, config.regions.head, rng)
+      val requests = WorkloadRequestStream(
+        config.toWorkloadDefinition(config.regions.head), rng, config.simulationTicks
+      ).toVector
 
-      import stochastacy.sim.TimedControlEvent
       val ticks = requests.collect { case t: TimedControlEvent.Tick => t }
       ticks should have size (config.simulationTicks + 1)  // +1 for final drain tick
     }
 
     "generate PutItemRequests as the dominant request type" in {
-      val runner = ThermostatFleetSingleTrialRunner()
       val rng = org.apache.commons.rng.simple.RandomSource.KISS.create(12345L)
-      val requests = runner.generateRequestsForRegion(smallConfig, smallConfig.regions.head, rng)
+      val requests = WorkloadRequestStream(
+        smallConfig.toWorkloadDefinition(smallConfig.regions.head), rng, smallConfig.simulationTicks
+      ).toVector
 
       import stochastacy.aws.dynamodb.PutItemRequest
       val puts = requests.collect { case r: PutItemRequest => r }
