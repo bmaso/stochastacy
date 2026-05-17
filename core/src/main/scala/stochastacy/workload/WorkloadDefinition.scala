@@ -26,7 +26,7 @@ object RequestShape:
     perItemBytes: Vector[StatelessSampler[Long]]
   ) extends RequestShape
 
-  case class TransactGetItems(itemCount: Int) extends RequestShape
+  case class TransactGetItems(itemCount: StatelessSampler[Int]) extends RequestShape
 
 
 case class RequestShapeDefinition(
@@ -68,12 +68,12 @@ object RequestShapeDefinition:
   ): RequestShapeDefinition =
     RequestShapeDefinition(rate, RequestShape.TransactWriteItems(perItemBytes))
 
-  def transactGetItems(rate: StatelessSampler[Int], itemCount: Int): RequestShapeDefinition =
+  def transactGetItems(rate: StatelessSampler[Int], itemCount: StatelessSampler[Int]): RequestShapeDefinition =
     RequestShapeDefinition(rate, RequestShape.TransactGetItems(itemCount))
 
 
 case class WorkloadDefinition(
   tableName: String,
   usecase:   String,
-  requests:  Vector[RequestShapeDefinition]
+  flows:     Vector[RequestShapeDefinition]
 )

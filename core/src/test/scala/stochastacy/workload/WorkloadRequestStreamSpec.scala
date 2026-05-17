@@ -30,7 +30,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
   private val noRequestsWorkload = WorkloadDefinition(
     tableName = "t",
     usecase   = "test",
-    requests  = Vector(RequestShapeDefinition.getItem(ConstantSampler(0)))
+    flows     = Vector(RequestShapeDefinition.getItem(ConstantSampler(0)))
   )
 
   // ── Tick framing ───────────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "set itemCount on TransactGetItemsRequest" in {
       val workload = WorkloadDefinition("t", "test",
-        Vector(RequestShapeDefinition.transactGetItems(ConstantSampler(1), itemCount = 3)))
+        Vector(RequestShapeDefinition.transactGetItems(ConstantSampler(1), itemCount = ConstantSampler(3))))
       requests(run(workload, ticks = 1L)).foreach {
         case r: TransactGetItemsRequest => r.itemCount shouldBe 3
         case _ =>

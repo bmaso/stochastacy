@@ -304,9 +304,8 @@ Multiply against a base sampler to suppress weekend traffic.
 ```yaml
 lambda:
   shape: weekdays
+  ticks-per-day: <integer>   # required. Number of simulation ticks per calendar day.
 ```
-
-No additional fields.
 
 ### Variant F — time window
 

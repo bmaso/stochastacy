@@ -38,6 +38,9 @@ lazy val core = (project in file("core"))
       "org.apache.commons" % "commons-rng-simple" % Versions.commonsRngSimple,
                                                                   // Apache-provided RNG algos
 
+      // YAML parsing for workload DSL
+      "org.yaml" % "snakeyaml" % "2.2",
+
       // Logging
       "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLoggingVersion,
       "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion,

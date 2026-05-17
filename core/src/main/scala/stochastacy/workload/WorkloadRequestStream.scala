@@ -26,16 +26,16 @@ object WorkloadRequestStream:
     simulationTicks: Long
   ): Iterator[TimedElement[DynamoDBRequest]] =
 
-    val n         = workload.requests.size
+    val n         = workload.flows.size
     val rateRngs  = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
     val paramRngs = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
 
     (1L to simulationTicks).iterator.flatMap { tick =>
       Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDBRequest]) ++
         (0 until n).iterator.flatMap { i =>
-          val (count, _) = workload.requests(i).rate.sample(tick, rateRngs(i), ())
+          val (count, _) = workload.flows(i).rate.sample(tick, rateRngs(i), ())
           Iterator.fill(count) {
-            buildRequest(tick, workload.usecase, workload.requests(i).shape, paramRngs(i))
+            buildRequest(tick, workload.usecase, workload.flows(i).shape, paramRngs(i))
           }
         }
     } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(simulationTicks + 1L)))
@@ -62,5 +62,5 @@ object WorkloadRequestStream:
         ScanRequest(t, usecase, target, readConsistency)
       case RequestShape.TransactWriteItems(perItemSamplers) =>
         TransactWriteItemsRequest(t, usecase, perItemSamplers.map(_.sample(tick, rng, ())._1))
-      case RequestShape.TransactGetItems(itemCount) =>
-        TransactGetItemsRequest(t, usecase, itemCount)
+      case RequestShape.TransactGetItems(itemCountSampler) =>
+        TransactGetItemsRequest(t, usecase, itemCountSampler.sample(tick, rng, ())._1)
