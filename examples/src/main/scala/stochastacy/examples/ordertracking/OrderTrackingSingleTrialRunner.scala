@@ -2,7 +2,6 @@ package stochastacy.examples.ordertracking
 
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
-import org.apache.commons.statistics.distribution.{DiscreteDistribution, PoissonDistribution}
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, Materializer}
 import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
@@ -11,7 +10,8 @@ import stochastacy.aws.dynamodb.pricing.{DynamoDbCostBreakdown, DynamoDbPricingI
 import stochastacy.aws.dynamodb.table.*
 import stochastacy.aws.dynamodb.usage.{DynamoDbTargetUsageTotals, DynamoDbTimeBasedUsageTotals, DynamoDbUsageTotals}
 import stochastacy.demo.*
-import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent, ticks}
+import stochastacy.sim.{TimedControlEvent, TimedElement, TimedEvent, ticks}
+import stochastacy.workload.WorkloadRequestStream
 
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -32,7 +32,9 @@ final class OrderTrackingSingleTrialRunner(
     val behaviors: Map[Any, UseCaseSampler[TableState]] =
       Map(config.scenarioId -> OrderTrackingBehavior(config, rng))
 
-    val requestSource = Source.fromIterator(() => generateRequests(config, rng))
+    val requestSource = Source.fromIterator(() =>
+      WorkloadRequestStream(config.toWorkloadDefinition(), rng, config.simulationTicks)
+    )
 
     runTable(
       requestSource = requestSource,
@@ -50,108 +52,6 @@ final class OrderTrackingSingleTrialRunner(
         }
       )
     }
-
-  private def generateRequests(
-                                config: OrderTrackingScenarioConfig,
-                                rng: UniformRandomProvider
-                              ): Iterator[TimedElement[DynamoDBRequest]] =
-    val createSampler = poissonSampler(config.createRatePerTick, rng)
-    val fetchSampler = poissonSampler(config.fetchRatePerTick, rng)
-    val updateSampler = poissonSampler(config.updateRatePerTick, rng)
-    val deleteSampler = poissonSampler(config.deleteRatePerTick, rng)
-    val tableQuerySampler = poissonSampler(config.tableQueryRatePerTick, rng)
-    val tableScanSampler = poissonSampler(config.tableScanRatePerTick, rng)
-    val gsiQuerySampler = poissonSampler(config.gsiQueryRatePerTick, rng)
-    val gsiScanSampler = poissonSampler(config.gsiScanRatePerTick, rng)
-
-    (1L to config.simulationTicks).iterator.flatMap { tick =>
-      Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDBRequest]) ++
-        Iterator.fill(createSampler()) {
-          PutItemRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId,
-            itemBytes = sampleBytes(config.newOrderMeanBytes, rng)
-          ): TimedElement[DynamoDBRequest]
-        } ++
-        Iterator.fill(fetchSampler()) {
-          GetItemRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId
-          ): TimedElement[DynamoDBRequest]
-        } ++
-        Iterator.fill(updateSampler()) {
-          UpdateItemRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId,
-            itemBytes = sampleBytes(config.updatedOrderMeanBytes, rng)
-          ): TimedElement[DynamoDBRequest]
-        } ++
-        Iterator.fill(deleteSampler()) {
-          DeleteItemRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId
-          ): TimedElement[DynamoDBRequest]
-        } ++
-        (0 until tableQuerySampler()).iterator.map { _ =>
-          QueryRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId,
-            target = DynamoDbReadTarget.Table(config.tableName),
-            readConsistency = config.readConsistency
-          ): TimedElement[DynamoDBRequest]
-        } ++
-        (0 until tableScanSampler()).iterator.map { _ =>
-          ScanRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId,
-            target = DynamoDbReadTarget.Table(config.tableName),
-            readConsistency = config.readConsistency
-          ): TimedElement[DynamoDBRequest]
-        } ++
-        (0 until gsiQuerySampler()).iterator.map { sampleIndex =>
-          QueryRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId,
-            target = nextGlobalSecondaryIndexTarget(config, tick, sampleIndex),
-            readConsistency = ReadConsistency.EventuallyConsistent
-          ): TimedElement[DynamoDBRequest]
-        } ++
-        (0 until gsiScanSampler()).iterator.map { sampleIndex =>
-          ScanRequest(
-            eventTime = SimTime.of(tick),
-            usecase = config.scenarioId,
-            target = nextGlobalSecondaryIndexTarget(config, tick, sampleIndex + 13),
-            readConsistency = ReadConsistency.EventuallyConsistent
-          ): TimedElement[DynamoDBRequest]
-        }
-    } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(config.simulationTicks + 1L)))
-
-  private def nextGlobalSecondaryIndexTarget(
-                                              config: OrderTrackingScenarioConfig,
-                                              tick: Long,
-                                              sampleIndex: Int
-                                            ): DynamoDbReadTarget =
-    val names = config.globalSecondaryIndexNames
-    require(names.nonEmpty, "nextGlobalSecondaryIndexTarget requires at least one configured global secondary index")
-    val indexName = names(((tick - 1L + sampleIndex.toLong) % names.size).toInt)
-    DynamoDbReadTarget.GlobalSecondaryIndex(config.tableName, indexName)
-
-  private def poissonSampler(
-                              mean: Double,
-                              rng: UniformRandomProvider
-                            ): () => Int =
-    if mean <= 0.0 then () => 0
-    else
-      val sampler: DiscreteDistribution.Sampler =
-        PoissonDistribution.of(mean).createSampler(rng)
-      () => sampler.sample()
-
-  private def sampleBytes(
-                           mean: Long,
-                           rng: UniformRandomProvider
-                         ): Long =
-    val scale = BigDecimal(0.75 + (rng.nextDouble() * 0.5))
-    math.max(1L, (BigDecimal(mean) * scale).setScale(0, BigDecimal.RoundingMode.HALF_UP).toLong)
 
   private def runTable(
                         requestSource: Source[TimedElement[DynamoDBRequest], ?],
@@ -363,6 +263,10 @@ final class OrderTrackingSingleTrialRunner(
     (readUnits * pricingRates.standard.readCapacityUnitPrice) +
       (writeUnits * pricingRates.standard.writeCapacityUnitPrice) +
       (BigDecimal(storageByteTicks) * pricingRates.standard.storagePricePerGiBSecond / bytesPerGiB)
+
+  private def sampleBytes(mean: Long, rng: UniformRandomProvider): Long =
+    val scale = BigDecimal(0.75 + (rng.nextDouble() * 0.5))
+    math.max(1L, (BigDecimal(mean) * scale).setScale(0, BigDecimal.RoundingMode.HALF_UP).toLong)
 
   private final case class OrderTrackingBehavior(
                                                   config: OrderTrackingScenarioConfig,

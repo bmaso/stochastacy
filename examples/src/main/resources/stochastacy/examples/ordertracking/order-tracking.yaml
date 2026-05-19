@@ -1,0 +1,71 @@
+workloads:
+
+  order-tracking-phase1:
+    flows:
+      - type: put-item
+        rate:
+          distribution: poisson
+          lambda: 0.8
+        item-bytes:
+          distribution: uniform
+          min: 672.0
+          max: 1120.0
+
+      - type: get-item
+        rate:
+          distribution: poisson
+          lambda: 2.5
+
+      - type: update-item
+        rate:
+          distribution: poisson
+          lambda: 1.2
+        item-bytes:
+          distribution: uniform
+          min: 768.0
+          max: 1280.0
+
+      - type: delete-item
+        rate:
+          distribution: poisson
+          lambda: 0.4
+
+  order-tracking-phase2:
+    include:
+      - order-tracking-phase1
+    flows:
+      - type: query
+        rate:
+          distribution: poisson
+          lambda: 0.8
+        read-consistency: strongly-consistent
+
+      - type: scan
+        rate:
+          distribution: poisson
+          lambda: 0.25
+        read-consistency: strongly-consistent
+
+      - type: query
+        rate:
+          distribution: poisson
+          lambda: 0.75
+        target: { index: $gsi-1 }
+
+      - type: query
+        rate:
+          distribution: poisson
+          lambda: 0.75
+        target: { index: $gsi-2 }
+
+      - type: scan
+        rate:
+          distribution: poisson
+          lambda: 0.30
+        target: { index: $gsi-1 }
+
+      - type: scan
+        rate:
+          distribution: poisson
+          lambda: 0.30
+        target: { index: $gsi-2 }
