@@ -9,8 +9,11 @@ import scala.jdk.CollectionConverters.*
 object WorkloadDsl:
 
   def parse(yamlString: String): WorkloadFile =
-    val raw: Any  = new Yaml().load(yamlString)
-    val top        = requireMap(raw, "top-level document")
+    val raw: Any =
+      try new Yaml().load(yamlString)
+      catch case e: Exception =>
+        throw WorkloadDslException(s"YAML parse error: ${e.getMessage}", e)
+    val top = requireMap(raw, "top-level document")
     val wRaw       = top.get("workloads") match
       case null => throw WorkloadDslException("Missing required 'workloads' key")
       case v    => requireMap(v, "'workloads' value")

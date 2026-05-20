@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stochastacy — Workload Visualizer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f0f2f5;
+      color: #333;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    header {
+      background: #1a1a2e;
+      color: #e0e0ff;
+      padding: 11px 20px;
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      flex-shrink: 0;
+    }
+
+    header span {
+      color: #8888cc;
+      font-weight: 400;
+    }
+
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── sidebar ── */
+    .sidebar {
+      width: 300px;
+      background: white;
+      border-right: 1px solid #ddd;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .field-group label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .sidebar textarea {
+      width: 100%;
+      height: 180px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 7px 8px;
+      font-family: monospace;
+      font-size: 0.78rem;
+      resize: vertical;
+      line-height: 1.4;
+    }
+
+    .sidebar textarea:focus,
+    .sidebar select:focus,
+    .sidebar input:focus {
+      outline: none;
+      border-color: #5555cc;
+      box-shadow: 0 0 0 2px rgba(85,85,204,0.15);
+    }
+
+    .sidebar select,
+    .sidebar input[type="number"] {
+      width: 100%;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 0.88rem;
+      background: white;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .row .field-group {
+      flex: 1;
+    }
+
+    button#evaluate-btn {
+      width: 100%;
+      background: #1a1a2e;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      padding: 9px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    button#evaluate-btn:hover  { background: #2d2d5e; }
+    button#evaluate-btn:active { background: #111; }
+    button#evaluate-btn:disabled { background: #aaa; cursor: default; }
+
+    #status {
+      font-size: 0.78rem;
+      color: #666;
+      min-height: 18px;
+      line-height: 1.4;
+    }
+
+    #status.error { color: #b00; }
+
+    /* ── charts panel ── */
+    .charts {
+      flex: 1;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow-y: auto;
+    }
+
+    .chart-card {
+      background: white;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      padding: 14px 16px 12px;
+    }
+
+    .chart-card h2 {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 10px;
+    }
+
+    .chart-card canvas {
+      max-height: 260px;
+    }
+
+    .empty-state {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #aaa;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <header>Stochastacy <span>— Workload Visualizer</span></header>
+
+  <div class="main">
+    <div class="sidebar">
+
+      <div class="field-group">
+        <label for="yaml-input">Workload YAML</label>
+        <textarea id="yaml-input" placeholder="Paste workload YAML here…" spellcheck="false"></textarea>
+      </div>
+
+      <div class="field-group">
+        <label for="workload-select">Workload</label>
+        <select id="workload-select">
+          <option value="">— paste YAML above —</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <div class="field-group">
+          <label for="ticks-input">Ticks</label>
+          <input type="number" id="ticks-input" value="200" min="1" max="10000">
+        </div>
+        <div class="field-group">
+          <label for="seed-input">Seed</label>
+          <input type="number" id="seed-input" value="42">
+        </div>
+      </div>
+
+      <button id="evaluate-btn">Evaluate</button>
+
+      <div class="status" id="status"></div>
+    </div>
+
+    <div class="charts" id="charts-panel">
+      <div class="empty-state" id="empty-state">
+        Paste a workload YAML, select a workload, and click Evaluate.
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

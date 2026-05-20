@@ -66,8 +66,22 @@ lazy val examples = (project in file("examples"))
     )
   )
 
+lazy val visualizer = (project in file("visualizer"))
+  .dependsOn(core)
+  .settings(
+    name := "stochastacy-visualizer",
+    version := "0.0.1",
+    libraryDependencies ++= Seq(
+      "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion,
+      "org.apache.pekko" %% "pekko-testkit"      % Versions.pekkoStreamVersion % "test",
+      "org.apache.pekko" %% "pekko-http-testkit" % Versions.pekkoHttpVersion   % "test",
+      "org.scalatest" %% "scalatest" % Versions.scalatestVersion % "test"
+    ),
+    Test / classLoaderLayeringStrategy := ClassLoaderLayeringStrategy.Flat
+  )
+
 lazy val root = (project in file("."))
-  .aggregate(core, examples)
+  .aggregate(core, examples, visualizer)
   .settings(
     publish / skip := true
   )
