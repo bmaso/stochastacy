@@ -163,7 +163,7 @@ final case class ThermostatFleetScenarioConfig(
       DynamoDbReadTarget.GlobalSecondaryIndex(tableName, ThermostatFleetScenarioConfig.FleetAlertsGsiName)
     )
 
-    WorkloadDefinition(tableName, scenarioId, Vector(telemetryShape, queryShape, scanShape))
+    WorkloadDefinition.ofIndependent(tableName, scenarioId, Vector(telemetryShape, queryShape, scanShape))
 
 object ThermostatFleetScenarioConfig:
 

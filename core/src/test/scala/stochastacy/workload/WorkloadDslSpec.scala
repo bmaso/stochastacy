@@ -551,6 +551,12 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
 
   // ── Bind ────────────────────────────────────────────────────────────────────
 
+  /** Extract the RequestShape from a FlowDefinition.Independent for assertion convenience. */
+  private def independentShape(f: FlowDefinition): RequestShape =
+    f match
+      case FlowDefinition.Independent(_, defn) => defn.shape
+      case other => fail(s"Expected Independent flow, got: $other")
+
   "WorkloadTemplate bind" should {
 
     "bind resolves index variables to concrete GSI names" in {
@@ -567,7 +573,7 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
       defn.tableName shouldBe "my-table"
       defn.usecase   shouldBe "my-usecase"
       defn.flows should have size 1
-      val RequestShape.Query(target, _) = defn.flows.head.shape: @unchecked
+      val RequestShape.Query(target, _) = independentShape(defn.flows.head): @unchecked
       target shouldBe DynamoDbReadTarget.GlobalSecondaryIndex("my-table", "ConcreteGSI")
     }
 
@@ -599,8 +605,8 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
       template.requiredBindings shouldBe empty
       val defn = template.bind("tbl", "uc")
       defn.flows should have size 2
-      defn.flows(0).shape shouldBe RequestShape.GetItem
-      val RequestShape.PutItem(bytesSampler) = defn.flows(1).shape: @unchecked
+      independentShape(defn.flows(0)) shouldBe RequestShape.GetItem
+      val RequestShape.PutItem(bytesSampler) = independentShape(defn.flows(1)): @unchecked
       sampleLong(bytesSampler) shouldBe 512L
     }
 
@@ -614,8 +620,270 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
         """
       val template = WorkloadDsl.parse(yaml).resolve("w")
       val defn     = template.bind("device-telemetry", "uc")
-      val RequestShape.Query(target, _) = defn.flows.head.shape: @unchecked
+      val RequestShape.Query(target, _) = independentShape(defn.flows.head): @unchecked
       target shouldBe DynamoDbReadTarget.Table("device-telemetry")
+    }
+  }
+
+
+  // ── Derived flow parsing ────────────────────────────────────────────────────
+
+  "WorkloadDsl derived flow parsing" should {
+
+    "parse a follow-on flow and produce FlowDefinition.FollowOn in the bound WorkloadDefinition" in {
+      val yaml = """
+        workloads:
+          A1:
+            flows:
+              - id: a1-poll
+                type: get-item
+                rate: 10
+              - id: a2-fetch
+                type: follow-on
+                source: A1
+                source-flow: a1-poll
+                outcome: success
+                proportion: 0.15
+                lag-ticks: 1
+                request:
+                  type: get-item
+        """
+      val defn = WorkloadDsl.parse(yaml).resolve("A1").bind("my-table", "my-usecase")
+      defn.derivedFlows should have size 1
+      val fo = defn.derivedFlows.head
+      fo shouldBe a[FlowDefinition.FollowOn]
+      val FlowDefinition.FollowOn(id, sourceId, sourceFlowId, outcome, proportion, lagTicks, shape) =
+        fo: @unchecked
+      id           shouldBe "a2-fetch"
+      sourceId     shouldBe "A1"
+      sourceFlowId shouldBe "a1-poll"
+      outcome      shouldBe OutcomeFilter.Success
+      proportion   shouldBe 0.15 +- 0.0001
+      lagTicks     shouldBe 1
+      shape        shouldBe RequestShape.GetItem
+    }
+
+    "parse a follow-on flow with outcome: throttled" in {
+      val yaml = """
+        workloads:
+          W:
+            flows:
+              - id: w-write
+                type: put-item
+                rate: 5
+                item-bytes: 512
+              - id: w-retry
+                type: follow-on
+                source: W
+                source-flow: w-write
+                outcome: throttled
+                proportion: 0.80
+                lag-ticks: 2
+                request:
+                  type: put-item
+                  item-bytes: 512
+        """
+      val defn = WorkloadDsl.parse(yaml).resolve("W").bind("t", "uc")
+      defn.derivedFlows should have size 1
+      val FlowDefinition.FollowOn(id, _, _, outcome, proportion, lagTicks, shape) =
+        defn.derivedFlows.head: @unchecked
+      id         shouldBe "w-retry"
+      outcome    shouldBe OutcomeFilter.Throttled
+      proportion shouldBe 0.80 +- 0.0001
+      lagTicks   shouldBe 2
+      shape      shouldBe a[RequestShape.PutItem]
+    }
+
+    "parse a retry flow and produce FlowDefinition.Retry in the bound WorkloadDefinition" in {
+      val yaml = """
+        workloads:
+          A1:
+            flows:
+              - id: a1-poll
+                type: get-item
+                rate: 10
+              - id: a1-retry
+                type: retry
+                source: A1
+                source-flow: a1-poll
+                proportion: 0.90
+                lag-ticks: 1
+        """
+      val defn = WorkloadDsl.parse(yaml).resolve("A1").bind("my-table", "my-usecase")
+      defn.derivedFlows should have size 1
+      val r = defn.derivedFlows.head
+      r shouldBe a[FlowDefinition.Retry]
+      val FlowDefinition.Retry(id, sourceId, sourceFlowId, proportion, lagTicks) = r: @unchecked
+      id           shouldBe "a1-retry"
+      sourceId     shouldBe "A1"
+      sourceFlowId shouldBe "a1-poll"
+      proportion   shouldBe 0.90 +- 0.0001
+      lagTicks     shouldBe 1
+    }
+
+    "preserve id: on independent flows when present" in {
+      val yaml = """
+        workloads:
+          W:
+            flows:
+              - id: my-get
+                type: get-item
+                rate: 5
+        """
+      val defn = WorkloadDsl.parse(yaml).resolve("W").bind("t", "uc")
+      defn.independentFlows should have size 1
+      defn.independentFlows.head.id shouldBe "my-get"
+    }
+
+    "assign synthetic ids (flow-0, flow-1) to independent flows without id:" in {
+      val yaml = """
+        workloads:
+          W:
+            flows:
+              - type: get-item
+                rate: 5
+              - type: delete-item
+                rate: 3
+        """
+      val defn = WorkloadDsl.parse(yaml).resolve("W").bind("t", "uc")
+      defn.independentFlows.map(_.id) shouldBe Vector("flow-0", "flow-1")
+    }
+
+    "parse source: and source-flow: fields verbatim on follow-on flows" in {
+      val yaml = """
+        workloads:
+          SomeWorkload:
+            flows:
+              - id: src-flow
+                type: get-item
+                rate: 1
+              - id: derived-flow
+                type: follow-on
+                source: OtherWorkload
+                source-flow: other-source-flow
+                outcome: success
+                proportion: 1.0
+                lag-ticks: 3
+                request:
+                  type: delete-item
+        """
+      val defn = WorkloadDsl.parse(yaml).resolve("SomeWorkload").bind("t", "uc")
+      val FlowDefinition.FollowOn(id, sourceId, sourceFlowId, _, _, lagTicks, shape) =
+        defn.derivedFlows.head: @unchecked
+      sourceId     shouldBe "OtherWorkload"
+      sourceFlowId shouldBe "other-source-flow"
+      lagTicks     shouldBe 3
+      shape        shouldBe RequestShape.DeleteItem
+    }
+
+    "throw WorkloadDslException for follow-on with invalid outcome value" in {
+      val yaml = """
+        workloads:
+          W:
+            flows:
+              - id: f1
+                type: get-item
+                rate: 1
+              - id: f2
+                type: follow-on
+                source: W
+                source-flow: f1
+                outcome: partial
+                proportion: 0.5
+                lag-ticks: 1
+                request:
+                  type: get-item
+        """
+      an[WorkloadDslException] should be thrownBy WorkloadDsl.parse(yaml)
+    }
+
+    "throw WorkloadDslException for follow-on with proportion > 1.0" in {
+      val yaml = """
+        workloads:
+          W:
+            flows:
+              - id: f1
+                type: get-item
+                rate: 1
+              - id: f2
+                type: follow-on
+                source: W
+                source-flow: f1
+                outcome: success
+                proportion: 1.5
+                lag-ticks: 1
+                request:
+                  type: get-item
+        """
+      an[WorkloadDslException] should be thrownBy WorkloadDsl.parse(yaml)
+    }
+
+    "throw WorkloadDslException for follow-on with lag-ticks = 0" in {
+      val yaml = """
+        workloads:
+          W:
+            flows:
+              - id: f1
+                type: get-item
+                rate: 1
+              - id: f2
+                type: follow-on
+                source: W
+                source-flow: f1
+                outcome: success
+                proportion: 0.5
+                lag-ticks: 0
+                request:
+                  type: get-item
+        """
+      an[WorkloadDslException] should be thrownBy WorkloadDsl.parse(yaml)
+    }
+
+    "throw WorkloadDslException for retry flow missing id:" in {
+      val yaml = """
+        workloads:
+          W:
+            flows:
+              - id: f1
+                type: get-item
+                rate: 1
+              - type: retry
+                source: W
+                source-flow: f1
+                proportion: 0.5
+                lag-ticks: 1
+        """
+      an[WorkloadDslException] should be thrownBy WorkloadDsl.parse(yaml)
+    }
+
+    "produce a WorkloadDefinition with both independent and derived flows" in {
+      val yaml = """
+        workloads:
+          W:
+            flows:
+              - id: w-get
+                type: get-item
+                rate: 10
+              - id: w-follow
+                type: follow-on
+                source: W
+                source-flow: w-get
+                outcome: success
+                proportion: 0.5
+                lag-ticks: 1
+                request:
+                  type: delete-item
+              - id: w-retry
+                type: retry
+                source: W
+                source-flow: w-get
+                proportion: 0.9
+                lag-ticks: 1
+        """
+      val defn = WorkloadDsl.parse(yaml).resolve("W").bind("t", "uc")
+      defn.flows should have size 3
+      defn.independentFlows should have size 1
+      defn.derivedFlows should have size 2
     }
   }
 

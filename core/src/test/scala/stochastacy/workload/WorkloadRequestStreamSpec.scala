@@ -27,10 +27,10 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
   private def ticks(events: Vector[TimedElement[DynamoDBRequest]]): Vector[TimedControlEvent.Tick] =
     events.collect { case t: TimedControlEvent.Tick => t }
 
-  private val noRequestsWorkload = WorkloadDefinition(
+  private val noRequestsWorkload = WorkloadDefinition.ofIndependent(
     tableName = "t",
     usecase   = "test",
-    flows     = Vector(RequestShapeDefinition.getItem(ConstantSampler(0)))
+    requests  = Vector(RequestShapeDefinition.getItem(ConstantSampler(0)))
   )
 
   // ── Tick framing ───────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
     }
 
     "emit a Tick before any requests for each tick" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.getItem(ConstantSampler(2))))
       val events = run(workload, ticks = 2L)
       // Structure should be: Tick(1), req, req, Tick(2), req, req, Tick(3)
@@ -62,7 +62,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
   "WorkloadRequestStream request counts" should {
 
     "produce exactly rate requests per tick for a constant rate" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.putItem(ConstantSampler(5), ConstantSampler(100L))))
       val events = run(workload, ticks = 4L)
       // 4 ticks × 5 requests = 20 requests, plus 5 Tick events
@@ -70,7 +70,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
     }
 
     "sum rates across multiple shapes" in {
-      val workload = WorkloadDefinition("t", "test", Vector(
+      val workload = WorkloadDefinition.ofIndependent("t", "test", Vector(
         RequestShapeDefinition.putItem(ConstantSampler(3), ConstantSampler(100L)),
         RequestShapeDefinition.getItem(ConstantSampler(2))
       ))
@@ -84,31 +84,31 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
   "WorkloadRequestStream request types" should {
 
     "produce only PutItemRequests for a PutItem shape" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.putItem(ConstantSampler(3), ConstantSampler(64L))))
       requests(run(workload)).foreach(_ shouldBe a[PutItemRequest])
     }
 
     "produce only GetItemRequests for a GetItem shape" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.getItem(ConstantSampler(3))))
       requests(run(workload)).foreach(_ shouldBe a[GetItemRequest])
     }
 
     "produce only UpdateItemRequests for an UpdateItem shape" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.updateItem(ConstantSampler(2), ConstantSampler(64L))))
       requests(run(workload)).foreach(_ shouldBe a[UpdateItemRequest])
     }
 
     "produce only DeleteItemRequests for a DeleteItem shape" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.deleteItem(ConstantSampler(2))))
       requests(run(workload)).foreach(_ shouldBe a[DeleteItemRequest])
     }
 
     "produce correct mix of types for multiple shapes" in {
-      val workload = WorkloadDefinition("t", "test", Vector(
+      val workload = WorkloadDefinition.ofIndependent("t", "test", Vector(
         RequestShapeDefinition.putItem(ConstantSampler(3), ConstantSampler(64L)),
         RequestShapeDefinition.getItem(ConstantSampler(2))
       ))
@@ -123,7 +123,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
   "WorkloadRequestStream parameter propagation" should {
 
     "set itemBytes on PutItemRequest from the sampler" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.putItem(ConstantSampler(2), ConstantSampler(512L))))
       requests(run(workload)).foreach {
         case r: PutItemRequest => r.itemBytes shouldBe 512L
@@ -132,7 +132,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
     }
 
     "set itemBytes on UpdateItemRequest from the sampler" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.updateItem(ConstantSampler(2), ConstantSampler(256L))))
       requests(run(workload)).foreach {
         case r: UpdateItemRequest => r.itemBytes shouldBe 256L
@@ -142,7 +142,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "set target and readConsistency on QueryRequest" in {
       val target = DynamoDbReadTarget.GlobalSecondaryIndex("t", "gsi-1")
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.query(ConstantSampler(1), target,
           ReadConsistency.StronglyConsistent)))
       requests(run(workload, ticks = 1L)).foreach {
@@ -155,7 +155,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "set target and readConsistency on ScanRequest" in {
       val target = DynamoDbReadTarget.Table("t")
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.scan(ConstantSampler(1), target)))
       requests(run(workload, ticks = 1L)).foreach {
         case r: ScanRequest =>
@@ -166,7 +166,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
     }
 
     "set perItemBytes on TransactWriteItemsRequest from samplers" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.transactWriteItems(
           ConstantSampler(1),
           Vector(ConstantSampler(100L), ConstantSampler(200L))
@@ -178,7 +178,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
     }
 
     "set itemCount on TransactGetItemsRequest" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.transactGetItems(ConstantSampler(1), itemCount = ConstantSampler(3))))
       requests(run(workload, ticks = 1L)).foreach {
         case r: TransactGetItemsRequest => r.itemCount shouldBe 3
@@ -192,13 +192,13 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
   "WorkloadRequestStream metadata" should {
 
     "propagate the workload usecase to all requests" in {
-      val workload = WorkloadDefinition("t", "my-usecase",
+      val workload = WorkloadDefinition.ofIndependent("t", "my-usecase",
         Vector(RequestShapeDefinition.putItem(ConstantSampler(2), ConstantSampler(64L))))
       requests(run(workload)).foreach(_.usecase shouldBe "my-usecase")
     }
 
     "stamp each request with the SimTime of its tick" in {
-      val workload = WorkloadDefinition("t", "test",
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.getItem(ConstantSampler(1))))
       val rs = requests(run(workload, ticks = 3L))
       rs.map(_.eventTime) shouldBe Vector(SimTime.of(1), SimTime.of(2), SimTime.of(3))
@@ -216,8 +216,8 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
       )
       val convenient = RequestShapeDefinition.putItem(ConstantSampler(5), ConstantSampler(128L))
       // Compare by running both through the generator and checking output
-      val w1 = WorkloadDefinition("t", "test", Vector(direct))
-      val w2 = WorkloadDefinition("t", "test", Vector(convenient))
+      val w1 = WorkloadDefinition.ofIndependent("t", "test", Vector(direct))
+      val w2 = WorkloadDefinition.ofIndependent("t", "test", Vector(convenient))
       run(w1, ticks = 1L).collect { case r: PutItemRequest => r.itemBytes } shouldBe
         run(w2, ticks = 1L).collect { case r: PutItemRequest => r.itemBytes }
     }

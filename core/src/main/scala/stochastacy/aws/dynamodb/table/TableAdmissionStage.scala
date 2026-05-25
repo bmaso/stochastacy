@@ -539,7 +539,8 @@ object TableAdmissionStage:
           operation = DynamoDbOperationKind.fromRequest(shaped.req),
           target = target,
           dimension = dimension,
-          reason = reason
+          reason = reason,
+          flowId = shaped.req.flowId
         ),
         metric = metricForThrottleShaped(
           shaped,

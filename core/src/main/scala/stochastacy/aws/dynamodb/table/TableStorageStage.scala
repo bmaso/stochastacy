@@ -294,7 +294,8 @@ object TableStorageStage:
             eventTime = r.eventTime,
             usecase = r.usecase,
             itemFound = s.itemBytes.isDefined,
-            itemBytes = s.itemBytes
+            itemBytes = s.itemBytes,
+            flowId = r.flowId
           )
 
         case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
@@ -316,7 +317,8 @@ object TableStorageStage:
             evaluatedItemCount = s.evaluatedItemCount,
             evaluatedBytes = s.evaluatedBytes,
             returnedItemCount = s.returnedItemCount,
-            returnedBytes = effectiveSample.returnedBytes
+            returnedBytes = effectiveSample.returnedBytes,
+            flowId = r.flowId
           )
 
         case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
@@ -338,7 +340,8 @@ object TableStorageStage:
             evaluatedItemCount = s.evaluatedItemCount,
             evaluatedBytes = s.evaluatedBytes,
             returnedItemCount = s.returnedItemCount,
-            returnedBytes = effectiveSample.returnedBytes
+            returnedBytes = effectiveSample.returnedBytes,
+            flowId = r.flowId
           )
 
         case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
@@ -347,7 +350,8 @@ object TableStorageStage:
             usecase = r.usecase,
             storedItemBytes = s.writtenItemBytes,
             createdNewItem = s.createdNewItem,
-            previousItemBytes = s.previousItemBytes
+            previousItemBytes = s.previousItemBytes,
+            flowId = r.flowId
           )
 
         case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
@@ -356,21 +360,23 @@ object TableStorageStage:
             usecase = r.usecase,
             storedItemBytes = s.writtenItemBytes,
             createdNewItem = s.createdNewItem,
-            previousItemBytes = s.previousItemBytes
+            previousItemBytes = s.previousItemBytes,
+            flowId = r.flowId
           )
 
         case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
           DeleteItemResponse(
             eventTime = r.eventTime,
             usecase = r.usecase,
-            deletedItemBytes = s.deletedItemBytes
+            deletedItemBytes = s.deletedItemBytes,
+            flowId = r.flowId
           )
 
         case AdmittedTransactWriteItemsSample(r, _, _, s, _, _, _, _) =>
-          TransactWriteItemsResponse(eventTime = r.eventTime, usecase = r.usecase, itemCount = s.itemCount)
+          TransactWriteItemsResponse(eventTime = r.eventTime, usecase = r.usecase, itemCount = s.itemCount, flowId = r.flowId)
 
         case AdmittedTransactGetItemsSample(r, _, _, s, _, _) =>
-          TransactGetItemsResponse(eventTime = r.eventTime, usecase = r.usecase, items = s.items.map(_.itemBytes))
+          TransactGetItemsResponse(eventTime = r.eventTime, usecase = r.usecase, items = s.items.map(_.itemBytes), flowId = r.flowId)
 
       val responseFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDBResponse]] {
@@ -383,14 +389,16 @@ object TableStorageStage:
               operation = rejection.operation,
               target = rejection.target,
               resultingCollectionBytes = rejection.resultingCollectionBytes,
-              limitBytes = rejection.limitBytes
+              limitBytes = rejection.limitBytes,
+              flowId = rejection.request.flowId
             ))
           case err: StorageSystemError =>
             List(SystemErrorResponse(
               eventTime = err.eventTime,
               usecase = err.usecase,
               operation = err.operation,
-              target = err.target
+              target = err.target,
+              flowId = err.request.flowId
             ))
           case StorageAdmitted(sample) => List(responseForSample(sample))
         }

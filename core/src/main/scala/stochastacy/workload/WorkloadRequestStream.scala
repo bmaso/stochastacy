@@ -26,41 +26,49 @@ object WorkloadRequestStream:
     simulationTicks: Long
   ): Iterator[TimedElement[DynamoDBRequest]] =
 
-    val n         = workload.flows.size
-    val rateRngs  = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
-    val paramRngs = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
+    // Only independent flows have their own rate samplers.
+    // Derived flows (follow-on, retry) are handled by FollowOnTransformerStage.
+    val independent = workload.independentFlows
+    val n           = independent.size
+    val rateRngs    = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
+    val paramRngs   = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
 
     (1L to simulationTicks).iterator.flatMap { tick =>
       Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDBRequest]) ++
         (0 until n).iterator.flatMap { i =>
-          val (count, _) = workload.flows(i).rate.sample(tick, rateRngs(i), ())
+          val defn = independent(i).defn
+          val (count, _) = defn.rate.sample(tick, rateRngs(i), ())
           Iterator.fill(count) {
-            buildRequest(tick, workload.usecase, workload.flows(i).shape, paramRngs(i))
+            buildRequest(tick, workload.usecase, independent(i).id, defn.shape, paramRngs(i))
           }
         }
     } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(simulationTicks + 1L)))
 
-  private def buildRequest(
+  /** Builds a single tagged request. `flowId` is set on the request so that downstream
+   *  response events can be attributed back to the originating flow. */
+  private[workload] def buildRequest(
     tick:    Long,
     usecase: String,
+    flowId:  String,
     shape:   RequestShape,
     rng:     UniformRandomProvider
   ): TimedElement[DynamoDBRequest] =
-    val t = SimTime.of(tick)
+    val t   = SimTime.of(tick)
+    val fid = Some(flowId)
     shape match
       case RequestShape.GetItem =>
-        GetItemRequest(t, usecase)
+        GetItemRequest(t, usecase, fid)
       case RequestShape.DeleteItem =>
-        DeleteItemRequest(t, usecase)
+        DeleteItemRequest(t, usecase, fid)
       case RequestShape.PutItem(itemBytesSampler) =>
-        PutItemRequest(t, usecase, itemBytesSampler.sample(tick, rng, ())._1)
+        PutItemRequest(t, usecase, itemBytesSampler.sample(tick, rng, ())._1, fid)
       case RequestShape.UpdateItem(itemBytesSampler) =>
-        UpdateItemRequest(t, usecase, itemBytesSampler.sample(tick, rng, ())._1)
+        UpdateItemRequest(t, usecase, itemBytesSampler.sample(tick, rng, ())._1, fid)
       case RequestShape.Query(target, readConsistency) =>
-        QueryRequest(t, usecase, target, readConsistency)
+        QueryRequest(t, usecase, target, readConsistency, flowId = fid)
       case RequestShape.Scan(target, readConsistency) =>
-        ScanRequest(t, usecase, target, readConsistency)
+        ScanRequest(t, usecase, target, readConsistency, flowId = fid)
       case RequestShape.TransactWriteItems(perItemSamplers) =>
-        TransactWriteItemsRequest(t, usecase, perItemSamplers.map(_.sample(tick, rng, ())._1))
+        TransactWriteItemsRequest(t, usecase, perItemSamplers.map(_.sample(tick, rng, ())._1), fid)
       case RequestShape.TransactGetItems(itemCountSampler) =>
-        TransactGetItemsRequest(t, usecase, itemCountSampler.sample(tick, rng, ())._1)
+        TransactGetItemsRequest(t, usecase, itemCountSampler.sample(tick, rng, ())._1, fid)

@@ -3,8 +3,9 @@
 Reference schema for the stochastacy workload DSL. See `docs/architecture/workload-dsl.md`
 for design concepts and rationale.
 
-This schema describes Slice 4 scope: single-table workloads, stateless samplers, no sampler
-combination, no multi-table flows.
+This schema covers Phase 7 Slice 4 (single-table workloads, stateless samplers, `include:`
+composition, all independent flow types) and Phase 8 Slice 1 (derived flows: `follow-on` and
+`retry`). Multi-table follow-on and variable lag distributions are deferred to a later slice.
 
 ---
 
@@ -39,6 +40,23 @@ flows:                # optional. Ordered list of flow records.
   - <flow-record>
   - <flow-record>
 ```
+
+### Flow `id:` field
+
+Every flow record may carry an `id:` field. The `id:` is required when any flow in the file
+uses a `follow-on` or `retry` type, because those types reference other flows by id. When no
+derived flows exist in the file, `id:` is optional and the parser assigns synthetic ids.
+
+```yaml
+flows:
+  - id: my-flow       # optional unless derived flows are present
+    type: get-item
+    rate: 50
+```
+
+Flow ids must be unique within the resolved (post-include) flow list of the workload that
+contains the derived flow's `source:` reference. Self-referential `source:` ids are legal
+(IIR feedback); circular `include:` references remain a parse error.
 
 ---
 
@@ -143,6 +161,57 @@ stochastic, sampled from `item-count` on each call.
   rate: <rate-sampler>           # required. Number of TransactGetItems calls per tick.
   item-count: <rate-sampler>     # required. Items per call. Uses the same grammar as rate:.
 ```
+
+---
+
+## Record: `follow-on` flow
+
+A derived flow whose arrival rate at tick `t` is proportional to the count of a specific
+outcome class from a source flow at tick `t - lag-ticks`. The derived request count per tick
+is a Binomial draw: `Binomial(n = sourceOutcomeCount, p = proportion)`.
+
+`follow-on` flows have no `rate:` sampler of their own — their volume is entirely driven by
+the source flow's outcomes. They require the workload to be wired with a feedback arc from the
+simulator's response stream (see `WorkloadGraph`).
+
+```yaml
+- id: <string>                  # required (see Flow id: field above).
+  type: follow-on
+  source: <workload-name>       # required. Another workload name in the same file whose
+                                #   resolved flow list contains the referenced source id.
+                                #   Self-reference (source == containing workload) is legal.
+  source-flow: <flow-id>        # required. The id of the flow within source whose outcomes
+                                #   drive this derived flow.
+  outcome: <success|throttled>  # required. Which outcome class from source-flow drives this flow.
+  proportion: <number>          # required. Per-outcome probability of generating a derived request.
+                                #   Should be in [0.0, 1.0].
+  lag-ticks: <integer>          # required. Derived requests are emitted this many ticks after
+                                #   the source outcome. Must be >= 1.
+  request:                      # required. Shape of each derived request.
+    type: <flow-type>           #   Any independent flow type (get-item, put-item, etc.).
+    ...                         #   Same fields as the corresponding independent flow, minus rate:.
+```
+
+---
+
+## Record: `retry` flow
+
+Shorthand for a `follow-on` where `outcome: throttled` and the derived request has the same
+type as the source flow. A retry flow models the AWS SDK's automatic retry-on-throttle behavior.
+
+```yaml
+- id: <string>                  # required.
+  type: retry
+  source: <workload-name>       # required. Same semantics as follow-on source:.
+  source-flow: <flow-id>        # required. The flow being retried. The retry's request type
+                                #   is inferred from this flow's type; no separate request: block.
+  proportion: <number>          # required. Fraction of throttled outcomes that generate a retry.
+  lag-ticks: <integer>          # required. Must be >= 1.
+```
+
+`retry` is strictly equivalent to a `follow-on` with `outcome: throttled` and a `request:`
+block whose type and parameters match the source flow. Prefer `retry` for clarity when
+expressing SDK backoff behavior.
 
 ---
 
@@ -340,14 +409,15 @@ binding map.
 
 ---
 
-## Complete Example
+## Complete Example — Independent Flows
 
 ```yaml
 workloads:
 
   telemetry-ingest:
     flows:
-      - type: put-item
+      - id: telemetry-put
+        type: put-item
         rate:
           distribution: poisson
           lambda:
@@ -363,21 +433,24 @@ workloads:
 
   customer-support:
     flows:
-      - type: query
+      - id: support-query
+        type: query
         target: { index: $support-index }
         rate: 15
         read-consistency: eventually-consistent
 
   fleet-dashboard:
     flows:
-      - type: scan
+      - id: dashboard-scan
+        type: scan
         target: { index: $dashboard-index }
         rate: 2
         read-consistency: eventually-consistent
 
   device-commands:
     flows:
-      - type: transact-write-items
+      - id: command-transact
+        type: transact-write-items
         rate: 5
         per-item-bytes:
           - 200
@@ -405,3 +478,57 @@ file.resolve("thermostat-fleet")
    )
 // => WorkloadDefinition
 ```
+
+---
+
+## Complete Example — Derived Flows (follow-on + retry)
+
+This example models an emergency alert scenario with an A1→A1 retry IIR loop and an
+A1→A2 follow-on FIR. `A1` is the combined flow (baseline + retry); both `A2` and `A1-retry`
+reference `A1` as their source so that retries of retries cascade correctly.
+
+```yaml
+workloads:
+
+  A1-baseline:
+    flows:
+      - id: a1-poll
+        type: query
+        target: { index: $by-region-index }
+        rate:
+          distribution: poisson
+          lambda: 400.0
+        read-consistency: eventually-consistent
+
+  A1:
+    include:
+      - A1-baseline
+    flows:
+      - id: a1-retry
+        type: retry
+        source: A1            # self-reference: retries of the full A1 flow (IIR)
+        source-flow: a1-poll
+        proportion: 0.90
+        lag-ticks: 1
+
+  A2:
+    flows:
+      - id: a2-fetch
+        type: follow-on
+        source: A1            # follows successful A1 queries (FIR)
+        source-flow: a1-poll
+        outcome: success
+        proportion: 0.15      # alpha — cache-miss rate
+        lag-ticks: 1
+        request:
+          type: get-item
+
+  emergency-alert:
+    include:
+      - A1
+      - A2
+```
+
+The `A1` workload's resolved flow list contains both `a1-poll` (from `A1-baseline`) and
+`a1-retry`. The `source: A1` reference in both `a1-retry` and `a2-fetch` resolves to
+this combined flow list, ensuring retries of retries are observed by both derived flows.

@@ -1,6 +1,7 @@
 package stochastacy.workload
 
 import org.yaml.snakeyaml.Yaml
+import stochastacy.aws.dynamodb.DynamoDbReadTarget
 import stochastacy.aws.dynamodb.table.ReadConsistency
 
 import java.util.{List => JList, Map => JMap}
@@ -26,18 +27,29 @@ object WorkloadDsl:
     val includes = m.get("include") match
       case null => Vector.empty[String]
       case v    => requireList(v, s"workload '$name' include").asScala.map(_.toString).toVector
-    val flows = m.get("flows") match
-      case null => Vector.empty[TemplateFlow]
+    val (templateFlows, derivedFlows) = m.get("flows") match
+      case null => (Vector.empty[TemplateFlow], Vector.empty[FlowDefinition])
       case v    =>
         requireList(v, s"workload '$name' flows").asScala.map { item =>
-          parseFlow(requireMap(item, s"flow in workload '$name'"))
-        }.toVector
-    RawEntry(includes, flows)
+          parseAnyFlow(requireMap(item, s"flow in workload '$name'"))
+        }.toVector.partitionMap(identity)
+    RawEntry(includes, templateFlows, derivedFlows)
 
-  private def parseFlow(m: JMap[String, Any]): TemplateFlow =
+  /** Parses any flow type, returning Left[TemplateFlow] for independent flows
+   *  and Right[FlowDefinition] for derived flows (follow-on, retry). */
+  private def parseAnyFlow(m: JMap[String, Any]): Either[TemplateFlow, FlowDefinition] =
     val flowType = m.get("type") match
       case null => throw WorkloadDslException("Flow missing required 'type' field")
       case v    => v.toString
+    flowType match
+      case "follow-on" => Right(parseFollowOn(m))
+      case "retry"     => Right(parseRetry(m))
+      case _           => Left(parseIndependentFlow(m, flowType))
+
+  private def parseIndependentFlow(m: JMap[String, Any], flowType: String): TemplateFlow =
+    val id = m.get("id") match
+      case null => None
+      case v    => Some(v.toString)
     val rate = m.get("rate") match
       case null => throw WorkloadDslException(s"Flow '$flowType' missing required 'rate' field")
       case v    => parseRateSampler(v, s"flow '$flowType' rate")
@@ -51,7 +63,146 @@ object WorkloadDsl:
       case "transact-write-items" => parseTransactWrite(m)
       case "transact-get-items"   => parseTransactGet(m)
       case other                  => throw WorkloadDslException(s"Unknown flow type: '$other'")
-    TemplateFlow(rate, shape)
+    TemplateFlow(rate, shape, id)
+
+  private def parseFollowOn(m: JMap[String, Any]): FlowDefinition.FollowOn =
+    val id = m.get("id") match
+      case null => throw WorkloadDslException("follow-on flow missing required 'id' field")
+      case v    => v.toString
+    val sourceId = m.get("source") match
+      case null => throw WorkloadDslException(s"follow-on flow '$id' missing required 'source' field")
+      case v    => v.toString
+    val sourceFlowId = m.get("source-flow") match
+      case null => throw WorkloadDslException(s"follow-on flow '$id' missing required 'source-flow' field")
+      case v    => v.toString
+    val outcome = m.get("outcome") match
+      case null => throw WorkloadDslException(s"follow-on flow '$id' missing required 'outcome' field")
+      case v    => v.toString match
+        case "success"   => OutcomeFilter.Success
+        case "throttled" => OutcomeFilter.Throttled
+        case other       => throw WorkloadDslException(
+          s"follow-on flow '$id': invalid outcome '$other'. Expected 'success' or 'throttled'."
+        )
+    val proportion = m.get("proportion") match
+      case null => throw WorkloadDslException(s"follow-on flow '$id' missing required 'proportion' field")
+      case v    =>
+        val d = toDouble(v, s"follow-on flow '$id' proportion")
+        if d < 0.0 || d > 1.0 then throw WorkloadDslException(
+          s"follow-on flow '$id': proportion must be in [0.0, 1.0], got $d"
+        )
+        d
+    val lagTicks = m.get("lag-ticks") match
+      case null => throw WorkloadDslException(s"follow-on flow '$id' missing required 'lag-ticks' field")
+      case v    =>
+        val n = toLong(v, s"follow-on flow '$id' lag-ticks").toInt
+        if n < 1 then throw WorkloadDslException(
+          s"follow-on flow '$id': lag-ticks must be >= 1, got $n"
+        )
+        n
+    val requestMap = m.get("request") match
+      case null => throw WorkloadDslException(s"follow-on flow '$id' missing required 'request' field")
+      case v    => requireMap(v, s"follow-on flow '$id' request")
+    val shape = parseFollowOnRequestShape(requestMap, id)
+    FlowDefinition.FollowOn(id, sourceId, sourceFlowId, outcome, proportion, lagTicks, shape)
+
+  private def parseFollowOnRequestShape(m: JMap[String, Any], flowId: String): RequestShape =
+    val flowType = m.get("type") match
+      case null => throw WorkloadDslException(s"follow-on '$flowId' request missing required 'type' field")
+      case v    => v.toString
+    flowType match
+      case "get-item"             => RequestShape.GetItem
+      case "delete-item"          => RequestShape.DeleteItem
+      case "put-item"             => RequestShape.PutItem(parseItemBytesResolved(m, s"follow-on '$flowId'"))
+      case "update-item"          => RequestShape.UpdateItem(parseItemBytesResolved(m, s"follow-on '$flowId'"))
+      case "query"                => parseFollowOnQueryOrScan(m, flowId, isQuery = true)
+      case "scan"                 => parseFollowOnQueryOrScan(m, flowId, isQuery = false)
+      case "transact-write-items" => parseFollowOnTransactWrite(m, flowId)
+      case "transact-get-items"   => parseFollowOnTransactGet(m, flowId)
+      case other => throw WorkloadDslException(
+        s"follow-on '$flowId' request: unknown type '$other'"
+      )
+
+  private def parseFollowOnTransactWrite(m: JMap[String, Any], flowId: String): RequestShape =
+    val perItemBytes = m.get("per-item-bytes") match
+      case null => throw WorkloadDslException(
+        s"follow-on '$flowId' request transact-write-items missing required 'per-item-bytes' field"
+      )
+      case v =>
+        requireList(v, "per-item-bytes").asScala
+          .map(item => parseByteSampler(item, "per-item-bytes entry"))
+          .toVector
+    if perItemBytes.isEmpty then
+      throw WorkloadDslException(s"follow-on '$flowId' request transact-write-items 'per-item-bytes' must not be empty")
+    RequestShape.TransactWriteItems(perItemBytes)
+
+  private def parseFollowOnTransactGet(m: JMap[String, Any], flowId: String): RequestShape =
+    val itemCount = m.get("item-count") match
+      case null => throw WorkloadDslException(
+        s"follow-on '$flowId' request transact-get-items missing required 'item-count' field"
+      )
+      case v => parseRateSampler(v, "item-count")
+    RequestShape.TransactGetItems(itemCount)
+
+  private def parseFollowOnQueryOrScan(m: JMap[String, Any], flowId: String, isQuery: Boolean): RequestShape =
+    val target = m.get("target") match
+      case null => DynamoDbReadTarget.Table("") // placeholder; resolved at runtime from context
+      case v =>
+        val tm = requireMap(v, s"follow-on '$flowId' request target")
+        tm.get("index") match
+          case null => throw WorkloadDslException(s"follow-on '$flowId' request target: must have 'index' field")
+          case idx =>
+            val raw = idx.toString
+            if !raw.startsWith("$") then
+              throw WorkloadDslException(
+                s"follow-on '$flowId' request target.index must be a variable reference (starting with '$$'), got: '$raw'"
+              )
+            // For follow-on flows, index variables in request shapes are stored with the variable name;
+            // the caller must provide a concrete index name at bind time or runtime.
+            // We store as a GSI with empty table name and the variable name as index name.
+            DynamoDbReadTarget.GlobalSecondaryIndex("", raw.drop(1))
+    val rc = m.get("read-consistency") match
+      case null => ReadConsistency.EventuallyConsistent
+      case v => v.toString match
+        case "eventually-consistent" => ReadConsistency.EventuallyConsistent
+        case "strongly-consistent"   => ReadConsistency.StronglyConsistent
+        case other => throw WorkloadDslException(
+          s"follow-on '$flowId' request: unknown read-consistency '$other'"
+        )
+    if isQuery then RequestShape.Query(target, rc)
+    else RequestShape.Scan(target, rc)
+
+  private def parseRetry(m: JMap[String, Any]): FlowDefinition.Retry =
+    val id = m.get("id") match
+      case null => throw WorkloadDslException("retry flow missing required 'id' field")
+      case v    => v.toString
+    val sourceId = m.get("source") match
+      case null => throw WorkloadDslException(s"retry flow '$id' missing required 'source' field")
+      case v    => v.toString
+    val sourceFlowId = m.get("source-flow") match
+      case null => throw WorkloadDslException(s"retry flow '$id' missing required 'source-flow' field")
+      case v    => v.toString
+    val proportion = m.get("proportion") match
+      case null => throw WorkloadDslException(s"retry flow '$id' missing required 'proportion' field")
+      case v    =>
+        val d = toDouble(v, s"retry flow '$id' proportion")
+        if d < 0.0 || d > 1.0 then throw WorkloadDslException(
+          s"retry flow '$id': proportion must be in [0.0, 1.0], got $d"
+        )
+        d
+    val lagTicks = m.get("lag-ticks") match
+      case null => throw WorkloadDslException(s"retry flow '$id' missing required 'lag-ticks' field")
+      case v    =>
+        val n = toLong(v, s"retry flow '$id' lag-ticks").toInt
+        if n < 1 then throw WorkloadDslException(
+          s"retry flow '$id': lag-ticks must be >= 1, got $n"
+        )
+        n
+    FlowDefinition.Retry(id, sourceId, sourceFlowId, proportion, lagTicks)
+
+  private def parseItemBytesResolved(m: JMap[String, Any], ctx: String): StatelessSampler[Long] =
+    m.get("item-bytes") match
+      case null => throw WorkloadDslException(s"$ctx request missing required 'item-bytes' field")
+      case v    => parseByteSampler(v, "item-bytes")
 
   private def parseItemBytes(m: JMap[String, Any], flowType: String): StatelessSampler[Long] =
     m.get("item-bytes") match

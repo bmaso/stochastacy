@@ -511,8 +511,8 @@ object DynamoDbTable:
            _: PartiQLQueryRequest | _: TransactWriteItemsRequest | _: TransactGetItemsRequest =>
         RouteBranch.BaseTable
 
-      case QueryRequest(_, _, target, _, _) => routeForReadTarget(config, target)
-      case ScanRequest(_, _, target, _, _) => routeForReadTarget(config, target)
+      case QueryRequest(_, _, target, _, _, _) => routeForReadTarget(config, target)
+      case ScanRequest(_, _, target, _, _, _) => routeForReadTarget(config, target)
 
   private def validateRequest(config: Config, request: DynamoDBRequest): Unit =
     request match

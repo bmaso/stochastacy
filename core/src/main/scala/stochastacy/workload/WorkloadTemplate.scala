@@ -21,12 +21,14 @@ private[workload] object TemplateShape:
 
 private[workload] case class TemplateFlow(
   rate:  StatelessSampler[Int],
-  shape: TemplateShape
+  shape: TemplateShape,
+  id:    Option[String] = None
 )
 
 final class WorkloadTemplate private[workload] (
   val flows:            Vector[TemplateFlow],
-  val requiredBindings: Set[String]
+  val requiredBindings: Set[String],
+  val derivedFlows:     Vector[FlowDefinition] = Vector.empty
 ):
   def bind(
     tableName: String,
@@ -38,10 +40,12 @@ final class WorkloadTemplate private[workload] (
       throw WorkloadDslException(
         s"Missing index bindings: ${missing.toSeq.sorted.mkString(", ")}"
       )
-    val boundFlows = flows.map { f =>
-      RequestShapeDefinition(f.rate, bindShape(f.shape, tableName, indices))
+    val boundIndependent = flows.zipWithIndex.map { (f, i) =>
+      val id   = f.id.getOrElse(s"flow-$i")
+      val shape = bindShape(f.shape, tableName, indices)
+      FlowDefinition.Independent(id, RequestShapeDefinition(f.rate, shape))
     }
-    WorkloadDefinition(tableName, usecase, boundFlows)
+    WorkloadDefinition(tableName, usecase, boundIndependent ++ derivedFlows)
 
   private def bindShape(
     shape:     TemplateShape,
