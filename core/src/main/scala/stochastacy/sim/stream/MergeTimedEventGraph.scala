@@ -42,6 +42,8 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
       var lastMatchedTick: Option[TimedControlEvent.Tick] = None // ...track last tick matched from both in0 & in1...
       var inlet0Closed: Boolean = false
       var inlet1Closed: Boolean = false
+      var endOfTime0Received: Boolean = false
+      var endOfTime1Received: Boolean = false
 
       def tryEmit(): Unit =
         if isAvailable(out) && queue.nonEmpty then
@@ -53,9 +55,9 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
        * Either input 0 or input 1 has previously provided a `Tick`; pull from unmatched input source
        */
       def tryPull(): Unit =
-        if ((unmatchedTick0.isEmpty) && !hasBeenPulled(in0) && !isClosed(in0)) then
+        if (unmatchedTick0.isEmpty && !endOfTime0Received && !hasBeenPulled(in0) && !isClosed(in0)) then
           pull(in0)
-        if ((unmatchedTick1.isEmpty) && !hasBeenPulled(in1) && !isClosed(in1)) then
+        if (unmatchedTick1.isEmpty && !endOfTime1Received && !hasBeenPulled(in1) && !isClosed(in1)) then
           pull(in1)
 
       /**
@@ -91,6 +93,14 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
         override def onPush(): Unit =
           val elem = grab(in0)
           (elem, unmatchedTick1) match
+            case (TimedControlEvent.EndOfTime, _) =>
+              endOfTime0Received = true
+              if endOfTime1Received then
+                queue.enqueue(TimedControlEvent.EndOfTime)
+                tryEmit()
+              else
+                tryPull()   // pulls in1 only; in0 guarded by endOfTime0Received
+
             case (tick: TimedControlEvent.Tick, Some(unmatchedOtherTick)) if tick.eventTime != unmatchedOtherTick.eventTime =>
               failStage(new IllegalStateException(s"Unmatched tick received from source.in0: ${tick.eventTime} != ${unmatchedOtherTick.eventTime}"))
 
@@ -150,6 +160,14 @@ class MergeTimedEventGraph private(bufferSize: Int) extends GraphStage[FanInShap
           override def onPush(): Unit =
             val elem = grab(in1)
             (elem, unmatchedTick0) match
+              case (TimedControlEvent.EndOfTime, _) =>
+                endOfTime1Received = true
+                if endOfTime0Received then
+                  queue.enqueue(TimedControlEvent.EndOfTime)
+                  tryEmit()
+                else
+                  tryPull()   // pulls in0 only; in1 guarded by endOfTime1Received
+
               case (tick: TimedControlEvent.Tick, Some(unmatchedOtherTick)) if tick.eventTime != unmatchedOtherTick.eventTime =>
                 failStage(new IllegalStateException(s"Unmatched tick received from source.in1: ${tick.eventTime} != ${unmatchedOtherTick.eventTime}"))
 

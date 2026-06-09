@@ -157,6 +157,38 @@ class MergeTimedEventGraphTest extends AnyWordSpecLike with should.Matchers with
       
         sub.expectComplete()
 
+      "pass EndOfTime through as a single terminal element when both sources end with it" in :
+        val tick = TimedControlEvent.Tick(SimTime.of(1L))
+        val sourceA: Source[TimedEvent, NotUsed] =
+          Source(List(tick, TimedControlEvent.EndOfTime))
+        val sourceB: Source[TimedEvent, NotUsed] =
+          Source(List(tick, TimedControlEvent.EndOfTime))
+
+        val merged = MergeTimedEventGraph.apply(sourceA, sourceB)
+        val sub    = merged.runWith(TestSink.probe[TimedEvent])
+
+        sub.request(2)
+        sub.expectNext(tick)
+        sub.expectNext(TimedControlEvent.EndOfTime)
+        sub.expectComplete()
+
+      "pass EndOfTime through when one source has events and the other does not" in :
+        val tick      = TimedControlEvent.Tick(SimTime.of(1L))
+        val testEvent = TestEvent(SimTime.of(1L))
+        val sourceA: Source[TimedEvent, NotUsed] =
+          Source(List(tick, testEvent, TimedControlEvent.EndOfTime))
+        val sourceB: Source[TimedEvent, NotUsed] =
+          Source(List(tick, TimedControlEvent.EndOfTime))
+
+        val merged = MergeTimedEventGraph.apply(sourceA, sourceB)
+        val sub    = merged.runWith(TestSink.probe[TimedEvent])
+
+        sub.request(3)
+        sub.expectNext(tick)
+        sub.expectNext(testEvent)
+        sub.expectNext(TimedControlEvent.EndOfTime)
+        sub.expectComplete()
+
       "merge a 4 sources covering 3 ticks with sparsely populated time periods" in :
         val ticks = List(
           TimedControlEvent.Tick(SimTime.of(1000L)),

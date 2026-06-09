@@ -12,10 +12,11 @@ import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement}
 object WorkloadRequestStream:
 
   /** Produces an `Iterator[TimedElement[DynamoDBRequest]]` driven entirely by
-   *  the workload definition. Output structure is identical to
-   *  `generateRequestsForRegion`: each tick opens with a `Tick` control event
-   *  followed by all requests for that tick, and a final `Tick(simulationTicks + 1)`
-   *  flushes the last window.
+   *  the workload definition. Output structure: each tick opens with a `Tick`
+   *  control event followed by all requests for that tick; a final
+   *  `Tick(simulationTicks + 1)` flushes the last window; and
+   *  `TimedControlEvent.EndOfTime` is the absolute last element, serving as
+   *  the timed-stream terminal sentinel.
    *
    *  Two independent RNGs are split from `rng` per shape — one for rate draws,
    *  one for parameter draws — so that changing a param sampler does not affect
@@ -38,7 +39,10 @@ object WorkloadRequestStream:
             buildRequest(tick, workload.usecase, workload.flows(i).shape, paramRngs(i))
           }
         }
-    } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(simulationTicks + 1L)))
+    } ++ Iterator[TimedElement[DynamoDBRequest]](
+      TimedControlEvent.Tick(SimTime.of(simulationTicks + 1L)),
+      TimedControlEvent.EndOfTime
+    )
 
   private def buildRequest(
     tick:    Long,
