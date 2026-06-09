@@ -46,7 +46,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
       val workload = WorkloadDefinition("t", "test",
         Vector(RequestShapeDefinition.getItem(ConstantSampler(2))))
       val events = run(workload, ticks = 2L)
-      // Structure should be: Tick(1), req, req, Tick(2), req, req, Tick(3)
+      // Structure should be: Tick(1), req, req, Tick(2), req, req, Tick(3), EndOfTime
       events(0) shouldBe a[TimedControlEvent.Tick]
       events(3) shouldBe a[TimedControlEvent.Tick]
       events(6) shouldBe a[TimedControlEvent.Tick]
@@ -202,6 +202,27 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
         Vector(RequestShapeDefinition.getItem(ConstantSampler(1))))
       val rs = requests(run(workload, ticks = 3L))
       rs.map(_.eventTime) shouldBe Vector(SimTime.of(1), SimTime.of(2), SimTime.of(3))
+    }
+  }
+
+  // ── Protocol termination ───────────────────────────────────────────────────
+
+  "WorkloadRequestStream protocol termination" should {
+
+    "end with EndOfTime as the absolute last element" in {
+      run(noRequestsWorkload).last shouldBe TimedControlEvent.EndOfTime
+    }
+
+    "have the final flush Tick immediately before EndOfTime" in {
+      val events = run(noRequestsWorkload)
+      events(events.size - 2) shouldBe a[TimedControlEvent.Tick]
+      events.last              shouldBe TimedControlEvent.EndOfTime
+    }
+
+    "end with EndOfTime even when requests are present in the stream" in {
+      val workload = WorkloadDefinition("t", "test",
+        Vector(RequestShapeDefinition.getItem(ConstantSampler(3))))
+      run(workload, ticks = 5L).last shouldBe TimedControlEvent.EndOfTime
     }
   }
 

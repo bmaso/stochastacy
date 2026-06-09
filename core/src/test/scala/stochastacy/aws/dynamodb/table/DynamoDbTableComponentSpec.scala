@@ -7,6 +7,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
+import stochastacy.workload.{ConstantSampler, RequestShapeDefinition, WorkloadDefinition, WorkloadRequestStream}
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration.*
@@ -729,6 +730,35 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
 
       metrics.collect { case tick: TimedControlEvent.Tick => tick.eventTime } shouldBe Vector(SimTime.of(1L), SimTime.of(2L))
       metrics.last shouldBe TimedControlEvent.EndOfTime
+    }
+
+    "propagate EndOfTime from WorkloadRequestStream through all three table outlets" in {
+      import org.apache.commons.rng.simple.RandomSource
+      val config = DynamoDbTable.Config(
+        tableName        = "orders",
+        stateModel       = FixedTableState(itemCount = 1L, totalItemBytes = 256L),
+        useCaseBehaviors = Map("get" -> FixedHitGetItemBehavior(256L)),
+        readConsistency  = ReadConsistency.StronglyConsistent
+      )
+      val workload = WorkloadDefinition("orders", "get",
+        Vector(RequestShapeDefinition.getItem(ConstantSampler(1))))
+      val rng     = RandomSource.KISS.create(42L)
+      val stream  = WorkloadRequestStream(workload, rng, simulationTicks = 3L)
+
+      // Confirm the stream itself ends with EndOfTime before wiring to the table.
+      val streamVec = stream.toVector
+      streamVec.last shouldBe TimedControlEvent.EndOfTime
+
+      val (responseFuture, resourceFuture, metricsFuture) =
+        runComponent(Source(streamVec), config)
+
+      val responses = Await.result(responseFuture, 3.seconds)
+      val resources = Await.result(resourceFuture, 3.seconds)
+      val metrics   = Await.result(metricsFuture,  3.seconds)
+
+      responses.last shouldBe TimedControlEvent.EndOfTime
+      resources.last shouldBe TimedControlEvent.EndOfTime
+      metrics.last   shouldBe TimedControlEvent.EndOfTime
     }
 
     "throttle base-table reads when they exceed the configured on-demand read hard check" in {
