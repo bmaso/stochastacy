@@ -1609,7 +1609,7 @@
           "uid": "stochastacy-postgres"
         },
         "definition": "select distinct scenario_id __text, scenario_id __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}' order by scenario_id",
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "label": "Scenario ID",
         "multi": false,
@@ -1633,7 +1633,7 @@
           "uid": "stochastacy-postgres"
         },
         "definition": "select trial_count::text __text, trial_count::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "label": "Trial Count",
         "multi": false,
@@ -1657,7 +1657,7 @@
           "uid": "stochastacy-postgres"
         },
         "definition": "with gsi_metrics as ( select distinct split_part(metric, ':', 2) as index_name from stochastacy_demo.demo_records where batch_id = '${batch_id}' and scenario_id = '${scenarioId}' and (metric like 'GSI:%:ReadCapacityUnits' or metric like 'GSI:%:WriteCapacityUnits') ) select index_name __text, index_name __value from gsi_metrics order by index_name",
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "label": "GSI Index Name",
         "multi": false,
@@ -1681,7 +1681,7 @@
           "uid": "stochastacy-postgres"
         },
         "definition": "select simulation_ticks::text __text, simulation_ticks::text __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "label": "Simulation Ticks",
         "multi": false,
@@ -1705,7 +1705,7 @@
           "uid": "stochastacy-postgres"
         },
         "definition": "select read_consistency __text, read_consistency __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "label": "Read Consistency",
         "multi": false,
@@ -1729,7 +1729,7 @@
           "uid": "stochastacy-postgres"
         },
         "definition": "select table_name __text, table_name __value from stochastacy_demo.demo_batches where batch_id = '${batch_id}'",
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "label": "Table Name",
         "multi": false,
@@ -1793,8 +1793,8 @@
     ]
   },
   "time": {
-    "from": "1970-01-01T00:00:00Z",
-    "to": "1970-01-01T00:15:00Z"
+    "from": "2026-05-01T07:00:00.000Z",
+    "to": "2026-05-01T07:21:00.000Z"
   },
   "timepicker": {},
   "timezone": "browser",

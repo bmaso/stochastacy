@@ -9,6 +9,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.{DeleteItemRequest, DeleteItemResponse, DynamoDBRequest, GetItemRequest, GetItemResponse}
 import stochastacy.sim.{SimTime, TimedEvent}
+import stochastacy.test.*
 
 class TableStorageStageDeleteItemSpec extends AnyWordSpec with should.Matchers:
 
@@ -46,7 +47,7 @@ class TableStorageStageDeleteItemSpec extends AnyWordSpec with should.Matchers:
       metricsProbe.request(100)
 
       val responses = responseProbe.request(2).expectNextN(2)
-      responses shouldBe Seq(
+      responses.map(_.clearTiming) shouldBe Seq(
         DeleteItemResponse(
           eventTime = SimTime.of(1L),
           usecase = "stateful-table",

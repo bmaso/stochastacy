@@ -8,6 +8,7 @@ import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
 import stochastacy.workload.{ConstantSampler, RequestShapeDefinition, WorkloadDefinition, WorkloadRequestStream}
+import stochastacy.test.*
 
 import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration.*
@@ -40,7 +41,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       val resources = Await.result(resourceFuture, 3.seconds)
       val metrics = Await.result(metricsFuture, 3.seconds)
 
-      responses.collect { case r: GetItemResponse => r } shouldBe Vector(
+      responses.collect { case r: GetItemResponse => r }.map(_.clearTiming) shouldBe Vector(
         GetItemResponse(SimTime.of(1L), "get-hit", itemFound = true, itemBytes = Some(512L)),
         GetItemResponse(SimTime.of(2L), "get-hit", itemFound = true, itemBytes = Some(512L)),
         GetItemResponse(SimTime.of(3L), "get-hit", itemFound = true, itemBytes = Some(512L))
@@ -73,7 +74,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       val resources = Await.result(resourceFuture, 3.seconds)
       val metrics = Await.result(metricsFuture, 3.seconds)
 
-      responses.collect { case r: PutItemResponse => r } shouldBe Vector(
+      responses.collect { case r: PutItemResponse => r }.map(_.clearTiming) shouldBe Vector(
         PutItemResponse(
           eventTime = SimTime.of(1L),
           usecase = "put-new",
@@ -334,7 +335,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       val resources = Await.result(resourceFuture, 3.seconds)
       val metrics = Await.result(metricsFuture, 3.seconds)
 
-      responses.collect { case response: QueryResponse => response } shouldBe Vector(
+      responses.collect { case response: QueryResponse => response }.map(_.clearTiming) shouldBe Vector(
         QueryResponse(
           eventTime = SimTime.of(1L),
           usecase = "query-usecase",
@@ -500,7 +501,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
       val resources = Await.result(resourceFuture, 3.seconds)
       val metrics = Await.result(metricsFuture, 3.seconds)
 
-      responses.collect { case response: ScanResponse => response } shouldBe Vector(
+      responses.collect { case response: ScanResponse => response }.map(_.clearTiming) shouldBe Vector(
         ScanResponse(
           eventTime = SimTime.of(1L),
           usecase = "scan-usecase",

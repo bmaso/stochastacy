@@ -19,7 +19,15 @@ import org.apache.pekko.stream.scaladsl.Source
  */
 trait TimedEvent:
   val eventTime: SimTime
-  val usecase: Any
+  val usecase:   Any
+  /** Fractional position within the tick window, in [0.0, 1.0).
+   *  `0.0` means "at the tick boundary / unmodelled" and is the safe default for
+   *  all control events and any event type that does not need sub-tick resolution.
+   *  For business events (requests, responses) the value represents the relative
+   *  wall-clock arrival time inside the tick: an event at tick T with
+   *  `intraTick = 0.7` conceptually arrived at simulation time T + 0.7.
+   */
+  val intraTick: Double = 0.0
 
 /** Base type for all clock/timing events that can appear in a timed event stream. */
 sealed trait TimedControlEvent extends TimedEvent:

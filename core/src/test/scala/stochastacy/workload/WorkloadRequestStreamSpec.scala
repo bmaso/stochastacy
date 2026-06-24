@@ -226,6 +226,50 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
     }
   }
 
+  // ── intraTick arrivals ─────────────────────────────────────────────────────
+
+  "WorkloadRequestStream intraTick arrivals" should {
+
+    "stamp each request with intraTick in [0.0, 1.0)" in {
+      val workload = WorkloadDefinition("t", "test",
+        Vector(RequestShapeDefinition.putItem(ConstantSampler(10), ConstantSampler(64L))))
+      requests(run(workload, ticks = 5L)).foreach { r =>
+        r.intraTick should be >= 0.0
+        r.intraTick should be < 1.0
+      }
+    }
+
+    "produce non-degenerate intraTick values across many requests" in {
+      val workload = WorkloadDefinition("t", "test",
+        Vector(RequestShapeDefinition.getItem(ConstantSampler(20))))
+      val vals = requests(run(workload, ticks = 10L)).map(_.intraTick)
+      vals should have size 200
+      // 200 Uniform(0,1) draws — probability all are exactly 0.0 is astronomically small
+      vals.exists(_ > 0.0) shouldBe true
+      vals.forall(_ >= 0.0) shouldBe true
+      vals.forall(_ < 1.0)  shouldBe true
+    }
+
+    "produce independent intraTick draws for different shapes" in {
+      val workload = WorkloadDefinition("t", "test", Vector(
+        RequestShapeDefinition.getItem(ConstantSampler(5)),
+        RequestShapeDefinition.putItem(ConstantSampler(5), ConstantSampler(64L))
+      ))
+      val rs   = requests(run(workload, ticks = 10L))
+      val gets = rs.collect { case r: GetItemRequest => r.intraTick }
+      val puts = rs.collect { case r: PutItemRequest => r.intraTick }
+      // Each shape uses its own independent RNG, so the sequences differ
+      gets should not equal puts
+    }
+
+    "control events carry intraTick = 0.0" in {
+      val events = run(noRequestsWorkload)
+      events.collect { case t: TimedControlEvent => t }.foreach { t =>
+        t.intraTick shouldBe 0.0
+      }
+    }
+  }
+
   // ── Convenience constructors ───────────────────────────────────────────────
 
   "RequestShapeDefinition convenience constructors" should {
