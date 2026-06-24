@@ -68,7 +68,8 @@ object OrderTrackingPhase1BridgeCli:
                   outputPath = path,
                   trialCount = trialCount.getOrElse(defaults.trialCount),
                   parallelism = parallelism.getOrElse(defaults.parallelism),
-                  simulationTicks = simulationTicks.getOrElse(defaults.simulationTicks)
+                  simulationTicks = simulationTicks.getOrElse(defaults.simulationTicks),
+                  startEpochSeconds = OrderTrackingPhase2BridgeCli.DefaultStartEpochSeconds
                 )
               )
             case None =>

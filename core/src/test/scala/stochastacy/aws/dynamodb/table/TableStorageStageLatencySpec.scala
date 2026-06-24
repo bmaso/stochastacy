@@ -175,6 +175,68 @@ class TableStorageStageLatencySpec extends AnyWordSpec with should.Matchers:
 
     Await.result(mF, 5.seconds).collect { case e: StorageMetricEvent => e }.toVector
 
+  "TableStorageStage response intraTick" should {
+
+    "set response.intraTick in [0.0, 1.0) for an admitted GetItem" in {
+      val (responses, _, _) = runAndCollect(
+        Source.single(GetItemRequest(SimTime.of(1L), usecase = "q")),
+        baseConfig()
+      )
+      val resp = responses.collect { case r: GetItemResponse => r }
+      resp should have size 1
+      resp.head.intraTick should be >= 0.0
+      resp.head.intraTick should be < 1.0
+    }
+
+    "set response.intraTick > 0.0 (default latency model always yields positive latency)" in {
+      val (responses, _, _) = runAndCollect(
+        Source.single(GetItemRequest(SimTime.of(1L), usecase = "q")),
+        baseConfig()
+      )
+      val resp = responses.collect { case r: GetItemResponse => r }
+      resp.head.intraTick should be > 0.0
+    }
+
+    "response.intraTick and SuccessfulRequestLatency reflect the same latency draw" in {
+      // With req.intraTick = 0.0 and tickDurationSeconds = 1.0, if no tick crossing:
+      //   response.intraTick = latencyMs / 1000.0
+      val (responses, _, metrics) = runAndCollect(
+        Source.single(GetItemRequest(SimTime.of(1L), usecase = "q")),
+        baseConfig()
+      )
+      val resp = responses.collect { case r: GetItemResponse => r }.head
+      val lat  = metrics.collect { case e: StorageMetricEvent.SuccessfulRequestLatency => e }.head
+      // Only assert when the response stayed in the same tick (no crossing)
+      if resp.eventTime == SimTime.of(1L) then
+        resp.intraTick shouldBe (lat.latencyMs / 1000.0) +- 1e-12
+    }
+
+    "a request arriving late in a tick pushes its response into the next tick" in {
+      // ~50ms mean; req.intraTick = 0.98 → rawOffset ≈ 0.98 + 0.050 = 1.03 → tick + 1
+      val customModel = DynamoDbTable.LatencyModel(Map(
+        DynamoDbOperationKind.GetItem -> DynamoDbTable.LatencyParams(math.log(50.0), 0.01)
+      ))
+      val req = GetItemRequest(SimTime.of(5L), usecase = "q", intraTick = 0.98)
+      val (responses, _, _) = runAndCollect(Source.single(req), baseConfig().copy(latencyModel = customModel))
+      val resp = responses.collect { case r: GetItemResponse => r }.head
+      resp.eventTime shouldBe SimTime.of(6L)
+      resp.intraTick should be >= 0.0
+      resp.intraTick should be < 1.0
+    }
+
+    "a request with intraTick = 0.0 and zero-latency model gets response.intraTick = 0.0" in {
+      // Empty latency model → sampleLatencyMs returns 0.0 → rawOffset = 0.0 → no shift
+      val zeroLatencyModel = DynamoDbTable.LatencyModel(Map.empty)
+      val (responses, _, _) = runAndCollect(
+        Source.single(GetItemRequest(SimTime.of(1L), usecase = "q")),
+        baseConfig().copy(latencyModel = zeroLatencyModel)
+      )
+      val resp = responses.collect { case r: GetItemResponse => r }.head
+      resp.intraTick shouldBe 0.0
+      resp.eventTime shouldBe SimTime.of(1L)
+    }
+  }
+
   private object DefaultBehavior extends UseCaseSampler[TableState]:
     override def getItem(req: GetItemRequest, ctx: SamplerContext[TableState]): GetItemSample =
       GetItemSample(itemBytes = Some(256L))
