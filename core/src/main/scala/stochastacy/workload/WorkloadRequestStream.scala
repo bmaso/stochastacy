@@ -12,14 +12,20 @@ import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement}
 object WorkloadRequestStream:
 
   /** Produces an `Iterator[TimedElement[DynamoDBRequest]]` driven entirely by
-   *  the workload definition. Output structure is identical to
-   *  `generateRequestsForRegion`: each tick opens with a `Tick` control event
-   *  followed by all requests for that tick, and a final `Tick(simulationTicks + 1)`
-   *  flushes the last window.
+   *  the workload definition. Output structure: each tick opens with a `Tick`
+   *  control event followed by all requests for that tick; a final
+   *  `Tick(simulationTicks + 1)` flushes the last window; and
+   *  `TimedControlEvent.EndOfTime` is the absolute last element, serving as
+   *  the timed-stream terminal sentinel.
    *
-   *  Two independent RNGs are split from `rng` per shape — one for rate draws,
-   *  one for parameter draws — so that changing a param sampler does not affect
-   *  rate draws and vice versa. */
+   *  Three independent RNGs are split from `rng` per shape:
+   *  - `rateRng`     — rate draws (how many requests this tick)
+   *  - `paramRng`    — parameter draws (item bytes, item count, etc.)
+   *  - `intraTickRng`— arrival-position draws, Uniform(0, 1), assigned to
+   *                    `request.intraTick`
+   *
+   *  Keeping the three RNGs independent means changing a param sampler does
+   *  not perturb rate draws or arrival positions, and vice versa. */
   def apply(
     workload:        WorkloadDefinition,
     rng:             UniformRandomProvider,
@@ -28,10 +34,11 @@ object WorkloadRequestStream:
 
     // Only independent flows have their own rate samplers.
     // Derived flows (follow-on, retry) are handled by FollowOnTransformerStage.
-    val independent = workload.independentFlows
-    val n           = independent.size
-    val rateRngs    = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
-    val paramRngs   = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
+    val independent    = workload.independentFlows
+    val n              = independent.size
+    val rateRngs       = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
+    val paramRngs      = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
+    val intraTickRngs  = Vector.fill(n)(RandomSource.KISS.create(rng.nextLong()))
 
     (1L to simulationTicks).iterator.flatMap { tick =>
       Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDBRequest]) ++
@@ -39,36 +46,41 @@ object WorkloadRequestStream:
           val defn = independent(i).defn
           val (count, _) = defn.rate.sample(tick, rateRngs(i), ())
           Iterator.fill(count) {
-            buildRequest(tick, workload.usecase, independent(i).id, defn.shape, paramRngs(i))
+            val φ = intraTickRngs(i).nextDouble()   // Uniform(0, 1) arrival position
+            buildRequest(tick, workload.usecase, independent(i).id, defn.shape, paramRngs(i), φ)
           }
         }
-    } ++ Iterator.single(TimedControlEvent.Tick(SimTime.of(simulationTicks + 1L)))
+    } ++ Iterator[TimedElement[DynamoDBRequest]](
+      TimedControlEvent.Tick(SimTime.of(simulationTicks + 1L)),
+      TimedControlEvent.EndOfTime
+    )
 
   /** Builds a single tagged request. `flowId` is set on the request so that downstream
    *  response events can be attributed back to the originating flow. */
   private[workload] def buildRequest(
-    tick:    Long,
-    usecase: String,
-    flowId:  String,
-    shape:   RequestShape,
-    rng:     UniformRandomProvider
+    tick:      Long,
+    usecase:   String,
+    flowId:    String,
+    shape:     RequestShape,
+    rng:       UniformRandomProvider,
+    intraTick: Double
   ): TimedElement[DynamoDBRequest] =
     val t   = SimTime.of(tick)
     val fid = Some(flowId)
     shape match
       case RequestShape.GetItem =>
-        GetItemRequest(t, usecase, fid)
+        GetItemRequest(t, usecase, intraTick, fid)
       case RequestShape.DeleteItem =>
-        DeleteItemRequest(t, usecase, fid)
+        DeleteItemRequest(t, usecase, intraTick, fid)
       case RequestShape.PutItem(itemBytesSampler) =>
-        PutItemRequest(t, usecase, itemBytesSampler.sample(tick, rng, ())._1, fid)
+        PutItemRequest(t, usecase, itemBytesSampler.sample(tick, rng, ())._1, intraTick, fid)
       case RequestShape.UpdateItem(itemBytesSampler) =>
-        UpdateItemRequest(t, usecase, itemBytesSampler.sample(tick, rng, ())._1, fid)
+        UpdateItemRequest(t, usecase, itemBytesSampler.sample(tick, rng, ())._1, intraTick, fid)
       case RequestShape.Query(target, readConsistency) =>
-        QueryRequest(t, usecase, target, readConsistency, flowId = fid)
+        QueryRequest(t, usecase, target, readConsistency, intraTick = intraTick, flowId = fid)
       case RequestShape.Scan(target, readConsistency) =>
-        ScanRequest(t, usecase, target, readConsistency, flowId = fid)
+        ScanRequest(t, usecase, target, readConsistency, intraTick = intraTick, flowId = fid)
       case RequestShape.TransactWriteItems(perItemSamplers) =>
-        TransactWriteItemsRequest(t, usecase, perItemSamplers.map(_.sample(tick, rng, ())._1), fid)
+        TransactWriteItemsRequest(t, usecase, perItemSamplers.map(_.sample(tick, rng, ())._1), intraTick, fid)
       case RequestShape.TransactGetItems(itemCountSampler) =>
-        TransactGetItemsRequest(t, usecase, itemCountSampler.sample(tick, rng, ())._1, fid)
+        TransactGetItemsRequest(t, usecase, itemCountSampler.sample(tick, rng, ())._1, intraTick, fid)

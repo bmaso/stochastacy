@@ -80,7 +80,7 @@ object TableStorageStage:
    */
   private[table] sealed trait StorageOutcome extends TimedEvent
 
-  private[table] final case class StorageAdmitted(sample: AdmittedRequestSample) extends StorageOutcome:
+  private[table] final case class StorageAdmitted(sample: AdmittedRequestSample, latencyMs: Double) extends StorageOutcome:
     override val eventTime: SimTime = sample.eventTime
     override val usecase: Any = sample.usecase
 
@@ -163,7 +163,8 @@ object TableStorageStage:
                                           latencyModel: DynamoDbTable.LatencyModel = DynamoDbTable.LatencyModel.awsDefault,
                                           latencyRng: UniformRandomProvider = org.apache.commons.rng.simple.RandomSource.XO_RO_SHI_RO_128_PP.create(0L),
                                           ttlSampler: Option[TtlSampler] = None,
-                                          pitrStateRef: Option[PITRStateRef] = None
+                                          pitrStateRef: Option[PITRStateRef] = None,
+                                          tickDurationSeconds: Double = 1.0
                                         ): Graph[
     FanOutShape4[
       TimedElement[AdmittedRequestSample],
@@ -178,6 +179,14 @@ object TableStorageStage:
       import GraphDSL.Implicits.*
 
       val broadcast = b.add(Broadcast[TimedElement[StorageOutcome]](4))
+
+      val latSamplers: Map[DynamoDbOperationKind, ContinuousDistribution.Sampler] =
+        latencyModel.params.map { case (op, params) =>
+          op -> LogNormalDistribution.of(params.mu, params.sigma).createSampler(latencyRng)
+        }
+
+      def sampleLatencyMs(op: DynamoDbOperationKind): Double =
+        latSamplers.get(op).map(_.sample()).getOrElse(0.0)
 
       // Validate-then-mutate: per write, check the LSI item-collection-size limit
       // before applying any state mutation. Rejected writes flow downstream as
@@ -233,14 +242,14 @@ object TableStorageStage:
                     if item.sample.createdNewItem then
                       ttlSampler.foreach(_.recordWrite(item.sample.writtenItemBytes, txn.req.eventTime.ticks))
                   }
-                  List(StorageAdmitted(txn))
+                  List(StorageAdmitted(txn, sampleLatencyMs(DynamoDbOperationKind.TransactWriteItems)))
 
           case txn: AdmittedTransactGetItemsSample =>
             val isSystemError = systemErrorRate > 0.0 && rng.exists(_.nextDouble() < systemErrorRate)
             if isSystemError then
               List(StorageSystemError(txn.req, DynamoDbOperationKind.TransactGetItems, txn.executionTarget))
             else
-              List(StorageAdmitted(txn))
+              List(StorageAdmitted(txn, sampleLatencyMs(DynamoDbOperationKind.TransactGetItems)))
 
           case sample: AdmittedRequestSample =>
             val outcome = validateItemCollectionLimit(sample, itemCollectionSizeLimitBytes) match
@@ -282,101 +291,134 @@ object TableStorageStage:
                       if s.sample.deletedExistingItem then
                         ttlSampler.foreach(_.recordDelete(admitted.req.eventTime.ticks))
                     case _ => ()
-                  StorageAdmitted(admitted)
+                  StorageAdmitted(admitted, sampleLatencyMs(DynamoDbOperationKind.fromRequest(admitted.req)))
             List(outcome)
         }
       )
 
-      def responseForSample(sample: AdmittedRequestSample): DynamoDBResponse = sample match
-        case r: Replicated[?] => responseForSample(r.sample)
-        case AdmittedGetItemSample(r, _, _, _, s, _, _) =>
-          GetItemResponse(
-            eventTime = r.eventTime,
-            usecase = r.usecase,
-            itemFound = s.itemBytes.isDefined,
-            itemBytes = s.itemBytes,
-            flowId = r.flowId
-          )
+      def responseForSample(sample: AdmittedRequestSample, latencyMs: Double): DynamoDBResponse =
+        /** rawOffset = request.intraTick + latencyMs / (tickDurationSeconds * 1000).
+         *  Integer part advances eventTime; fractional part becomes response intraTick ∈ [0,1). */
+        def timing(req: DynamoDBRequest): (SimTime, Double) =
+          val rawOffset = req.intraTick + latencyMs / (tickDurationSeconds * 1000.0)
+          (SimTime.of(req.eventTime.ticks + rawOffset.toLong), rawOffset - rawOffset.toLong)
 
-        case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
-          val effectiveSample =
-            effectiveReadSample(
-              executionTarget = executionTarget,
-              projectedBytesReturned = s.projectedBytesReturned,
-              returnedBytes = s.returnedBytes,
-              baseTableFetchBytes = s.baseTableFetchBytes,
-              baseTableFetchItemCount = s.baseTableFetchItemCount,
-              projectionSatisfaction = s.projectionSatisfaction,
-              indexProjection = indexProjection
+        sample match
+          case r: Replicated[?] => responseForSample(r.sample, latencyMs)
+          case AdmittedGetItemSample(r, _, _, _, s, _, _) =>
+            val (respTime, respIntraTick) = timing(r)
+            GetItemResponse(
+              eventTime = respTime,
+              usecase = r.usecase,
+              itemFound = s.itemBytes.isDefined,
+              itemBytes = s.itemBytes,
+              intraTick = respIntraTick,
+              flowId = r.flowId
             )
-          QueryResponse(
-            eventTime = r.eventTime,
-            usecase = r.usecase,
-            target = r.target,
-            readConsistency = r.readConsistency,
-            evaluatedItemCount = s.evaluatedItemCount,
-            evaluatedBytes = s.evaluatedBytes,
-            returnedItemCount = s.returnedItemCount,
-            returnedBytes = effectiveSample.returnedBytes,
-            flowId = r.flowId
-          )
 
-        case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
-          val effectiveSample =
-            effectiveReadSample(
-              executionTarget = executionTarget,
-              projectedBytesReturned = s.projectedBytesReturned,
-              returnedBytes = s.returnedBytes,
-              baseTableFetchBytes = s.baseTableFetchBytes,
-              baseTableFetchItemCount = s.baseTableFetchItemCount,
-              projectionSatisfaction = s.projectionSatisfaction,
-              indexProjection = indexProjection
+          case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
+            val effectiveSample =
+              effectiveReadSample(
+                executionTarget = executionTarget,
+                projectedBytesReturned = s.projectedBytesReturned,
+                returnedBytes = s.returnedBytes,
+                baseTableFetchBytes = s.baseTableFetchBytes,
+                baseTableFetchItemCount = s.baseTableFetchItemCount,
+                projectionSatisfaction = s.projectionSatisfaction,
+                indexProjection = indexProjection
+              )
+            val (respTime, respIntraTick) = timing(r)
+            QueryResponse(
+              eventTime = respTime,
+              usecase = r.usecase,
+              target = r.target,
+              readConsistency = r.readConsistency,
+              evaluatedItemCount = s.evaluatedItemCount,
+              evaluatedBytes = s.evaluatedBytes,
+              returnedItemCount = s.returnedItemCount,
+              returnedBytes = effectiveSample.returnedBytes,
+              intraTick = respIntraTick,
+              flowId = r.flowId
             )
-          ScanResponse(
-            eventTime = r.eventTime,
-            usecase = r.usecase,
-            target = r.target,
-            readConsistency = r.readConsistency,
-            evaluatedItemCount = s.evaluatedItemCount,
-            evaluatedBytes = s.evaluatedBytes,
-            returnedItemCount = s.returnedItemCount,
-            returnedBytes = effectiveSample.returnedBytes,
-            flowId = r.flowId
-          )
 
-        case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
-          PutItemResponse(
-            eventTime = r.eventTime,
-            usecase = r.usecase,
-            storedItemBytes = s.writtenItemBytes,
-            createdNewItem = s.createdNewItem,
-            previousItemBytes = s.previousItemBytes,
-            flowId = r.flowId
-          )
+          case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
+            val effectiveSample =
+              effectiveReadSample(
+                executionTarget = executionTarget,
+                projectedBytesReturned = s.projectedBytesReturned,
+                returnedBytes = s.returnedBytes,
+                baseTableFetchBytes = s.baseTableFetchBytes,
+                baseTableFetchItemCount = s.baseTableFetchItemCount,
+                projectionSatisfaction = s.projectionSatisfaction,
+                indexProjection = indexProjection
+              )
+            val (respTime, respIntraTick) = timing(r)
+            ScanResponse(
+              eventTime = respTime,
+              usecase = r.usecase,
+              target = r.target,
+              readConsistency = r.readConsistency,
+              evaluatedItemCount = s.evaluatedItemCount,
+              evaluatedBytes = s.evaluatedBytes,
+              returnedItemCount = s.returnedItemCount,
+              returnedBytes = effectiveSample.returnedBytes,
+              intraTick = respIntraTick,
+              flowId = r.flowId
+            )
 
-        case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
-          UpdateItemResponse(
-            eventTime = r.eventTime,
-            usecase = r.usecase,
-            storedItemBytes = s.writtenItemBytes,
-            createdNewItem = s.createdNewItem,
-            previousItemBytes = s.previousItemBytes,
-            flowId = r.flowId
-          )
+          case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
+            val (respTime, respIntraTick) = timing(r)
+            PutItemResponse(
+              eventTime = respTime,
+              usecase = r.usecase,
+              storedItemBytes = s.writtenItemBytes,
+              createdNewItem = s.createdNewItem,
+              previousItemBytes = s.previousItemBytes,
+              intraTick = respIntraTick,
+              flowId = r.flowId
+            )
 
-        case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
-          DeleteItemResponse(
-            eventTime = r.eventTime,
-            usecase = r.usecase,
-            deletedItemBytes = s.deletedItemBytes,
-            flowId = r.flowId
-          )
+          case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
+            val (respTime, respIntraTick) = timing(r)
+            UpdateItemResponse(
+              eventTime = respTime,
+              usecase = r.usecase,
+              storedItemBytes = s.writtenItemBytes,
+              createdNewItem = s.createdNewItem,
+              previousItemBytes = s.previousItemBytes,
+              intraTick = respIntraTick,
+              flowId = r.flowId
+            )
 
-        case AdmittedTransactWriteItemsSample(r, _, _, s, _, _, _, _) =>
-          TransactWriteItemsResponse(eventTime = r.eventTime, usecase = r.usecase, itemCount = s.itemCount, flowId = r.flowId)
+          case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
+            val (respTime, respIntraTick) = timing(r)
+            DeleteItemResponse(
+              eventTime = respTime,
+              usecase = r.usecase,
+              deletedItemBytes = s.deletedItemBytes,
+              intraTick = respIntraTick,
+              flowId = r.flowId
+            )
 
-        case AdmittedTransactGetItemsSample(r, _, _, s, _, _) =>
-          TransactGetItemsResponse(eventTime = r.eventTime, usecase = r.usecase, items = s.items.map(_.itemBytes), flowId = r.flowId)
+          case AdmittedTransactWriteItemsSample(r, _, _, s, _, _, _, _) =>
+            val (respTime, respIntraTick) = timing(r)
+            TransactWriteItemsResponse(
+              eventTime = respTime,
+              usecase = r.usecase,
+              itemCount = s.itemCount,
+              intraTick = respIntraTick,
+              flowId = r.flowId
+            )
+
+          case AdmittedTransactGetItemsSample(r, _, _, s, _, _) =>
+            val (respTime, respIntraTick) = timing(r)
+            TransactGetItemsResponse(
+              eventTime = respTime,
+              usecase = r.usecase,
+              items = s.items.map(_.itemBytes),
+              intraTick = respIntraTick,
+              flowId = r.flowId
+            )
 
       val responseFlow = b.add(
         Flow[TimedElement[StorageOutcome]].mapConcat[TimedElement[DynamoDBResponse]] {
@@ -400,20 +442,12 @@ object TableStorageStage:
               target = err.target,
               flowId = err.request.flowId
             ))
-          case StorageAdmitted(sample) => List(responseForSample(sample))
+          case StorageAdmitted(sample, latencyMs) => List(responseForSample(sample, latencyMs))
         }
       )
 
-      val latSamplers: Map[DynamoDbOperationKind, ContinuousDistribution.Sampler] =
-        latencyModel.params.map { case (op, params) =>
-          op -> LogNormalDistribution.of(params.mu, params.sigma).createSampler(latencyRng)
-        }
-
-      def sampleLatencyMs(op: DynamoDbOperationKind): Double =
-        latSamplers.get(op).map(_.sample()).getOrElse(0.0)
-
-      def metricsForSample(sample: AdmittedRequestSample): List[StorageMetricEvent] = sample match
-        case r: Replicated[?] => metricsForSample(r.sample)
+      def metricsForSample(sample: AdmittedRequestSample, latencyMs: Double): List[StorageMetricEvent] = sample match
+        case r: Replicated[?] => metricsForSample(r.sample, latencyMs)
         case AdmittedGetItemSample(r, executionTarget, _, _, s, _, _) =>
           val returnedEvents =
             s.itemBytes.toList.map { itemBytes =>
@@ -422,7 +456,7 @@ object TableStorageStage:
           List(
             StorageMetricEvent.GetItemObserved(r.eventTime, r.usecase)
           ) ++ returnedEvents ++ List(
-            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.GetItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.GetItem))
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.GetItem, executionTarget, latencyMs)
           )
 
         case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
@@ -465,7 +499,7 @@ object TableStorageStage:
           ) ++ returnedEvents ++ projectionEvents ++
             List(
               StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Query, s.returnedItemCount),
-              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.Query, executionTarget, sampleLatencyMs(DynamoDbOperationKind.Query))
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.Query, executionTarget, latencyMs)
             )
 
         case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
@@ -508,7 +542,7 @@ object TableStorageStage:
           ) ++ returnedEvents ++ projectionEvents ++
             List(
               StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, s.returnedItemCount),
-              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, executionTarget, sampleLatencyMs(DynamoDbOperationKind.Scan))
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.Scan, executionTarget, latencyMs)
             )
 
         case AdmittedPutItemSample(r, executionTarget, _, s, _, _, _) =>
@@ -517,7 +551,7 @@ object TableStorageStage:
             StorageMetricEvent.PutItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
             StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
-            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.PutItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.PutItem))
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.PutItem, executionTarget, latencyMs)
           )
 
         case AdmittedUpdateItemSample(r, executionTarget, _, s, _, _, _) =>
@@ -526,7 +560,7 @@ object TableStorageStage:
             StorageMetricEvent.UpdateItemStored(r.eventTime, r.usecase, s.writtenItemBytes, s.createdNewItem),
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
             StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
-            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.UpdateItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.UpdateItem))
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.UpdateItem, executionTarget, latencyMs)
           )
 
         case AdmittedDeleteItemSample(r, executionTarget, _, s, _, _, _) =>
@@ -539,7 +573,7 @@ object TableStorageStage:
           ) ++ deleteEvents ++ List(
             StorageMetricEvent.TableItemCountChanged(r.eventTime, r.usecase, s.itemCountDelta),
             StorageMetricEvent.TableBytesChanged(r.eventTime, r.usecase, s.storageBytesDelta),
-            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.DeleteItem, executionTarget, sampleLatencyMs(DynamoDbOperationKind.DeleteItem))
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.DeleteItem, executionTarget, latencyMs)
           )
 
         case AdmittedTransactWriteItemsSample(r, executionTarget, _, _, _, _, _, perItemSamples) =>
@@ -552,7 +586,7 @@ object TableStorageStage:
             )
           }
           perItemMetrics ++ List(
-            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.TransactWriteItems, executionTarget, sampleLatencyMs(DynamoDbOperationKind.TransactWriteItems))
+            StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.TransactWriteItems, executionTarget, latencyMs)
           )
 
         case AdmittedTransactGetItemsSample(r, executionTarget, _, s, _, _) =>
@@ -563,7 +597,7 @@ object TableStorageStage:
             returnedEvents ++
             List(
               StorageMetricEvent.ReturnedItemCount(r.eventTime, r.usecase, DynamoDbOperationKind.TransactGetItems, s.items.count(_.itemBytes.isDefined).toLong),
-              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.TransactGetItems, executionTarget, sampleLatencyMs(DynamoDbOperationKind.TransactGetItems))
+              StorageMetricEvent.SuccessfulRequestLatency(r.eventTime, r.usecase, DynamoDbOperationKind.TransactGetItems, executionTarget, latencyMs)
             )
 
       val metricFlow = b.add(
@@ -598,7 +632,7 @@ object TableStorageStage:
                 target = err.target
               )
             )
-          case StorageAdmitted(sample) => metricsForSample(sample)
+          case StorageAdmitted(sample, latencyMs) => metricsForSample(sample, latencyMs)
         }
       )
 
@@ -858,7 +892,7 @@ object TableStorageStage:
               addPitrEvents(baseDelta :: gsiDeltas ++ lsiDeltas)
           case _: StorageRejection => Nil
           case _: StorageSystemError => Nil
-          case StorageAdmitted(sample) => addPitrEvents(consumptionForSample(sample))
+          case StorageAdmitted(sample, _) => addPitrEvents(consumptionForSample(sample))
         }
       )
 
@@ -874,8 +908,8 @@ object TableStorageStage:
           case _: TtlExpiry => Nil
           case _: StorageRejection => Nil
           case _: StorageSystemError => Nil
-          case StorageAdmitted(txn: AdmittedTransactWriteItemsSample) => txn.perItemSamples.toList
-          case StorageAdmitted(sample) => List(sample)
+          case StorageAdmitted(txn: AdmittedTransactWriteItemsSample, _) => txn.perItemSamples.toList
+          case StorageAdmitted(sample, _) => List(sample)
         }
       )
 

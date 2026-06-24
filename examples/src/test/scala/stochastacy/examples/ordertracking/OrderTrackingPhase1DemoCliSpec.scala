@@ -22,7 +22,8 @@ class OrderTrackingPhase1DemoCliSpec extends AnyWordSpec with should.Matchers:
           outputPath = Path.of("/tmp/demo.jsonl"),
           trialCount = OrderTrackingScenarioConfig.phase1Default.trialCount,
           parallelism = OrderTrackingScenarioConfig.phase1Default.parallelism,
-          simulationTicks = OrderTrackingScenarioConfig.phase1Default.simulationTicks
+          simulationTicks = OrderTrackingScenarioConfig.phase1Default.simulationTicks,
+          startEpochSeconds = OrderTrackingPhase2BridgeCli.DefaultStartEpochSeconds
         )
       )
     }
@@ -44,7 +45,8 @@ class OrderTrackingPhase1DemoCliSpec extends AnyWordSpec with should.Matchers:
           outputPath = Path.of("/tmp/demo.jsonl"),
           trialCount = 4,
           parallelism = 2,
-          simulationTicks = 12L
+          simulationTicks = 12L,
+          startEpochSeconds = OrderTrackingPhase2BridgeCli.DefaultStartEpochSeconds
         )
       )
     }

@@ -9,6 +9,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.{DynamoDbOperationKind, DynamoDbReadTarget, QueryRequest, QueryResponse, RequestedReadShape}
 import stochastacy.sim.{SimTime, TimedEvent}
+import stochastacy.test.*
 
 class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
 
@@ -41,7 +42,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       resourceProbe.request(100)
       metricsProbe.request(100)
 
-      responseProbe.request(1).expectNext() shouldBe QueryResponse(
+      responseProbe.request(1).expectNext().clearTiming shouldBe QueryResponse(
         eventTime = SimTime.of(1L),
         usecase = "filtered-query",
         target = DynamoDbReadTarget.Table("orders"),
@@ -87,7 +88,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       resourceProbe.request(100)
       metricsProbe.request(100)
 
-      responseProbe.request(1).expectNext() shouldBe QueryResponse(
+      responseProbe.request(1).expectNext().clearTiming shouldBe QueryResponse(
         eventTime = SimTime.of(1L),
         usecase = "empty-query",
         target = DynamoDbReadTarget.Table("orders"),
@@ -130,7 +131,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       resourceProbe.request(100)
       metricsProbe.request(100)
 
-      responseProbe.request(1).expectNext() shouldBe QueryResponse(
+      responseProbe.request(1).expectNext().clearTiming shouldBe QueryResponse(
         eventTime = SimTime.of(1L),
         usecase = "gsi-projected-query",
         target = DynamoDbReadTarget.GlobalSecondaryIndex("orders", "status-index"),
@@ -177,7 +178,7 @@ class TableStorageStageQuerySpec extends AnyWordSpec with should.Matchers:
       resourceProbe.request(100)
       metricsProbe.request(100)
 
-      responseProbe.request(1).expectNext() shouldBe QueryResponse(
+      responseProbe.request(1).expectNext().clearTiming shouldBe QueryResponse(
         eventTime = SimTime.of(1L),
         usecase = "lsi-fetch-query",
         target = DynamoDbReadTarget.LocalSecondaryIndex("orders", "created-at-index"),

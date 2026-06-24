@@ -82,52 +82,59 @@ object RequestedReadShape:
 case class GetItemRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  flowId: Option[String]  = None
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBRequest
 
 case class PutItemRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  itemBytes: Long,
-  flowId: Option[String]  = None
+  itemBytes:              Long,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBRequest
 
 case class UpdateItemRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  itemBytes: Long,
-  flowId: Option[String]  = None
+  itemBytes:              Long,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBRequest
 
 case class DeleteItemRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  flowId: Option[String]  = None
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBRequest
 
 case class QueryRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  target:             DynamoDbReadTarget,
-  readConsistency:    ReadConsistency    = ReadConsistency.EventuallyConsistent,
-  requestedReadShape: RequestedReadShape = RequestedReadShape.AllProjectedOrFullItem,
-  flowId: Option[String]                = None
+  target:                 DynamoDbReadTarget,
+  readConsistency:        ReadConsistency    = ReadConsistency.EventuallyConsistent,
+  requestedReadShape:     RequestedReadShape = RequestedReadShape.AllProjectedOrFullItem,
+  override val intraTick: Double             = 0.0,
+  flowId:                 Option[String]     = None
 ) extends DynamoDBRequest
 
 case class ScanRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  target:             DynamoDbReadTarget,
-  readConsistency:    ReadConsistency    = ReadConsistency.EventuallyConsistent,
-  requestedReadShape: RequestedReadShape = RequestedReadShape.AllProjectedOrFullItem,
-  flowId: Option[String]                = None
+  target:                 DynamoDbReadTarget,
+  readConsistency:        ReadConsistency    = ReadConsistency.EventuallyConsistent,
+  requestedReadShape:     RequestedReadShape = RequestedReadShape.AllProjectedOrFullItem,
+  override val intraTick: Double             = 0.0,
+  flowId:                 Option[String]     = None
 ) extends DynamoDBRequest
 
 case class PartiQLQueryRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  queryText: String,
-  flowId: Option[String]  = None
+  queryText:              String,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBRequest
 
 /**
@@ -136,75 +143,83 @@ case class PartiQLQueryRequest(
 case class GetItemResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  itemFound: Boolean,
-  itemBytes: Option[Long],
-  flowId: Option[String]  = None
+  itemFound:              Boolean,
+  itemBytes:              Option[Long],
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 case class PutItemResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  storedItemBytes: Long,
-  createdNewItem: Boolean,
-  previousItemBytes: Option[Long],
-  flowId: Option[String]  = None
+  storedItemBytes:        Long,
+  createdNewItem:         Boolean,
+  previousItemBytes:      Option[Long],
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 case class UpdateItemResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  storedItemBytes: Long,
-  createdNewItem: Boolean,
-  previousItemBytes: Option[Long],
-  flowId: Option[String]  = None
+  storedItemBytes:        Long,
+  createdNewItem:         Boolean,
+  previousItemBytes:      Option[Long],
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 case class DeleteItemResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  deletedItemBytes: Option[Long],
-  flowId: Option[String]  = None
+  deletedItemBytes:       Option[Long],
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 case class QueryResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  target: DynamoDbReadTarget,
-  readConsistency: ReadConsistency,
-  evaluatedItemCount: Long,
-  evaluatedBytes: Long,
-  returnedItemCount: Long,
-  returnedBytes: Long,
-  flowId: Option[String]  = None
+  target:                 DynamoDbReadTarget,
+  readConsistency:        ReadConsistency,
+  evaluatedItemCount:     Long,
+  evaluatedBytes:         Long,
+  returnedItemCount:      Long,
+  returnedBytes:          Long,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 case class ScanResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  target: DynamoDbReadTarget,
-  readConsistency: ReadConsistency,
-  evaluatedItemCount: Long,
-  evaluatedBytes: Long,
-  returnedItemCount: Long,
-  returnedBytes: Long,
-  flowId: Option[String]  = None
+  target:                 DynamoDbReadTarget,
+  readConsistency:        ReadConsistency,
+  evaluatedItemCount:     Long,
+  evaluatedBytes:         Long,
+  returnedItemCount:      Long,
+  returnedBytes:          Long,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 case class PartiQLQueryResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  queryText: String,
-  flowId: Option[String]  = None
+  queryText:              String,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 case class ThrottledResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  operation: DynamoDbOperationKind,
-  target: stochastacy.aws.dynamodb.table.DynamoDbTarget,
-  dimension: DynamoDbThroughputDimension,
-  reason: DynamoDbThrottleReason,
-  flowId: Option[String]  = None
+  operation:              DynamoDbOperationKind,
+  target:                 stochastacy.aws.dynamodb.table.DynamoDbTarget,
+  dimension:              DynamoDbThroughputDimension,
+  reason:                 DynamoDbThrottleReason,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 /**
@@ -216,13 +231,14 @@ case class ThrottledResponse(
  * `ProvisionedThroughputExceededException`; the simulator preserves that distinction.
  */
 case class ItemCollectionSizeLimitExceededResponse(
-  override val eventTime: SimTime,
-  override val usecase:   Any,
-  operation: DynamoDbOperationKind,
-  target: stochastacy.aws.dynamodb.table.DynamoDbTarget,
-  resultingCollectionBytes: Long,
-  limitBytes: Long,
-  flowId: Option[String]  = None
+  override val eventTime:    SimTime,
+  override val usecase:      Any,
+  operation:                 DynamoDbOperationKind,
+  target:                    stochastacy.aws.dynamodb.table.DynamoDbTarget,
+  resultingCollectionBytes:  Long,
+  limitBytes:                Long,
+  override val intraTick:    Double         = 0.0,
+  flowId:                    Option[String] = None
 ) extends DynamoDBResponse
 
 /**
@@ -233,9 +249,10 @@ case class ItemCollectionSizeLimitExceededResponse(
 final case class SystemErrorResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  operation: DynamoDbOperationKind,
-  target: stochastacy.aws.dynamodb.table.DynamoDbTarget,
-  flowId: Option[String]  = None
+  operation:              DynamoDbOperationKind,
+  target:                 stochastacy.aws.dynamodb.table.DynamoDbTarget,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 /**
@@ -246,8 +263,9 @@ final case class SystemErrorResponse(
 final case class ReconfigurationRejectedResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  reason: String,
-  flowId: Option[String]  = None
+  reason:                 String,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 /**
@@ -257,8 +275,9 @@ final case class ReconfigurationRejectedResponse(
 case class TransactWriteItemsRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  perItemBytes: Vector[Long],
-  flowId: Option[String]  = None
+  perItemBytes:           Vector[Long],
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBRequest:
   require(perItemBytes.nonEmpty, "TransactWriteItemsRequest.perItemBytes must be non-empty")
   require(perItemBytes.forall(_ >= 0L), "TransactWriteItemsRequest.perItemBytes values must be non-negative")
@@ -270,22 +289,25 @@ case class TransactWriteItemsRequest(
 case class TransactGetItemsRequest(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  itemCount: Int,
-  flowId: Option[String]  = None
+  itemCount:              Int,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBRequest:
   require(itemCount > 0, s"TransactGetItemsRequest.itemCount must be positive, got $itemCount")
 
 case class TransactWriteItemsResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  itemCount: Int,
-  flowId: Option[String]  = None
+  itemCount:              Int,
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse
 
 case class TransactGetItemsResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
-  items: Vector[Option[Long]],
-  flowId: Option[String]  = None
+  items:                  Vector[Option[Long]],
+  override val intraTick: Double         = 0.0,
+  flowId:                 Option[String] = None
 ) extends DynamoDBResponse:
   require(items.nonEmpty, "TransactGetItemsResponse.items must be non-empty")

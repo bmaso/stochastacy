@@ -7,6 +7,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
+import stochastacy.test.*
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, Future}
@@ -33,7 +34,7 @@ class TransactionSpec extends AnyWordSpec with should.Matchers:
       val responses = Await.result(responseFuture, 3.seconds)
       val consumption = Await.result(consumptionFuture, 3.seconds)
 
-      responses.collect { case r: TransactWriteItemsResponse => r } shouldBe Vector(
+      responses.collect { case r: TransactWriteItemsResponse => r }.map(_.clearTiming) shouldBe Vector(
         TransactWriteItemsResponse(SimTime.of(1L), "cmd", itemCount = 2)
       )
 

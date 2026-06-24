@@ -9,6 +9,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.{DynamoDBRequest, GetItemRequest, GetItemResponse, PutItemRequest, PutItemResponse}
 import stochastacy.sim.{SimTime, TimedEvent}
+import stochastacy.test.*
 
 class TableStorageStagePutItemSpec extends AnyWordSpec with should.Matchers:
 
@@ -46,7 +47,7 @@ class TableStorageStagePutItemSpec extends AnyWordSpec with should.Matchers:
       metricsProbe.request(100)
 
       val responses = responseProbe.request(3).expectNextN(3)
-      responses shouldBe (
+      responses.map(_.clearTiming) shouldBe (
         Seq(
           (512L, true, None),
           (1024L, false, Some(512L))

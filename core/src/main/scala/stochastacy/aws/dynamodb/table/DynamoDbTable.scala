@@ -262,7 +262,13 @@ object DynamoDbTable:
                            latencyModel: LatencyModel = LatencyModel.awsDefault,
                            tableClass: TableClass = TableClass.Standard,
                            ttlSampler: Option[TtlSampler] = None,
-                           pointInTimeRecoveryEnabled: Boolean = false
+                           pointInTimeRecoveryEnabled: Boolean = false,
+                           /** Wall-clock duration of one simulation tick, in seconds.
+                            *  Used to convert sampled millisecond latencies into
+                            *  `intraTick` offsets on response events.  The default of
+                            *  1.0 matches the standard one-second-per-tick convention
+                            *  used by all existing demo runners. */
+                           tickDurationSeconds: Double = 1.0
                          ):
     Config.validate(this)
 
@@ -511,8 +517,8 @@ object DynamoDbTable:
            _: PartiQLQueryRequest | _: TransactWriteItemsRequest | _: TransactGetItemsRequest =>
         RouteBranch.BaseTable
 
-      case QueryRequest(_, _, target, _, _, _) => routeForReadTarget(config, target)
-      case ScanRequest(_, _, target, _, _, _) => routeForReadTarget(config, target)
+      case QueryRequest(_, _, target, _, _, _, _) => routeForReadTarget(config, target)
+      case ScanRequest(_, _, target, _, _, _, _) => routeForReadTarget(config, target)
 
   private def validateRequest(config: Config, request: DynamoDBRequest): Unit =
     request match
@@ -839,7 +845,8 @@ object DynamoDbTable:
                            pitrStateRef: Option[PITRStateRef] = None,
                            systemErrorRate: Double = 0.0,
                            latencyModel: LatencyModel = LatencyModel.awsDefault,
-                           ttlSampler: Option[TtlSampler] = None
+                           ttlSampler: Option[TtlSampler] = None,
+                           tickDurationSeconds: Double = 1.0
                          ): Graph[
     FanOutShape3[
       TimedElement[DynamoDBRequest],
@@ -889,15 +896,16 @@ object DynamoDbTable:
       )
       val storage = b.add(
         TableStorageStage.componentOfAdmitted(
-          stateModel = stateModel,
-          indexProjection = indexProjection,
+          stateModel               = stateModel,
+          indexProjection          = indexProjection,
           itemCollectionSizeLimitBytes = itemCollectionSizeLimitBytes,
-          systemErrorRate = systemErrorRate,
-          rng = storageRng,
-          latencyModel = latencyModel,
-          latencyRng = latencyRng,
-          ttlSampler = ttlSampler,
-          pitrStateRef = pitrStateRef
+          systemErrorRate          = systemErrorRate,
+          rng                      = storageRng,
+          latencyModel             = latencyModel,
+          latencyRng               = latencyRng,
+          ttlSampler               = ttlSampler,
+          pitrStateRef             = pitrStateRef,
+          tickDurationSeconds      = tickDurationSeconds
         )
       )
       val throttledResponseFilter = b.add(
@@ -1003,7 +1011,8 @@ object DynamoDbTable:
         pitrStateRef = Some(new PITRStateRef(config.pointInTimeRecoveryEnabled)),
         systemErrorRate = config.systemErrorRate,
         latencyModel = config.latencyModel,
-        ttlSampler = config.ttlSampler
+        ttlSampler = config.ttlSampler,
+        tickDurationSeconds = config.tickDurationSeconds
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -1110,7 +1119,8 @@ object DynamoDbTable:
                 },
               billingMode = config.billingMode,
               systemErrorRate = config.systemErrorRate,
-              latencyModel = config.latencyModel
+              latencyModel = config.latencyModel,
+              tickDurationSeconds = config.tickDurationSeconds
             )
           )
 
@@ -1176,7 +1186,8 @@ object DynamoDbTable:
                 },
               billingMode = config.billingMode,
               systemErrorRate = config.systemErrorRate,
-              latencyModel = config.latencyModel
+              latencyModel = config.latencyModel,
+              tickDurationSeconds = config.tickDurationSeconds
             )
           )
 
@@ -1261,7 +1272,8 @@ object DynamoDbTable:
         pitrStateRef = Some(pitrRef),
         systemErrorRate = config.systemErrorRate,
         latencyModel = config.latencyModel,
-        ttlSampler = config.ttlSampler
+        ttlSampler = config.ttlSampler,
+        tickDurationSeconds = config.tickDurationSeconds
       )
 
     val globalSecondaryIndexes = config.globalSecondaryIndexes
@@ -1368,7 +1380,8 @@ object DynamoDbTable:
                 billingMode = config.billingMode,
                 billingModeRef = Some(billingModeRef),
                 systemErrorRate = config.systemErrorRate,
-                latencyModel = config.latencyModel
+                latencyModel = config.latencyModel,
+                tickDurationSeconds = config.tickDurationSeconds
               )
             )
 
@@ -1435,7 +1448,8 @@ object DynamoDbTable:
                 billingMode = config.billingMode,
                 billingModeRef = Some(billingModeRef),
                 systemErrorRate = config.systemErrorRate,
-                latencyModel = config.latencyModel
+                latencyModel = config.latencyModel,
+                tickDurationSeconds = config.tickDurationSeconds
               )
             )
 
@@ -1693,14 +1707,15 @@ object DynamoDbTable:
       )
       val storage = b.add(
         TableStorageStage.componentOfAdmitted(
-          stateModel = config.stateModel,
-          indexProjection = None,
+          stateModel               = config.stateModel,
+          indexProjection          = None,
           itemCollectionSizeLimitBytes = config.effectiveItemCollectionSizeLimitBytes,
-          systemErrorRate = config.systemErrorRate,
-          rng = replicatedStorageRng,
-          latencyModel = config.latencyModel,
-          latencyRng = replicatedLatencyRng,
-          ttlSampler = config.ttlSampler
+          systemErrorRate          = config.systemErrorRate,
+          rng                      = replicatedStorageRng,
+          latencyModel             = config.latencyModel,
+          latencyRng               = replicatedLatencyRng,
+          ttlSampler               = config.ttlSampler,
+          tickDurationSeconds      = config.tickDurationSeconds
         )
       )
 
@@ -1892,7 +1907,8 @@ object DynamoDbTable:
               billingMode = config.billingMode,
               billingModeRef = billingModeRef,
               systemErrorRate = config.systemErrorRate,
-              latencyModel = config.latencyModel
+              latencyModel = config.latencyModel,
+              tickDurationSeconds = config.tickDurationSeconds
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> gsiStage.in
@@ -1955,7 +1971,8 @@ object DynamoDbTable:
               billingMode = config.billingMode,
               billingModeRef = billingModeRef,
               systemErrorRate = config.systemErrorRate,
-              latencyModel = config.latencyModel
+              latencyModel = config.latencyModel,
+              tickDurationSeconds = config.tickDurationSeconds
             )
           )
           requestBroadcast.out(broadcastIdx) ~> requestFilter ~> lsiStage.in

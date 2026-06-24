@@ -44,7 +44,8 @@ object OrderTrackingBridgeCommand:
                              outputPath: Path,
                              trialCount: Int,
                              parallelism: Int,
-                             simulationTicks: Long
+                             simulationTicks: Long,
+                             startEpochSeconds: Long
                            ) extends OrderTrackingBridgeCommand
 
   final case class Stage(
@@ -62,8 +63,11 @@ object OrderTrackingBridgeCommand:
                        ) extends OrderTrackingBridgeCommand
 
 object OrderTrackingPhase2BridgeCli:
+  // Midnight May 1, 2026 Pacific Daylight Time (UTC-7) = 2026-05-01T07:00:00Z
+  val DefaultStartEpochSeconds: Long = 1_777_618_800L
+
   private val GenerateUsage =
-    "usage: OrderTrackingPhase2Bridge generate --output <path> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>]"
+    "usage: OrderTrackingPhase2Bridge generate --output <path> [--batch-id <id>] [--trial-count <int>] [--parallelism <int>] [--simulation-ticks <long>] [--start-time <iso8601>]"
   private val StageUsage =
     "usage: OrderTrackingPhase2Bridge stage --input <path> --batch-id <id> --db-url <jdbc-url> --db-user <user> --db-password <password> --trial-count <int> --parallelism <int> --simulation-ticks <long> [--scenario-id <id>] [--read-consistency <value>] [--table-name <name>]"
   private val ViewUsage =
@@ -97,7 +101,8 @@ object OrderTrackingPhase2BridgeCli:
               batchId: Option[String],
               trialCount: Option[Int],
               parallelism: Option[Int],
-              simulationTicks: Option[Long]
+              simulationTicks: Option[Long],
+              startEpochSeconds: Option[Long]
             ): Either[String, OrderTrackingBridgeCommand.Generate] =
       remaining match
         case Nil =>
@@ -109,7 +114,8 @@ object OrderTrackingPhase2BridgeCli:
                   outputPath = path,
                   trialCount = trialCount.getOrElse(defaults.trialCount),
                   parallelism = parallelism.getOrElse(defaults.parallelism),
-                  simulationTicks = simulationTicks.getOrElse(defaults.simulationTicks)
+                  simulationTicks = simulationTicks.getOrElse(defaults.simulationTicks),
+                  startEpochSeconds = startEpochSeconds.getOrElse(DefaultStartEpochSeconds)
                 )
               )
             case None =>
@@ -117,28 +123,34 @@ object OrderTrackingPhase2BridgeCli:
 
         case "--output" :: value :: tail =>
           if outputPath.nonEmpty then Left(s"duplicate flag: --output\n$GenerateUsage")
-          else loop(tail, Some(Path.of(value)), batchId, trialCount, parallelism, simulationTicks)
+          else loop(tail, Some(Path.of(value)), batchId, trialCount, parallelism, simulationTicks, startEpochSeconds)
 
         case "--batch-id" :: value :: tail =>
           if batchId.nonEmpty then Left(s"duplicate flag: --batch-id\n$GenerateUsage")
-          else loop(tail, outputPath, Some(value), trialCount, parallelism, simulationTicks)
+          else loop(tail, outputPath, Some(value), trialCount, parallelism, simulationTicks, startEpochSeconds)
 
         case "--trial-count" :: value :: tail =>
           if trialCount.nonEmpty then Left(s"duplicate flag: --trial-count\n$GenerateUsage")
           else parseIntFlag("--trial-count", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, Some(parsed), parallelism, simulationTicks)
+            loop(tail, outputPath, batchId, Some(parsed), parallelism, simulationTicks, startEpochSeconds)
           )
 
         case "--parallelism" :: value :: tail =>
           if parallelism.nonEmpty then Left(s"duplicate flag: --parallelism\n$GenerateUsage")
           else parseIntFlag("--parallelism", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, trialCount, Some(parsed), simulationTicks)
+            loop(tail, outputPath, batchId, trialCount, Some(parsed), simulationTicks, startEpochSeconds)
           )
 
         case "--simulation-ticks" :: value :: tail =>
           if simulationTicks.nonEmpty then Left(s"duplicate flag: --simulation-ticks\n$GenerateUsage")
           else parseLongFlag("--simulation-ticks", value, GenerateUsage).flatMap(parsed =>
-            loop(tail, outputPath, batchId, trialCount, parallelism, Some(parsed))
+            loop(tail, outputPath, batchId, trialCount, parallelism, Some(parsed), startEpochSeconds)
+          )
+
+        case "--start-time" :: value :: tail =>
+          if startEpochSeconds.nonEmpty then Left(s"duplicate flag: --start-time\n$GenerateUsage")
+          else parseStartTimeFlag(value, GenerateUsage).flatMap(parsed =>
+            loop(tail, outputPath, batchId, trialCount, parallelism, simulationTicks, Some(parsed))
           )
 
         case flag :: Nil if flag.startsWith("--") =>
@@ -150,7 +162,7 @@ object OrderTrackingPhase2BridgeCli:
         case value :: _ =>
           Left(s"unexpected argument: $value\n$GenerateUsage")
 
-    loop(args, None, None, None, None, None)
+    loop(args, None, None, None, None, None, None)
 
   private def parseStage(
                           args: List[String]
@@ -318,12 +330,29 @@ object OrderTrackingPhase2BridgeCli:
       else Right(parsed)
     }
 
+  private def parseStartTimeFlag(value: String, usage: String): Either[String, Long] =
+    Try(java.time.ZonedDateTime.parse(value).toEpochSecond)
+      .toEither.left.map(_ =>
+        s"invalid ISO-8601 datetime for --start-time: '$value' (example: 2026-05-01T00:00:00-07:00)\n$usage"
+      )
+
   private def defaultBatchId(now: ZonedDateTime): String =
     val formatter = DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
     s"order-tracking-phase2-${now.format(formatter)}"
 
 object OrderTrackingPhase2DemoRunner:
   val Phase2BaseSeed: Long = 20260418L
+
+  /** Shift tick / windowStartTick fields in a record by `offsetSeconds`.
+   *  Summary records (no time column) are passed through unchanged.
+   */
+  private def applyTickOffset(record: DemoExportRecord, offsetSeconds: Long): DemoExportRecord =
+    record match
+      case r: DemoExportRecord.TrialTimeSeriesRecord          => r.copy(tick = r.tick + offsetSeconds)
+      case r: DemoExportRecord.TrialWindowTimeSeriesRecord    => r.copy(windowStartTick = r.windowStartTick + offsetSeconds)
+      case r: DemoExportRecord.AggregateTimeSeriesRecord      => r.copy(tick = r.tick + offsetSeconds)
+      case r: DemoExportRecord.AggregateWindowTimeSeriesRecord => r.copy(windowStartTick = r.windowStartTick + offsetSeconds)
+      case other                                               => other
 
   def run(
            options: OrderTrackingPhase2DemoOptions
@@ -372,7 +401,8 @@ object OrderTrackingPhase2DemoRunner:
     outputPath: Path,
     trialCount: Int,
     parallelism: Int,
-    simulationTicks: Long
+    simulationTicks: Long,
+    startEpochSeconds: Long
   )(using ActorSystem, Materializer, ExecutionContext): Future[String] =
     import org.apache.pekko.stream.scaladsl.{Source => PekkoSource}
     import org.json4s.jackson.Serialization
@@ -432,7 +462,7 @@ object OrderTrackingPhase2DemoRunner:
                 TimeWindowRollups.rollupTrialTimeSeries(trial.timeSeries, ws)
               )
             }
-        perTrialRecs.foreach(writeRecord)
+        perTrialRecs.map(applyTickOffset(_, startEpochSeconds)).foreach(writeRecord)
         val newCompleted = state.completedTrials + 1
         printProgress(newCompleted)
         state.copy(
@@ -452,7 +482,7 @@ object OrderTrackingPhase2DemoRunner:
                 finalState.windowedAgg(ws).toAggregatedWindowedPoints
               )
             }
-        aggRecs.foreach(writeRecord)
+        aggRecs.map(applyTickOffset(_, startEpochSeconds)).foreach(writeRecord)
         writer.flush()
         writer.close()
         println()
@@ -678,7 +708,8 @@ object OrderTrackingGrafanaView:
                   outputPath = generate.outputPath,
                   trialCount = generate.trialCount,
                   parallelism = generate.parallelism,
-                  simulationTicks = generate.simulationTicks
+                  simulationTicks = generate.simulationTicks,
+                  startEpochSeconds = generate.startEpochSeconds
                 ),
                 10.minutes
               )

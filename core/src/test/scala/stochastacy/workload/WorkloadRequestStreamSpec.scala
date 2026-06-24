@@ -46,7 +46,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
       val workload = WorkloadDefinition.ofIndependent("t", "test",
         Vector(RequestShapeDefinition.getItem(ConstantSampler(2))))
       val events = run(workload, ticks = 2L)
-      // Structure should be: Tick(1), req, req, Tick(2), req, req, Tick(3)
+      // Structure should be: Tick(1), req, req, Tick(2), req, req, Tick(3), EndOfTime
       events(0) shouldBe a[TimedControlEvent.Tick]
       events(3) shouldBe a[TimedControlEvent.Tick]
       events(6) shouldBe a[TimedControlEvent.Tick]
@@ -202,6 +202,71 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
         Vector(RequestShapeDefinition.getItem(ConstantSampler(1))))
       val rs = requests(run(workload, ticks = 3L))
       rs.map(_.eventTime) shouldBe Vector(SimTime.of(1), SimTime.of(2), SimTime.of(3))
+    }
+  }
+
+  // ── Protocol termination ───────────────────────────────────────────────────
+
+  "WorkloadRequestStream protocol termination" should {
+
+    "end with EndOfTime as the absolute last element" in {
+      run(noRequestsWorkload).last shouldBe TimedControlEvent.EndOfTime
+    }
+
+    "have the final flush Tick immediately before EndOfTime" in {
+      val events = run(noRequestsWorkload)
+      events(events.size - 2) shouldBe a[TimedControlEvent.Tick]
+      events.last              shouldBe TimedControlEvent.EndOfTime
+    }
+
+    "end with EndOfTime even when requests are present in the stream" in {
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
+        Vector(RequestShapeDefinition.getItem(ConstantSampler(3))))
+      run(workload, ticks = 5L).last shouldBe TimedControlEvent.EndOfTime
+    }
+  }
+
+  // ── intraTick arrivals ─────────────────────────────────────────────────────
+
+  "WorkloadRequestStream intraTick arrivals" should {
+
+    "stamp each request with intraTick in [0.0, 1.0)" in {
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
+        Vector(RequestShapeDefinition.putItem(ConstantSampler(10), ConstantSampler(64L))))
+      requests(run(workload, ticks = 5L)).foreach { r =>
+        r.intraTick should be >= 0.0
+        r.intraTick should be < 1.0
+      }
+    }
+
+    "produce non-degenerate intraTick values across many requests" in {
+      val workload = WorkloadDefinition.ofIndependent("t", "test",
+        Vector(RequestShapeDefinition.getItem(ConstantSampler(20))))
+      val vals = requests(run(workload, ticks = 10L)).map(_.intraTick)
+      vals should have size 200
+      // 200 Uniform(0,1) draws — probability all are exactly 0.0 is astronomically small
+      vals.exists(_ > 0.0) shouldBe true
+      vals.forall(_ >= 0.0) shouldBe true
+      vals.forall(_ < 1.0)  shouldBe true
+    }
+
+    "produce independent intraTick draws for different shapes" in {
+      val workload = WorkloadDefinition.ofIndependent("t", "test", Vector(
+        RequestShapeDefinition.getItem(ConstantSampler(5)),
+        RequestShapeDefinition.putItem(ConstantSampler(5), ConstantSampler(64L))
+      ))
+      val rs   = requests(run(workload, ticks = 10L))
+      val gets = rs.collect { case r: GetItemRequest => r.intraTick }
+      val puts = rs.collect { case r: PutItemRequest => r.intraTick }
+      // Each shape uses its own independent RNG, so the sequences differ
+      gets should not equal puts
+    }
+
+    "control events carry intraTick = 0.0" in {
+      val events = run(noRequestsWorkload)
+      events.collect { case t: TimedControlEvent => t }.foreach { t =>
+        t.intraTick shouldBe 0.0
+      }
     }
   }
 
