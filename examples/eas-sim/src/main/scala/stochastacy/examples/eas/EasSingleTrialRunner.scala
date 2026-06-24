@@ -117,14 +117,21 @@ final class EasSingleTrialRunner()(using ActorSystem, Materializer, ExecutionCon
       val alertsCostByTick = cumulativeCostByTick(alertsCons, config.simulationTicks, rates)
       val uasCostByTick    = cumulativeCostByTick(uasCons,    config.simulationTicks, rates)
 
+      val zeroCons = (BigDecimal(0), BigDecimal(0), 0L)
       val timeSeries = (1L to config.simulationTicks).flatMap { tick =>
         val alertsCost = alertsCostByTick.getOrElse(tick, BigDecimal(0))
         val uasCost    = uasCostByTick.getOrElse(tick,    BigDecimal(0))
         val totalCost  = alertsCost + uasCost
+        val (alertsRcu, alertsWcu, _) = alertsCons.getOrElse(tick, zeroCons)
+        val (uasRcu,    uasWcu,    _) = uasCons.getOrElse(tick,    zeroCons)
         Vector(
           SimulationTimeSeriesPoint(tick, DemoMetric.TableCumulativeEstimatedCost("alerts"),             alertsCost),
           SimulationTimeSeriesPoint(tick, DemoMetric.TableCumulativeEstimatedCost("user-alert-status"),  uasCost),
           SimulationTimeSeriesPoint(tick, DemoMetric.CumulativeEstimatedCost,                            totalCost),
+          SimulationTimeSeriesPoint(tick, DemoMetric.TableReadCapacityUnits("alerts"),                   alertsRcu),
+          SimulationTimeSeriesPoint(tick, DemoMetric.TableWriteCapacityUnits("alerts"),                  alertsWcu),
+          SimulationTimeSeriesPoint(tick, DemoMetric.TableReadCapacityUnits("user-alert-status"),        uasRcu),
+          SimulationTimeSeriesPoint(tick, DemoMetric.TableWriteCapacityUnits("user-alert-status"),       uasWcu),
           SimulationTimeSeriesPoint(tick, DemoMetric.TableThrottleCount("alerts"),
             BigDecimal(throttleMap.getOrElse(tick, 0L))),
           SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-poll"),
