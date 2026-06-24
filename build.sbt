@@ -80,8 +80,21 @@ lazy val visualizer = (project in file("visualizer"))
     Test / classLoaderLayeringStrategy := ClassLoaderLayeringStrategy.Flat
   )
 
+lazy val easSim = (project in file("examples/eas-sim"))
+  .dependsOn(core, examples)
+  .settings(
+    name := "stochastacy-eas-sim",
+    version := "0.0.1",
+    libraryDependencies ++= Seq(
+      "ch.qos.logback"  %  "logback-classic" % Versions.logbackClassicVersion,
+      "org.postgresql"  %  "postgresql"       % "42.7.4",
+      "org.scalatest"   %% "scalatest"        % Versions.scalatestVersion % "test",
+      "com.h2database"  %  "h2"               % "2.2.224"                 % "test"
+    )
+  )
+
 lazy val root = (project in file("."))
-  .aggregate(core, examples, visualizer)
+  .aggregate(core, examples, visualizer, easSim)
   .settings(
     publish / skip := true
   )

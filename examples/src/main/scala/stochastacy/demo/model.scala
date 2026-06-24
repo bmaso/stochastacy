@@ -62,6 +62,8 @@ enum DemoMetric:
   case TableEstimatedItemCount(tableName: String)
   case TableSystemErrorCount(tableName: String)
   case TablePITRCumulativeCost(tableName: String)
+  // Workload-system flow metrics (any demo using WorkloadDefinition / FollowOnTransformerStage)
+  case FlowArrivals(flowId: String)
 
   def exportName: String =
     this match
@@ -123,6 +125,7 @@ enum DemoMetric:
       case DemoMetric.TableEstimatedItemCount(t)           => s"Table:$t:EstimatedItemCount"
       case DemoMetric.TableSystemErrorCount(t)             => s"Table:$t:SystemErrorCount"
       case DemoMetric.TablePITRCumulativeCost(t)           => s"Table:$t:PITRCumulativeCost"
+      case DemoMetric.FlowArrivals(flowId)                 => s"Flow:$flowId:Arrivals"
 
   def sortKey: (Int, String) =
     this match
@@ -184,6 +187,7 @@ enum DemoMetric:
       case DemoMetric.TableEstimatedItemCount(t)           => (55, t)
       case DemoMetric.TableSystemErrorCount(t)             => (56, t)
       case DemoMetric.TablePITRCumulativeCost(t)           => (57, t)
+      case DemoMetric.FlowArrivals(flowId)                 => (60, flowId)
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)
