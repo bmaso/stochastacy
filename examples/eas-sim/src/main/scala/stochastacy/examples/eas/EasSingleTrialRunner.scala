@@ -135,11 +135,15 @@ final class EasSingleTrialRunner()(using ActorSystem, Materializer, ExecutionCon
           SimulationTimeSeriesPoint(tick, DemoMetric.TableThrottleCount("alerts"),
             BigDecimal(throttleMap.getOrElse(tick, 0L))),
           SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-poll"),
-            BigDecimal(flowCounts.getOrElse((tick, "a1-poll"),  0L))),
-          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-retry"),
-            BigDecimal(flowCounts.getOrElse((tick, "a1-retry"), 0L))),
+            BigDecimal(flowCounts.getOrElse((tick, "a1-poll"),    0L))),
+          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-retry-1"),
+            BigDecimal(flowCounts.getOrElse((tick, "a1-retry-1"), 0L))),
+          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-retry-2"),
+            BigDecimal(flowCounts.getOrElse((tick, "a1-retry-2"), 0L))),
+          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-retry-3"),
+            BigDecimal(flowCounts.getOrElse((tick, "a1-retry-3"), 0L))),
           SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a2-fetch"),
-            BigDecimal(flowCounts.getOrElse((tick, "a2-fetch"), 0L)))
+            BigDecimal(flowCounts.getOrElse((tick, "a2-fetch"),   0L)))
         )
       }.toVector
 

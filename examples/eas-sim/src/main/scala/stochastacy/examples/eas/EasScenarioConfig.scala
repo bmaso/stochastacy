@@ -30,9 +30,16 @@ case class EasScenarioConfig(
 
   /**
    * Alerts-table workload:
-   *   - A1 baseline: Poisson(sinusoid(400, 400×M, 900, 450)) Query on GSI by-region-index
-   *   - A3 write:    Poisson(0.2 in [295,305], else 0) PutItem with constant 4500-byte items
-   *   - A1 retry:    Retry of a1-poll on throttle, proportion=0.90, lag=1
+   *   - A1 baseline:  Poisson(sinusoid(400, 400×M, 900, 450)) Query on GSI by-region-index
+   *   - A3 write:     Poisson(0.2 in [295,305], else 0) PutItem with constant 4500-byte items
+   *   - A1 retry chain: three-attempt client-side retry with exponential backoff lag,
+   *                     modelling AWS SDK default behaviour:
+   *                       a1-retry-1 of a1-poll      (lag=1, proportion=0.90)
+   *                       a1-retry-2 of a1-retry-1   (lag=2, proportion=0.90)
+   *                       a1-retry-3 of a1-retry-2   (lag=4, proportion=0.90)
+   *                     Each attempt only fires when its predecessor was throttled.  The
+   *                     geometric backoff means a peak burst's retries continue echoing
+   *                     for ~7 ticks past the original failure.
    *   - A2 follow-on: FollowOn of a1-poll on success, proportion=0.70, lag=1, GetItem
    */
   def toAlertsWorkload: WorkloadDefinition =
@@ -60,11 +67,25 @@ case class EasScenarioConfig(
           )
         ),
         FlowDefinition.Retry(
-          id           = "a1-retry",
+          id           = "a1-retry-1",
           sourceId     = "alerts",
           sourceFlowId = "a1-poll",
           proportion   = 0.90,
           lagTicks     = 1
+        ),
+        FlowDefinition.Retry(
+          id           = "a1-retry-2",
+          sourceId     = "alerts",
+          sourceFlowId = "a1-retry-1",
+          proportion   = 0.90,
+          lagTicks     = 2
+        ),
+        FlowDefinition.Retry(
+          id           = "a1-retry-3",
+          sourceId     = "alerts",
+          sourceFlowId = "a1-retry-2",
+          proportion   = 0.90,
+          lagTicks     = 4
         ),
         FlowDefinition.FollowOn(
           id           = "a2-fetch",

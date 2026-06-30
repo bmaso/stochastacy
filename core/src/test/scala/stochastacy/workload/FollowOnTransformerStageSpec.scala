@@ -349,3 +349,111 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
       tick2Idx should be < reqIdx
     }
   }
+
+  // ── Test 8: resolveFlows — Retry chain resolution + cycle detection ──────
+
+  "FollowOnTransformerStage.resolveFlows" should {
+
+    val getShape: RequestShape = RequestShape.GetItem
+    val putShape: RequestShape = RequestShape.PutItem(ConstantSampler(64L))
+
+    "resolve a Retry-of-Retry-of-Retry chain terminating at an Independent flow" in {
+      val workload = WorkloadDefinition(
+        tableName = "t",
+        usecase   = "uc",
+        flows     = Vector(
+          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "base", proportion = 0.5, lagTicks = 1),
+          FlowDefinition.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1",   proportion = 0.5, lagTicks = 2),
+          FlowDefinition.Retry(id = "r3", sourceId = "uc", sourceFlowId = "r2",   proportion = 0.5, lagTicks = 4)
+        )
+      )
+      val resolved = FollowOnTransformerStage.resolveFlows(workload, Map("uc" -> workload))
+      resolved.map(_.id)    shouldBe Vector("r1", "r2", "r3")
+      resolved.map(_.shape) shouldBe Vector(getShape, getShape, getShape)
+    }
+
+    "resolve a Retry chain terminating at a FollowOn flow" in {
+      val workload = WorkloadDefinition(
+        tableName = "t",
+        usecase   = "uc",
+        flows     = Vector(
+          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.FollowOn(id = "fo", sourceId = "uc", sourceFlowId = "base",
+            outcome = OutcomeFilter.Success, proportion = 0.5, lagTicks = 1, shape = putShape),
+          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "fo", proportion = 0.5, lagTicks = 1),
+          FlowDefinition.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 2)
+        )
+      )
+      val resolved = FollowOnTransformerStage.resolveFlows(workload, Map("uc" -> workload))
+      resolved.find(_.id == "r2").map(_.shape) shouldBe Some(putShape)
+    }
+
+    "reject a Retry that points at itself (self-cycle)" in {
+      val workload = WorkloadDefinition(
+        tableName = "t",
+        usecase   = "uc",
+        flows     = Vector(
+          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 1)
+        )
+      )
+      val ex = intercept[IllegalArgumentException] {
+        FollowOnTransformerStage.resolveFlows(workload, Map("uc" -> workload))
+      }
+      ex.getMessage should include("cyclic source chain")
+      ex.getMessage should include("uc.r1")
+    }
+
+    "reject a Retry chain with an indirect cycle (r1 → r2 → r1)" in {
+      val workload = WorkloadDefinition(
+        tableName = "t",
+        usecase   = "uc",
+        flows     = Vector(
+          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "r2", proportion = 0.5, lagTicks = 1),
+          FlowDefinition.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 1)
+        )
+      )
+      val ex = intercept[IllegalArgumentException] {
+        FollowOnTransformerStage.resolveFlows(workload, Map("uc" -> workload))
+      }
+      ex.getMessage should include("cyclic source chain")
+    }
+
+    "still reject Retry referencing a flow that does not exist" in {
+      val workload = WorkloadDefinition(
+        tableName = "t",
+        usecase   = "uc",
+        flows     = Vector(
+          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "nope", proportion = 0.5, lagTicks = 1)
+        )
+      )
+      val ex = intercept[IllegalArgumentException] {
+        FollowOnTransformerStage.resolveFlows(workload, Map("uc" -> workload))
+      }
+      ex.getMessage should include("unknown source flow 'nope'")
+    }
+
+    "resolve a cross-workload Retry chain" in {
+      val wA = WorkloadDefinition(
+        tableName = "tA",
+        usecase   = "wA",
+        flows     = Vector(
+          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = putShape))
+        )
+      )
+      val wB = WorkloadDefinition(
+        tableName = "tB",
+        usecase   = "wB",
+        flows     = Vector(
+          FlowDefinition.Retry(id = "r1", sourceId = "wA", sourceFlowId = "base", proportion = 0.5, lagTicks = 1),
+          FlowDefinition.Retry(id = "r2", sourceId = "wB", sourceFlowId = "r1",   proportion = 0.5, lagTicks = 2)
+        )
+      )
+      val resolved = FollowOnTransformerStage.resolveFlows(wB, Map("wA" -> wA, "wB" -> wB))
+      resolved.map(_.id)    shouldBe Vector("r1", "r2")
+      resolved.map(_.shape) shouldBe Vector(putShape, putShape)
+    }
+  }

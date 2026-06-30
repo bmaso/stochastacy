@@ -173,9 +173,12 @@ object FollowOnTransformerStage:
    * into `ResolvedDerivedFlow` instances ready for use by `FollowOnTransformerStage`.
    *
    * For `FollowOn`: straightforward projection of the ADT fields.
-   * For `Retry`:    the request shape is copied from the source flow (must be Independent or
-   *                 FollowOn; chaining Retry-of-Retry is not allowed); outcome is always
-   *                 `Throttled`.
+   * For `Retry`:    the request shape is resolved by walking the source-flow chain until
+   *                 an `Independent` or `FollowOn` is reached.  Retry-of-Retry chaining is
+   *                 supported, enabling explicit multi-attempt client-retry simulation
+   *                 (e.g., AWS SDK exponential backoff modelled as three chained Retry
+   *                 flows with lagTicks=1,2,4).  Cycles in the source chain are detected
+   *                 and rejected.
    *
    * @param workload     The workload whose derived flows are being resolved.
    * @param allWorkloads All known workloads keyed by their `usecase` name, used to resolve
@@ -190,27 +193,41 @@ object FollowOnTransformerStage:
         ResolvedDerivedFlow(id, sourceFlowId, outcome, proportion, lagTicks, shape, workload.usecase)
 
       case FlowDefinition.Retry(id, sourceId, sourceFlowId, proportion, lagTicks) =>
-        val sourceWorkload = allWorkloads.getOrElse(
-          sourceId,
-          throw IllegalArgumentException(
-            s"Retry flow '$id' references unknown source workload '$sourceId'"
-          )
-        )
-        val sourceFlow = sourceWorkload.flows.find(_.id == sourceFlowId).getOrElse(
-          throw IllegalArgumentException(
-            s"Retry flow '$id' references unknown source flow '$sourceFlowId' in workload '$sourceId'"
-          )
-        )
-        val shape = sourceFlow match
-          case FlowDefinition.Independent(_, defn)            => defn.shape
-          case FlowDefinition.FollowOn(_, _, _, _, _, _, sh)  => sh
-          case FlowDefinition.Retry(_, _, _, _, _)            =>
-            throw IllegalArgumentException(
-              s"Retry flow '$id' references source flow '$sourceFlowId' which is itself a Retry; chaining Retry-of-Retry is not supported"
-            )
+        val shape = resolveSourceShape(sourceId, sourceFlowId, id, allWorkloads, Set.empty)
         ResolvedDerivedFlow(id, sourceFlowId, OutcomeFilter.Throttled, proportion, lagTicks, shape, workload.usecase)
 
       case f =>
         // Independent flows are excluded by derivedFlows; this case should not be reached.
         throw IllegalStateException(s"Unexpected FlowDefinition in derivedFlows: $f")
     }
+
+  /** Walks the source chain of a Retry to find the underlying `RequestShape`.  Recurses
+   *  through nested Retry references; terminates on Independent or FollowOn.  Tracks
+   *  `(workloadId, flowId)` pairs already visited to reject cyclic source chains. */
+  private def resolveSourceShape(
+    workloadId:   String,
+    flowId:       String,
+    retryId:      String,
+    allWorkloads: Map[String, WorkloadDefinition],
+    visited:      Set[(String, String)]
+  ): RequestShape =
+    if visited.contains((workloadId, flowId)) then
+      throw IllegalArgumentException(
+        s"Retry flow '$retryId' has a cyclic source chain — '$workloadId.$flowId' is referenced twice"
+      )
+    val sourceWorkload = allWorkloads.getOrElse(
+      workloadId,
+      throw IllegalArgumentException(
+        s"Retry flow '$retryId' references unknown source workload '$workloadId'"
+      )
+    )
+    val sourceFlow = sourceWorkload.flows.find(_.id == flowId).getOrElse(
+      throw IllegalArgumentException(
+        s"Retry flow '$retryId' references unknown source flow '$flowId' in workload '$workloadId'"
+      )
+    )
+    sourceFlow match
+      case FlowDefinition.Independent(_, defn)            => defn.shape
+      case FlowDefinition.FollowOn(_, _, _, _, _, _, sh)  => sh
+      case FlowDefinition.Retry(_, sId, sFid, _, _)       =>
+        resolveSourceShape(sId, sFid, retryId, allWorkloads, visited + ((workloadId, flowId)))

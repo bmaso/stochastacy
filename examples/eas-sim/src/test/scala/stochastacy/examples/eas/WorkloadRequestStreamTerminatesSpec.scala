@@ -41,11 +41,14 @@ class WorkloadRequestStreamTerminatesSpec extends AnyWordSpec with Matchers:
 
     "emit only independent-flow ids (a1-poll, a3-write) — no derived ids" in {
       // WorkloadRequestStream only runs the Independent flows.  Retry and FollowOn
-      // ids (a1-retry, a2-fetch) must NOT appear here; they come from FollowOnTransformerStage.
+      // ids (a1-retry-1, a1-retry-2, a1-retry-3, a2-fetch) must NOT appear here;
+      // they come from FollowOnTransformerStage.
       val rng      = RandomSource.KISS.create(42L)
       val elements = WorkloadRequestStream(config.toAlertsWorkload, rng, SimTicks).toVector
       val flowIds  = elements.collect { case r: DynamoDBRequest => r }.flatMap(_.flowId).toSet
-      flowIds should not contain "a1-retry"
+      flowIds should not contain "a1-retry-1"
+      flowIds should not contain "a1-retry-2"
+      flowIds should not contain "a1-retry-3"
       flowIds should not contain "a2-fetch"
       flowIds.foreach { fid =>
         fid should (equal("a1-poll") or equal("a3-write"))
