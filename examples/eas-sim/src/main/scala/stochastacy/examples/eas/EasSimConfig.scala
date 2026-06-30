@@ -3,6 +3,14 @@ package stochastacy.examples.eas
 /**
  * Configuration for the alerts table UseCaseSampler.
  *
+ * Default values are calibrated to produce partial GSI saturation at the sinusoidal peak,
+ * so the IIR retry chain is visible but the FIR success follow-on isn't completely
+ * choked off. Mean evaluatedBytes ≈ 7.5 KB → ~1.0 RCU per eventually-consistent query
+ * with variance up to ~1.5 RCU. At burst multiplier 7.6 the peak rate of ~3040 polls/sec
+ * puts offered RCU near or slightly over the configured 3000 RCU/s GSI partition cap,
+ * producing throttle rates that vary across the burst envelope rather than running
+ * fully saturated for many ticks.
+ *
  * @param region                 GSI partition key used by all A1 Query requests.
  *                               Fixed for all queries — this is the hot partition.
  * @param alertId                Base-table partition key used by A2 GetItem and A3 PutItem.
@@ -20,10 +28,10 @@ package stochastacy.examples.eas
 case class EasAlertsConfig(
   region:                 String = "northeast",
   alertId:                String = "alert-001",
-  projectedItemMinBytes:  Long   = 100L,
-  projectedItemMaxBytes:  Long   = 250L,
-  scannedItemsMin:        Int    = 1,
-  scannedItemsMax:        Int    = 3,
+  projectedItemMinBytes:  Long   = 400L,
+  projectedItemMaxBytes:  Long   = 600L,
+  scannedItemsMin:        Int    = 10,
+  scannedItemsMax:        Int    = 20,
   fullItemLogNormalMu:    Double = 8.41,
   fullItemLogNormalSigma: Double = 0.4
 ):
