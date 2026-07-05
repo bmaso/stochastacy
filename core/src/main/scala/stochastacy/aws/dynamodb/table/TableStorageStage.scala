@@ -313,7 +313,8 @@ object TableStorageStage:
               itemFound = s.itemBytes.isDefined,
               itemBytes = s.itemBytes,
               intraTick = respIntraTick,
-              flowId = r.flowId
+              flowId = r.flowId,
+              clientAttempt = r.clientAttempt
             )
 
           case AdmittedQuerySample(r, executionTarget, _, s, _, _) =>
@@ -338,7 +339,8 @@ object TableStorageStage:
               returnedItemCount = s.returnedItemCount,
               returnedBytes = effectiveSample.returnedBytes,
               intraTick = respIntraTick,
-              flowId = r.flowId
+              flowId = r.flowId,
+              clientAttempt = r.clientAttempt
             )
 
           case AdmittedScanSample(r, executionTarget, _, s, _, _) =>
@@ -363,7 +365,8 @@ object TableStorageStage:
               returnedItemCount = s.returnedItemCount,
               returnedBytes = effectiveSample.returnedBytes,
               intraTick = respIntraTick,
-              flowId = r.flowId
+              flowId = r.flowId,
+              clientAttempt = r.clientAttempt
             )
 
           case AdmittedPutItemSample(r, _, _, s, _, _, _) =>
@@ -375,7 +378,8 @@ object TableStorageStage:
               createdNewItem = s.createdNewItem,
               previousItemBytes = s.previousItemBytes,
               intraTick = respIntraTick,
-              flowId = r.flowId
+              flowId = r.flowId,
+              clientAttempt = r.clientAttempt
             )
 
           case AdmittedUpdateItemSample(r, _, _, s, _, _, _) =>
@@ -387,7 +391,8 @@ object TableStorageStage:
               createdNewItem = s.createdNewItem,
               previousItemBytes = s.previousItemBytes,
               intraTick = respIntraTick,
-              flowId = r.flowId
+              flowId = r.flowId,
+              clientAttempt = r.clientAttempt
             )
 
           case AdmittedDeleteItemSample(r, _, _, s, _, _, _) =>
@@ -397,7 +402,8 @@ object TableStorageStage:
               usecase = r.usecase,
               deletedItemBytes = s.deletedItemBytes,
               intraTick = respIntraTick,
-              flowId = r.flowId
+              flowId = r.flowId,
+              clientAttempt = r.clientAttempt
             )
 
           case AdmittedTransactWriteItemsSample(r, _, _, s, _, _, _, _) =>
@@ -407,7 +413,8 @@ object TableStorageStage:
               usecase = r.usecase,
               itemCount = s.itemCount,
               intraTick = respIntraTick,
-              flowId = r.flowId
+              flowId = r.flowId,
+              clientAttempt = r.clientAttempt
             )
 
           case AdmittedTransactGetItemsSample(r, _, _, s, _, _) =>
@@ -417,7 +424,8 @@ object TableStorageStage:
               usecase = r.usecase,
               items = s.items.map(_.itemBytes),
               intraTick = respIntraTick,
-              flowId = r.flowId
+              flowId = r.flowId,
+              clientAttempt = r.clientAttempt
             )
 
       val responseFlow = b.add(
@@ -432,7 +440,8 @@ object TableStorageStage:
               target = rejection.target,
               resultingCollectionBytes = rejection.resultingCollectionBytes,
               limitBytes = rejection.limitBytes,
-              flowId = rejection.request.flowId
+              flowId = rejection.request.flowId,
+              clientAttempt = rejection.request.clientAttempt
             ))
           case err: StorageSystemError =>
             List(SystemErrorResponse(
@@ -440,7 +449,8 @@ object TableStorageStage:
               usecase = err.usecase,
               operation = err.operation,
               target = err.target,
-              flowId = err.request.flowId
+              flowId = err.request.flowId,
+              clientAttempt = err.request.clientAttempt
             ))
           case StorageAdmitted(sample, latencyMs) => List(responseForSample(sample, latencyMs))
         }

@@ -540,7 +540,8 @@ object TableAdmissionStage:
           target = target,
           dimension = dimension,
           reason = reason,
-          flowId = shaped.req.flowId
+          flowId = shaped.req.flowId,
+          clientAttempt = shaped.req.clientAttempt
         ),
         metric = metricForThrottleShaped(
           shaped,

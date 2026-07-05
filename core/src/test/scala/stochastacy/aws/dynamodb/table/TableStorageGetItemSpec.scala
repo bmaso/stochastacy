@@ -57,7 +57,7 @@ class TableStorageStageGetItemSpec extends AnyWordSpec with should.Matchers:
       metricsProbe.request(100)
       val responses = responseProbe.request(10).expectNextN(10)
       responses.foreach {
-        case GetItemResponse(_, "get-miss", false, None, _, _) => succeed
+        case GetItemResponse(_, "get-miss", false, None, _, _, _) => succeed
         case other =>
           fail(s"Unexpected response: $other")
       }
@@ -99,7 +99,7 @@ class TableStorageStageGetItemSpec extends AnyWordSpec with should.Matchers:
       metricsProbe.request(100)
       val responses = responseProbe.request(3).expectNextN(3)
       responses.foreach {
-        case GetItemResponse(_, "get-hit", true, Some(512L), _, _) => succeed
+        case GetItemResponse(_, "get-hit", true, Some(512L), _, _, _) => succeed
         case other =>
           fail(s"Unexpected response: $other")
       }
