@@ -82,6 +82,15 @@ sealed trait DynamoDBResponse extends AWSServiceResponseEvent:
    *  next-attempt retry (bounded by the strategy's `maxAttempts`). */
   def clientAttempt: Int
 
+  /** The client request that produced this response, if any.  `SdkClientStage`
+   *  uses it as the template when rebuilding a retry: same case class, same
+   *  usecase, same domain parameters (itemBytes, target, perItemBytes, etc.),
+   *  with updated `eventTime`, `intraTick`, and `clientAttempt`.
+   *
+   *  `None` for responses to management events (e.g., `ReconfigurationRejectedResponse`)
+   *  or for synthetic responses without an originating client request. */
+  def originalRequest: Option[DynamoDBRequest]
+
 sealed trait RequestedReadShape
 
 object RequestedReadShape:
@@ -163,9 +172,10 @@ case class GetItemResponse(
   override val usecase:   Any,
   itemFound:              Boolean,
   itemBytes:              Option[Long],
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 case class PutItemResponse(
@@ -174,9 +184,10 @@ case class PutItemResponse(
   storedItemBytes:        Long,
   createdNewItem:         Boolean,
   previousItemBytes:      Option[Long],
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 case class UpdateItemResponse(
@@ -185,18 +196,20 @@ case class UpdateItemResponse(
   storedItemBytes:        Long,
   createdNewItem:         Boolean,
   previousItemBytes:      Option[Long],
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 case class DeleteItemResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
   deletedItemBytes:       Option[Long],
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 case class QueryResponse(
@@ -208,9 +221,10 @@ case class QueryResponse(
   evaluatedBytes:         Long,
   returnedItemCount:      Long,
   returnedBytes:          Long,
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 case class ScanResponse(
@@ -222,18 +236,20 @@ case class ScanResponse(
   evaluatedBytes:         Long,
   returnedItemCount:      Long,
   returnedBytes:          Long,
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 case class PartiQLQueryResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
   queryText:              String,
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 case class ThrottledResponse(
@@ -243,9 +259,10 @@ case class ThrottledResponse(
   target:                 stochastacy.aws.dynamodb.table.DynamoDbTarget,
   dimension:              DynamoDbThroughputDimension,
   reason:                 DynamoDbThrottleReason,
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 /**
@@ -263,9 +280,10 @@ case class ItemCollectionSizeLimitExceededResponse(
   target:                    stochastacy.aws.dynamodb.table.DynamoDbTarget,
   resultingCollectionBytes:  Long,
   limitBytes:                Long,
-  override val intraTick:    Double         = 0.0,
-  flowId:                    Option[String] = None,
-  clientAttempt:             Int            = 0
+  override val intraTick:    Double                  = 0.0,
+  flowId:                    Option[String]          = None,
+  clientAttempt:             Int                     = 0,
+  originalRequest:           Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 /**
@@ -278,9 +296,10 @@ final case class SystemErrorResponse(
   override val usecase:   Any,
   operation:              DynamoDbOperationKind,
   target:                 stochastacy.aws.dynamodb.table.DynamoDbTarget,
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 /**
@@ -292,9 +311,10 @@ final case class ReconfigurationRejectedResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
   reason:                 String,
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 /**
@@ -330,17 +350,19 @@ case class TransactWriteItemsResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
   itemCount:              Int,
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse
 
 case class TransactGetItemsResponse(
   override val eventTime: SimTime,
   override val usecase:   Any,
   items:                  Vector[Option[Long]],
-  override val intraTick: Double         = 0.0,
-  flowId:                 Option[String] = None,
-  clientAttempt:          Int            = 0
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
 ) extends DynamoDBResponse:
   require(items.nonEmpty, "TransactGetItemsResponse.items must be non-empty")

@@ -1578,14 +1578,15 @@ object DynamoDbTable:
                 List(RwcuAdmitted(sample))
               else
                 List(RwcuThrottled(ThrottledResponse(
-                  eventTime     = sample.req.eventTime,
-                  usecase       = sample.req.usecase,
-                  operation     = DynamoDbOperationKind.fromRequest(sample.req),
-                  target        = sample.admissionTarget,
-                  dimension     = DynamoDbThroughputDimension.Write,
-                  reason        = DynamoDbThrottleReason.ReplicatedWriteCapacityExceeded,
-                  flowId        = sample.req.flowId,
-                  clientAttempt = sample.req.clientAttempt
+                  eventTime       = sample.req.eventTime,
+                  usecase         = sample.req.usecase,
+                  operation       = DynamoDbOperationKind.fromRequest(sample.req),
+                  target          = sample.admissionTarget,
+                  dimension       = DynamoDbThroughputDimension.Write,
+                  reason          = DynamoDbThrottleReason.ReplicatedWriteCapacityExceeded,
+                  flowId          = sample.req.flowId,
+                  clientAttempt   = sample.req.clientAttempt,
+                  originalRequest = Some(sample.req)
                 )))
 
             case other: AdmittedRequestSample =>

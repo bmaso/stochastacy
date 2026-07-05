@@ -46,6 +46,18 @@ final case class SdkRetryStrategy(
 
 object SdkRetryStrategy:
 
+  /** Default retryable-response classifier, matching typical AWS SDK behaviour:
+   *  retry throttling and transient server errors; do NOT retry validation
+   *  rejections, admission-policy failures, or successful responses.
+   *
+   *  Declared before the preset vals so the case class's default parameter can
+   *  resolve it during preset initialisation. */
+  val AwsDefaultRetryable: DynamoDBResponse => Boolean = {
+    case _: ThrottledResponse    => true
+    case _: SystemErrorResponse  => true
+    case _                       => false
+  }
+
   /** AWS Java SDK v2 "standard" retry mode: 3 attempts total, 100ms base, 20s
    *  cap, equal-jitter backoff. This is the default when constructing a
    *  `DynamoDbClient` without overrides. */
@@ -65,12 +77,3 @@ object SdkRetryStrategy:
     maxBackoff  = 20.seconds,
     jitter      = JitterStrategy.Full
   )
-
-  /** Default retryable-response classifier, matching typical AWS SDK behaviour:
-   *  retry throttling and transient server errors; do NOT retry validation
-   *  rejections, admission-policy failures, or successful responses. */
-  val AwsDefaultRetryable: DynamoDBResponse => Boolean = {
-    case _: ThrottledResponse    => true
-    case _: SystemErrorResponse  => true
-    case _                       => false
-  }
