@@ -96,7 +96,7 @@ object TimeWindowRollups:
         points.map(_.value).sum
       case DemoMetric.TableEstimatedItemCount(_) =>
         points.maxBy(_.tick).value
-      case DemoMetric.FlowArrivals(_) =>
+      case DemoMetric.FlowArrivals(_, _) =>
         points.map(_.value).sum
       case unsupported =>
         throw new IllegalArgumentException(s"windowed time-series rollups are not supported for metric: $unsupported")

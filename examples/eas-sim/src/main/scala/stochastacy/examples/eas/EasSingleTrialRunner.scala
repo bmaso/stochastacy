@@ -5,6 +5,7 @@ import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, Materializer}
 import org.apache.pekko.stream.scaladsl.{Broadcast, GraphDSL, RunnableGraph, Sink, Source}
 import stochastacy.aws.dynamodb.{DynamoDBRequest, DynamoDBResponse, ThrottledResponse}
+import stochastacy.aws.dynamodb.client.SdkClientStage
 import stochastacy.aws.dynamodb.table.{DynamoDbConsumptionEvent, DynamoDbTable}
 import stochastacy.aws.dynamodb.pricing.DynamoDbPricingRates
 import stochastacy.demo.{DemoMetric, SimulationTimeSeriesPoint, SingleTrialRunner, TrialResult, TrialRunConfig, TrialSummaryValue}
@@ -37,12 +38,13 @@ final class EasSingleTrialRunner()(using ActorSystem, Materializer, ExecutionCon
 
   override def runTrial(config: EasScenarioConfig, run: TrialRunConfig): Future[TrialResult] =
 
-    // Derive four independent sub-RNGs from the trial seed.
-    val masterRng         = RandomSource.KISS.create(run.seed)
-    val alertsWorkloadRng = RandomSource.KISS.create(masterRng.nextLong())
-    val alertsSamplerRng  = RandomSource.KISS.create(masterRng.nextLong())
-    val uasWorkloadRng    = RandomSource.KISS.create(masterRng.nextLong())
-    val uasSamplerRng     = RandomSource.KISS.create(masterRng.nextLong())
+    // Derive independent sub-RNGs from the trial seed.
+    val masterRng          = RandomSource.KISS.create(run.seed)
+    val alertsWorkloadRng  = RandomSource.KISS.create(masterRng.nextLong())
+    val alertsSamplerRng   = RandomSource.KISS.create(masterRng.nextLong())
+    val alertsSdkClientRng = RandomSource.KISS.create(masterRng.nextLong())
+    val uasWorkloadRng     = RandomSource.KISS.create(masterRng.nextLong())
+    val uasSamplerRng      = RandomSource.KISS.create(masterRng.nextLong())
 
     // Use-case samplers
     val alertsSampler = EasAlertsSampler(config.alertsConfig, alertsSamplerRng)
@@ -73,18 +75,35 @@ final class EasSingleTrialRunner()(using ActorSystem, Materializer, ExecutionCon
           import GraphDSL.Implicits.*
 
           // ── Alerts sub-graph (IIR + FIR feedback loop) ──────────────────
+          //
+          //   WorkloadGraph                                        [a1-poll, a3-write, a2-fetch]
+          //   ├─ requestOut → SdkClientStage.in0
+          //   │                     ↓ out              (primary + injected SDK retries)
+          //   │              reqBcast(2) → alertsTable.in
+          //   │                         ↘ flowCountSink      [counts every attempt separately]
+          //   │
+          //   alertsTable.out0 → respBcast(3) → SdkClientStage.in1     [retry decisions]
+          //   │                              → WorkloadGraph.responseIn [a2-fetch decisions]
+          //   └─                            → throttleSink              [metrics]
           val workloadG   = b.add(WorkloadGraph(aw, allWorkloads, alertsWorkloadRng, config.simulationTicks))
+          val sdkClient   = b.add(SdkClientStage.componentOf(
+                                    strategy            = config.sdkRetryStrategy,
+                                    tickDurationSeconds = 1.0,
+                                    rng                 = alertsSdkClientRng
+                                  ))
           val alertsTable = b.add(DynamoDbTable.componentOf(alertsTableCfg))
           val reqBcast    = b.add(Broadcast[TimedElement[DynamoDBRequest]](2))
-          val respBcast   = b.add(Broadcast[TimedElement[DynamoDBResponse]](2))
+          val respBcast   = b.add(Broadcast[TimedElement[DynamoDBResponse]](3))
 
-          workloadG.requestOut ~> reqBcast.in
+          workloadG.requestOut ~> sdkClient.in0
+          sdkClient.out        ~> reqBcast.in
           reqBcast.out(0)      ~> alertsTable.in
           reqBcast.out(1)      ~> flowCountSinkShape
 
           alertsTable.out0     ~> respBcast.in
-          respBcast.out(0)     ~> workloadG.responseIn
-          respBcast.out(1)     ~> throttleSinkShape
+          respBcast.out(0)     ~> sdkClient.in1
+          respBcast.out(1)     ~> workloadG.responseIn
+          respBcast.out(2)     ~> throttleSinkShape
 
           alertsTable.out1     ~> alertsConsSinkShape
           alertsTable.out2     ~> b.add(Sink.ignore)
@@ -134,16 +153,16 @@ final class EasSingleTrialRunner()(using ActorSystem, Materializer, ExecutionCon
           SimulationTimeSeriesPoint(tick, DemoMetric.TableWriteCapacityUnits("user-alert-status"),       uasWcu),
           SimulationTimeSeriesPoint(tick, DemoMetric.TableThrottleCount("alerts"),
             BigDecimal(throttleMap.getOrElse(tick, 0L))),
-          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-poll"),
-            BigDecimal(flowCounts.getOrElse((tick, "a1-poll"),    0L))),
-          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-retry-1"),
-            BigDecimal(flowCounts.getOrElse((tick, "a1-retry-1"), 0L))),
-          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-retry-2"),
-            BigDecimal(flowCounts.getOrElse((tick, "a1-retry-2"), 0L))),
-          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-retry-3"),
-            BigDecimal(flowCounts.getOrElse((tick, "a1-retry-3"), 0L))),
-          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a2-fetch"),
-            BigDecimal(flowCounts.getOrElse((tick, "a2-fetch"),   0L)))
+          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-poll",  attempt = 0),
+            BigDecimal(flowCounts.getOrElse((tick, "a1-poll",  0), 0L))),
+          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-poll",  attempt = 1),
+            BigDecimal(flowCounts.getOrElse((tick, "a1-poll",  1), 0L))),
+          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a1-poll",  attempt = 2),
+            BigDecimal(flowCounts.getOrElse((tick, "a1-poll",  2), 0L))),
+          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a3-write", attempt = 0),
+            BigDecimal(flowCounts.getOrElse((tick, "a3-write", 0), 0L))),
+          SimulationTimeSeriesPoint(tick, DemoMetric.FlowArrivals("a2-fetch", attempt = 0),
+            BigDecimal(flowCounts.getOrElse((tick, "a2-fetch", 0), 0L)))
         )
       }.toVector
 
@@ -175,8 +194,8 @@ private object EasSingleTrialRunner:
   /** Per-tick count of ThrottledResponses. */
   type ThrottlePerTick = Map[Long, Long]
 
-  /** Per (tick, flowId) request count. */
-  type FlowCountPerTick = Map[(Long, String), Long]
+  /** Per (tick, flowId, clientAttempt) request count. */
+  type FlowCountPerTick = Map[(Long, String, Int), Long]
 
   // ── Fold functions ──────────────────────────────────────────────────────────
 
@@ -209,7 +228,7 @@ private object EasSingleTrialRunner:
         req.flowId match
           case Some(fid) =>
             val tick = req.eventTime.ticks
-            val key  = (tick, fid)
+            val key  = (tick, fid, req.clientAttempt)
             acc.updated(key, acc.getOrElse(key, 0L) + 1L)
           case None => acc
       case _ => acc

@@ -258,13 +258,23 @@ private final class SdkClientStageImpl(
       // ── Helpers ────────────────────────────────────────────────────────────
 
       /** Forward Tick(t) on emit queue, then drain delayBuckets(t) into the
-       *  emit queue (retries whose target tick is exactly this tick). */
+       *  emit queue (retries whose target tick is exactly this tick).
+       *
+       *  KNOWN ISSUE: under the current table semantics (table processes tick T-1
+       *  batch when it receives Tick(T) at its input), retries with target=T are
+       *  actually enqueued in delayBuckets(T) BETWEEN forwardTick(T) and
+       *  Tick(T)-on-in1.  So this drain happens too early — delayBuckets(T) is
+       *  empty at forwardTick(T) time, and never drained thereafter.  Result:
+       *  retries stay in delayBuckets forever and never reach the output.
+       *  A fix that moved the drain to Tick(T)-on-in1 was correct semantically
+       *  but hung under heavy throttling for reasons not yet diagnosed.  Tracked
+       *  for follow-up; the SdkClientStage retrofit is otherwise structurally
+       *  correct and can be dashboarded against per-attempt metrics as they
+       *  become populated. */
       private def forwardTick(t: Long, tick: TimedElement[DynamoDBRequest]): Unit =
         emitQueue.enqueue(tick)
         delayBuckets.remove(t).foreach { retries =>
-          retries.foreach { r =>
-            emitQueue.enqueue(r)
-          }
+          retries.foreach(r => emitQueue.enqueue(r))
         }
         pendingTick = t
 
