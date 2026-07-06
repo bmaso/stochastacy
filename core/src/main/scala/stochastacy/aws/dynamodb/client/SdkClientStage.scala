@@ -166,6 +166,17 @@ private final class SdkClientStageImpl(
        *  we're waiting for the previous tick's response. */
       private var stalledIn0Tick: Option[TimedElement[DynamoDBRequest]] = None
 
+      /** Last tick forwarded on `out` — the current out-side window.  Retries may
+       *  only be emitted into the window matching their eventTime (timed-event
+       *  protocol); this tracks which window is open. */
+      private var lastForwardedTick: Long = 0L
+
+      /** Set once EndOfTime from the primary stream has been enqueued for `out`.
+       *  EndOfTime must be the absolute last element of the combined stream, so
+       *  no retry may be emitted (or scheduled) after it.  Late responses still
+       *  drain from in1, but generate no further retries. */
+      private var noMoreRetries: Boolean = false
+
       // ── preStart ───────────────────────────────────────────────────────────
 
       override def preStart(): Unit =
@@ -185,6 +196,15 @@ private final class SdkClientStageImpl(
               else
                 forwardTick(tick.eventTime.ticks, tick)
                 pull(in0)
+
+            case TimedControlEvent.EndOfTime =>
+              // EndOfTime must be the absolute last element on `out`.  From this
+              // point on, late responses on in1 generate no further retries, and
+              // any parked retries will never fire (their windows never open).
+              noMoreRetries = true
+              delayBuckets.clear()
+              emitQueue.enqueue(elem)
+              pull(in0)
 
             case _ =>
               emitQueue.enqueue(elem)
@@ -217,7 +237,8 @@ private final class SdkClientStageImpl(
                 case _ => ()
 
             case resp: DynamoDBResponse =>
-              if strategy.retryable(resp)
+              if !noMoreRetries
+                 && strategy.retryable(resp)
                  && resp.clientAttempt + 1 < strategy.maxAttempts
                  && rng.nextDouble() < strategy.retryProportion
               then
@@ -229,13 +250,40 @@ private final class SdkClientStageImpl(
                   val bucketOffset = math.max(SdkClientStage.sampleBucket(weights, rng.nextDouble()), 1)
                   val failureTick  = resp.eventTime.ticks
                   val targetTick   = failureTick + bucketOffset
-                  val retry = SdkClientStage.rebuildRetry(
-                    template      = orig,
-                    eventTime     = SimTime.of(targetTick),
-                    intraTick     = rng.nextDouble(),
-                    clientAttempt = nextAttempt
-                  )
-                  delayBuckets.getOrElseUpdate(targetTick, mutable.Queue.empty).enqueue(retry)
+
+                  // Timed-event-protocol rule: a request with eventTime = E may
+                  // only be emitted while the out-side window is E — i.e. after
+                  // Tick(E) has been forwarded and before Tick(E+1) has.
+                  //
+                  //  - targetTick <= lastForwardedTick: the target window is open
+                  //    now (or already past).  Emit immediately; if the window has
+                  //    moved past the target, slide the retry forward into the
+                  //    current window (a real client would fire it now anyway).
+                  //  - targetTick > lastForwardedTick: the target window hasn't
+                  //    opened yet.  Park in delayBuckets; forwardTick(targetTick)
+                  //    drains the bucket the moment the window opens.
+                  //
+                  // Emitting future-dated events (the previous direct-emit
+                  // behaviour) violated the protocol and wedged tick-aligned
+                  // stages inside DynamoDbTable, hanging the graph at end of
+                  // stream.
+                  if targetTick <= lastForwardedTick then
+                    val emitTick = lastForwardedTick
+                    val retry = SdkClientStage.rebuildRetry(
+                      template      = orig,
+                      eventTime     = SimTime.of(emitTick),
+                      intraTick     = rng.nextDouble(),
+                      clientAttempt = nextAttempt
+                    )
+                    emitQueue.enqueue(retry)
+                  else
+                    val retry = SdkClientStage.rebuildRetry(
+                      template      = orig,
+                      eventTime     = SimTime.of(targetTick),
+                      intraTick     = rng.nextDouble(),
+                      clientAttempt = nextAttempt
+                    )
+                    delayBuckets.getOrElseUpdate(targetTick, mutable.Queue.empty).enqueue(retry)
                 }
 
             case _ => ()
@@ -257,22 +305,25 @@ private final class SdkClientStageImpl(
 
       // ── Helpers ────────────────────────────────────────────────────────────
 
-      /** Forward Tick(t) on emit queue, then drain delayBuckets(t) into the
-       *  emit queue (retries whose target tick is exactly this tick).
+      /** Forward Tick(t) on the emit queue — opening out-side window t — then
+       *  drain delayBuckets(t): parked retries whose target window just opened.
        *
-       *  KNOWN ISSUE: under the current table semantics (table processes tick T-1
-       *  batch when it receives Tick(T) at its input), retries with target=T are
-       *  actually enqueued in delayBuckets(T) BETWEEN forwardTick(T) and
-       *  Tick(T)-on-in1.  So this drain happens too early — delayBuckets(T) is
-       *  empty at forwardTick(T) time, and never drained thereafter.  Result:
-       *  retries stay in delayBuckets forever and never reach the output.
-       *  A fix that moved the drain to Tick(T)-on-in1 was correct semantically
-       *  but hung under heavy throttling for reasons not yet diagnosed.  Tracked
-       *  for follow-up; the SdkClientStage retrofit is otherwise structurally
-       *  correct and can be dashboarded against per-attempt metrics as they
-       *  become populated. */
+       *  Retry emission is split across two moments to honour the timed-event
+       *  protocol (every element emitted inside the window matching its
+       *  eventTime):
+       *
+       *   - Retries generated while their target window is ALREADY open
+       *     (targetTick <= lastForwardedTick — the common case for lag-1
+       *     backoff, where the throttle response arrives inside the target
+       *     window) are emitted directly at generation time in the in1 handler.
+       *   - Retries targeting a FUTURE window (multi-tick backoff) are parked
+       *     in delayBuckets and drained here, the moment Tick(targetTick) is
+       *     forwarded.  Their generating responses arrived one or more windows
+       *     earlier, so the bucket is always fully populated by the time this
+       *     drain runs. */
       private def forwardTick(t: Long, tick: TimedElement[DynamoDBRequest]): Unit =
         emitQueue.enqueue(tick)
+        lastForwardedTick = t
         delayBuckets.remove(t).foreach { retries =>
           retries.foreach(r => emitQueue.enqueue(r))
         }

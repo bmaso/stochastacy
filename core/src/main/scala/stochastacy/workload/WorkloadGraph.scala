@@ -212,7 +212,13 @@ private final class WorkloadRequestBusStage(
       // ── Inline transformer helpers ────────────────────────────────────────
 
       private def accumulateResponse(resp: DynamoDBResponse): Unit =
-        inFlight -= 1
+        // Only decrement inFlight for responses to requests THIS stage pushed.
+        // Every request WorkloadRequestBusStage emits (primary flows and derived
+        // follow-ons) carries clientAttempt = 0.  Responses with clientAttempt >= 1
+        // belong to SDK-client retries injected downstream (SdkClientStage) —
+        // counting them here drove inFlight far below zero, which permanently
+        // blocked the completion condition (inFlight == 0) at end of stream.
+        if resp.clientAttempt == 0 then inFlight -= 1
         resp.flowId.foreach { fid =>
           val filter: OutcomeFilter = resp match
             case _: ThrottledResponse => OutcomeFilter.Throttled
