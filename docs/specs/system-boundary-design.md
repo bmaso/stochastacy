@@ -74,13 +74,13 @@ deferred until a use case needs it.
 
 | # | Feature | v1? | Why it's real | Fits existing pattern |
 |---|---------|-----|---------------|-----------------------|
-| 1 | **Per-tick throughput ceiling** (bytes and/or requests per tick) | **v1** | EC2/ENI baseline & burst bandwidth; the seed constraint. | Delay-into-future-tick buckets, as in `SdkClientStage`. |
+| 1 | **Per-tick throughput ceiling** — in **abstract cost-units**, one or more budget dimensions | **v1** | EC2/ENI bandwidth (bytes), *and* SQS depth / API quotas / Lambda concurrency (counts), Kinesis (bytes **and** records at once). The seed constraint, but the unit is not bytes. | Delay-into-future-tick buckets, as in `SdkClientStage`; see [Budget dimensions and metering](#budget-dimensions-and-metering-abstract-units). |
 | 2 | **Base transport latency, drawn from a distribution** | **v1** | Even an idle link has propagation delay, and it varies; `LogNormalSampler` gives realistic fat-tailed p99. Nearly as fundamental as throughput. | Distribution samplers (Apache Commons Statistics); `latencyMs` timing already exists in `TableStorageStage`. |
 | 3 | **Loss / transient-error rate** (`Bernoulli(p)` → timeout/reset) | **v1** | Makes the SDK-retry composition meaningful *without* needing saturation — retry storms from flaky links, not just overloaded ones. | `BernoulliSampler`; error responses feed `SdkClientStage.in1`. |
 | 4 | **Directional asymmetry (ingress vs. egress)** | **v1** | Limits differ by direction, and AWS bills **egress**. For DynamoDB the response direction (query results) is both the larger payload and the priced one — a request-path-only boundary misses the dominant direction on both perf and cost. | Ties to `CrossRegionTransferPricing` (source-region outbound rate). Drives the bidirectional-topology decision below. |
 | 5 | **Concurrency (max in-flight) limit** | later | Distinct from throughput: connection-pool size, Lambda concurrency, and AWS security-group **connection-tracking** exhaustion (a real outage cause). Coupled to latency by Little's Law. | New bounded counter; over-limit → queue or reject. |
 | 6 | **Burst-credit throughput model** (baseline + refilling reservoir) | later | AWS network is often burstable (t-family, gp3-style credits). Makes the ceiling behave like real burstable network, not a hard wall. | Burst-reservoir logic already in `TableAdmissionStage`. |
-| 7 | **Data-transfer cost metering** (emit transfer consumption events) | **v1 (for cross-region retrofit)** | The boundary is the natural, single place bytes-crossing-a-boundary get metered and priced (data-transfer-out, cross-AZ, NAT processing). | Emit `CrossRegionTransferEvent` (or a generalized `DataTransferEvent`) into the existing usage/pricing pipeline. |
+| 7 | **Consumption/cost metering** — emit **open-typed** consumption events via a pluggable policy | **v1 (for cross-region retrofit)** | The boundary is the natural single metering point for whatever crosses it — bytes (data-transfer-out, cross-AZ, NAT), *or* request/message counts (SQS per-request), *or* nothing (a pure-performance boundary). | Pluggable metering policy → dedicated consumption outlet; `CrossRegionTransferEvent` is *one* instantiation, not the fixed type. See [Budget dimensions and metering](#budget-dimensions-and-metering-abstract-units). |
 
 Explicitly **out of scope** (too fine-grained for a stochastic-summary model): per-request MTU /
 framing overhead, packet-level head-of-line blocking, ordering guarantees.
@@ -135,7 +135,7 @@ the existing `DynamoDbUsageTotals` byte-tick accumulators.)
 | State | Bound |
 |-------|-------|
 | Per-direction throughput counters (ingress/egress bytes-this-tick) | Two `Long`s, reset at each tick boundary. Fixed. |
-| Per-direction delay queues (over-budget elements awaiting future budget) | One FIFO per direction, **hard-capped** depth/bytes, drop-on-full. Bounded by construction. |
+| Per-direction delay queues (over-budget elements awaiting future budget) | One FIFO per direction, **hard-capped** in abstract cost-units (see [Budget dimensions](#budget-dimensions-and-metering-abstract-units)), drop-on-full. Bounded by construction. |
 | Parked synthetic-timeout set (request-side drops awaiting their response-side window) | **Hard-capped**, drop-oldest on full. See note below. |
 | In-flight / connection counter (feature 5, later) | Single `Long`, `+1` on `requestOut`, `−1` on `responseIn`. Balances by arithmetic — **no correlation map** (every request reaching the table yields exactly one response on `responseIn`; request-side drops never incremented). |
 | Transfer-cost accumulators | Running byte sums; cardinality bounded by topology (region-pairs × direction), not by volume. Value grows, footprint fixed. |
@@ -174,6 +174,42 @@ volume or time.
 
 ---
 
+## Budget dimensions and metering (abstract units)
+
+The boundary's throughput accounting and its cost metering are **both abstract** — neither is fixed to
+bytes. This is what lets one component model network links *and* item/count-based boundaries (SQS, API
+quotas, Lambda concurrency, connection limits) *and* multi-limit boundaries (Kinesis).
+
+**Budget dimensions.** A boundary is configured, per direction, with **one or more budget dimensions**,
+each a triple:
+
+- a **name** (e.g. `bytes`, `requests`, `records`, `messages`),
+- a **sizing function** `element => Long` — how many units this element consumes,
+- a **per-tick cap**.
+
+An element is admitted only if it fits the remaining budget of **every** dimension; otherwise it queues
+(bounded) then drops, per decision #1. "bytes-per-tick" is one dimension (sizing = payload byte size);
+"requests-per-tick" is another (sizing = `1`); a batch op's "items-per-tick" is another (sizing = batch
+size); Kinesis is two dimensions active together (bytes **and** records, either can bind). The dimension
+set is fixed at config time, so accounting is a fixed-size vector of counters — **boundedness guarantees
+are unaffected** (bounded cardinality, only the values reset per tick).
+
+**Metering.** Separately, the boundary emits **zero or more consumption events per crossing** via a
+**pluggable metering policy**, on a **dedicated consumption outlet**. The event *type and the quantity it
+reports are open* — `CrossRegionTransferEvent` (bytes, region-tagged) is one instantiation; a
+request/message-count event (e.g. SQS priced per million requests) is another; a pure-performance boundary
+(cross-AZ latency with no separate charge) emits **none**. The component does not fix the metering event
+type; the configured policy does. Because of the dedicated outlet, the graph shape is a **custom 5-port
+shape** (`requestIn`, `requestOut`, `responseIn`, `responseOut`, `consumptionOut`), not a plain
+`BidiShape` — consistent with how `DynamoDbTable` / `DynamoDbGlobalTable` already use custom multi-outlet
+shapes.
+
+Budget dimensions and metering are independent: a dimension governs *admission* (does this element fit?);
+metering governs *accounting* (what did this crossing cost?). A boundary may enforce a `requests` budget
+while metering in `bytes`, or vice versa, or share a sizing function between the two.
+
+---
+
 ## Element-type abstraction (protocol seam)
 
 The stage is generic over the element type via **two type parameters** `Req` / `Resp` and a small
@@ -183,14 +219,23 @@ into a minimal interface.
 
 ```scala
 trait BoundaryProtocol[Req, Resp]:
-  def requestBytes(req: Req): Long                                          // throughput + transfer-cost sizing
-  def responseBytes(resp: Resp): Long                                       // throughput + transfer-cost sizing
+  // Measurements the config's budget dimensions and metering policy draw on (bytes, item count,
+  // request-count-of-1, …).  NOT hardcoded to bytes — the config selects which measurement(s)
+  // become budget dimensions and which feed metering.  See "Budget dimensions and metering".
+  def measure(req: Req, dimension: String): Long
+  def measure(resp: Resp, dimension: String): Long
   def timeoutResponse(req: Req, eventTime: SimTime, intraTick: Double): Resp // synthesize a retryable timeout for a dropped request
   def withTiming(req: Req, eventTime: SimTime, intraTick: Double): Req       // restamp a delayed request into a new window
 ```
 
-The stage is `SystemBoundaryStage[Req, Resp](config, protocol, rng)` over a Pekko
-`BidiShape[TimedElement[Req], TimedElement[Req], TimedElement[Resp], TimedElement[Resp]]`.
+(The exact measurement signature — a `dimension` key vs. a fixed set of typed accessors — is a leaf
+detail for implementation; the point is that measurement is protocol-supplied and open, not fixed to
+bytes.)
+
+The stage is `SystemBoundaryStage[Req, Resp](config, protocol, rng)` over a **custom 5-port shape**
+(`requestIn`, `requestOut`, `responseIn`, `responseOut`, `consumptionOut`) — see
+[Budget dimensions and metering](#budget-dimensions-and-metering-abstract-units). (Not a plain
+`BidiShape`, which has only four ports; the fifth carries metering consumption events.)
 
 Design notes:
 
@@ -200,13 +245,16 @@ Design notes:
 - **Two type parameters, not one.** A request-side drop consumes a `Req` and emits a `Resp` (the
   synthetic timeout) on the response outlet — the types genuinely cross. `DynamoDBRequest` and
   `DynamoDBResponse` share no round-trippable supertype, and unifying them is a far bigger change than
-  this seam. The four independently-typed `BidiShape` ports carry the crossing cleanly.
+  this seam. The independently-typed flow ports (`requestIn`/`requestOut` typed `Req`,
+  `responseIn`/`responseOut` typed `Resp`) carry the crossing cleanly.
 - **Response-side drops need no extra method.** The real response is in hand and already carries
   `originalRequest: Option[DynamoDBRequest]`, so the replacement timeout is built from the carried
   request via the same `timeoutResponse`.
-- **Byte-sizing is required regardless of the cap unit**, because cost metering (decision #3) needs
-  bytes. This makes the seam mandatory even if we never add a second service, and it firms up the
-  lean toward **byte-based** queue caps (one sizing function serves both throughput limiting and cost).
+- **Measurement is protocol-supplied and open — not fixed to bytes.** (Retracts an earlier lean.) The
+  cap unit is per-dimension and config-defined; bytes is one dimension, counts are others (see
+  [Budget dimensions](#budget-dimensions-and-metering-abstract-units)). The seam is mandatory because
+  *some* measurement is always needed for admission and/or metering, but which measurement is not the
+  component's choice.
 - **The timeout must be retryable.** `timeoutResponse` must return a response for which the active
   `SdkRetryStrategy.retryable` is `true`, or the drop won't drive a retry and the cascade breaks.
   Recommendation: a **dedicated `BoundaryTimeoutResponse`** added to `AwsDefaultRetryable`, rather than
@@ -238,8 +286,11 @@ pick.
    onto simulated time, so we avoid relying on it as the model. Locked so far via the boundedness
    analysis: **all three queues (two per-direction delay queues + the parked synthetic-timeout set)
    are hard-capped with a defined drop-on-full policy.** A separate **loss coin flip** (feature 3)
-   drops independently of budget. Still to settle: the actual cap values / units (depth vs. bytes),
-   whether over-budget delays before dropping or drops immediately, and drop-oldest vs. drop-incoming.
+   drops independently of budget. The "bytes vs. depth" cap-unit sub-question is **dissolved** — caps
+   are per-dimension in config-defined abstract units, and there may be more than one dimension (see
+   [Budget dimensions](#budget-dimensions-and-metering-abstract-units)). Still to settle (both
+   unit-agnostic): whether over-budget **delays before dropping vs. drops immediately**, and
+   **drop-oldest (head) vs. drop-incoming (tail)** on overflow.
 
 2. **Topology: one stage or two (bidirectional).** *(RESOLVED.)*
    **Option C: a single bidirectional component** — a custom `GraphStage` over a `BidiShape`
@@ -260,11 +311,14 @@ pick.
    the two drop kinds** (never-reached vs. done-but-lost) — their cost signatures differ and that
    difference is a primary teaching point.
 
-3. **Cost-metering scope.**
-   Does the component *emit* transfer consumption events (unifying with `CrossRegionTransferPricing`)
-   or stay purely performance and leave cost elsewhere? Lean: **emit**, because it makes the boundary
-   the single metering point — but that widens its remit and forces the "replace, don't add" care in
-   the cross-region retrofit.
+3. **Metering scope.** *(Framing resolved; leaves open.)*
+   The component *does* emit consumption events (it makes the boundary the single metering point) — but
+   the metering is **open-typed via a pluggable policy on a dedicated consumption outlet**, not fixed to
+   `CrossRegionTransferEvent` or to bytes (see
+   [Budget dimensions and metering](#budget-dimensions-and-metering-abstract-units)). A boundary may
+   emit byte-transfer events, request/message-count events, or nothing. Still open: the concrete
+   policy interface, and the "replace, don't add" care in the cross-region retrofit (the boundary's
+   `CrossRegionTransferEvent` output must *replace* the current ad-hoc metering, not double it).
 
 4. **State boundedness.**
    Consistent with the project's core principle: no per-request maps, bounded delay buckets
