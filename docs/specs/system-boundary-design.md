@@ -174,6 +174,58 @@ volume or time.
 
 ---
 
+## Element-type abstraction (protocol seam)
+
+The stage is generic over the element type via **two type parameters** `Req` / `Resp` and a small
+protocol type class. This follows through on the generic-package positioning (`stochastacy.aws.boundary`)
+without gold-plating: the stage only touches the element type in three places, all of which factor
+into a minimal interface.
+
+```scala
+trait BoundaryProtocol[Req, Resp]:
+  def requestBytes(req: Req): Long                                          // throughput + transfer-cost sizing
+  def responseBytes(resp: Resp): Long                                       // throughput + transfer-cost sizing
+  def timeoutResponse(req: Req, eventTime: SimTime, intraTick: Double): Resp // synthesize a retryable timeout for a dropped request
+  def withTiming(req: Req, eventTime: SimTime, intraTick: Double): Req       // restamp a delayed request into a new window
+```
+
+The stage is `SystemBoundaryStage[Req, Resp](config, protocol, rng)` over a Pekko
+`BidiShape[TimedElement[Req], TimedElement[Req], TimedElement[Resp], TimedElement[Resp]]`.
+
+Design notes:
+
+- **Control events are already generic.** `Tick` / `EndOfTime` live in `stochastacy.sim`, so the
+  stage handles the timed-event protocol with no protocol-instance help. The protocol seam covers
+  only the domain payloads.
+- **Two type parameters, not one.** A request-side drop consumes a `Req` and emits a `Resp` (the
+  synthetic timeout) on the response outlet — the types genuinely cross. `DynamoDBRequest` and
+  `DynamoDBResponse` share no round-trippable supertype, and unifying them is a far bigger change than
+  this seam. The four independently-typed `BidiShape` ports carry the crossing cleanly.
+- **Response-side drops need no extra method.** The real response is in hand and already carries
+  `originalRequest: Option[DynamoDBRequest]`, so the replacement timeout is built from the carried
+  request via the same `timeoutResponse`.
+- **Byte-sizing is required regardless of the cap unit**, because cost metering (decision #3) needs
+  bytes. This makes the seam mandatory even if we never add a second service, and it firms up the
+  lean toward **byte-based** queue caps (one sizing function serves both throughput limiting and cost).
+- **The timeout must be retryable.** `timeoutResponse` must return a response for which the active
+  `SdkRetryStrategy.retryable` is `true`, or the drop won't drive a retry and the cascade breaks.
+  Recommendation: a **dedicated `BoundaryTimeoutResponse`** added to `AwsDefaultRetryable`, rather than
+  reusing `SystemErrorResponse` — it keeps boundary-induced failures distinguishable from
+  service-induced `SystemError`s in telemetry, supporting the "distinguish drop kinds" requirement.
+- **Ship DynamoDB-only.** Design against the seam from day one, but provide a single canonical
+  `given DynamoDbBoundaryProtocol extends BoundaryProtocol[DynamoDBRequest, DynamoDBResponse]` in the
+  DynamoDB layer (not the generic `boundary` package). Future services (S3 CRR, RDS, …) each add one
+  more `given`, exactly as they'd each add a `sourceService` tag to the transfer package. **Do not**
+  build a second concrete protocol now to "validate" the abstraction — that is speculative until a
+  non-DynamoDB service actually needs a boundary. The seam's value is the clean split between protocol
+  mechanics and boundary logic; one exercised instance is enough.
+
+The DynamoDB instance is feasible today: responses carry `originalRequest`, byte-bearing fields exist
+(`itemBytes`, `returnedBytes`), and `ThrottledResponse` / `SystemErrorResponse` are already retryable
+(so the pattern for a retryable `BoundaryTimeoutResponse` is established).
+
+---
+
 ## Open design decisions
 
 These are the decisions to settle before/at implementation. None are blockers; each is a lane to
