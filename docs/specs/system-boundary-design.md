@@ -123,24 +123,90 @@ The boundary must not silently re-charge or re-delay things other stages already
 
 ---
 
+## State and boundedness guarantees
+
+The component obeys the project's core principle: **bounded cardinality** — memory footprint does
+not grow with request volume or simulation length. (Value-accumulators whose numeric value grows —
+the transfer-cost byte totals — are fine and expected; they are a fixed set of scalars, exactly like
+the existing `DynamoDbUsageTotals` byte-tick accumulators.)
+
+**Complete inventory of persistent state**, each verified bounded:
+
+| State | Bound |
+|-------|-------|
+| Per-direction throughput counters (ingress/egress bytes-this-tick) | Two `Long`s, reset at each tick boundary. Fixed. |
+| Per-direction delay queues (over-budget elements awaiting future budget) | One FIFO per direction, **hard-capped** depth/bytes, drop-on-full. Bounded by construction. |
+| Parked synthetic-timeout set (request-side drops awaiting their response-side window) | **Hard-capped**, drop-oldest on full. See note below. |
+| In-flight / connection counter (feature 5, later) | Single `Long`, `+1` on `requestOut`, `−1` on `responseIn`. Balances by arithmetic — **no correlation map** (every request reaching the table yields exactly one response on `responseIn`; request-side drops never incremented). |
+| Transfer-cost accumulators | Running byte sums; cardinality bounded by topology (region-pairs × direction), not by volume. Value grows, footprint fixed. |
+| Latency / loss sampler state | Stateless (`LogNormalSampler`, `BernoulliSampler`). |
+| Window/tick tracking (`lastForwardedTick` per outlet, `pendingTick`, current windows) | Fixed handful of `Long`s. |
+| Output emit queues (ready-to-push buffers) | Bounded by one tick's worth of elements between downstream pulls; a real sink always pulls, so they drain each tick. |
+
+**The three queues are hard-capped by construction, not merely bounded by a well-behaved workload.**
+This is the key hardening decision: the two per-direction delay queues *and* the parked
+synthetic-timeout set all have hard caps with a defined drop policy on overflow. A dropped parked
+timeout simply means that one request's retry never fires and it silently dies — the same degradation
+already accepted for undrained retries at end-of-stream in `SdkClientStage`. Without the cap on the
+parked-timeout set, its standing size would be (drops/tick) × (request→response lag) — bounded only
+*statistically* (because the workload is well-behaved and `maxAttempts` caps retry chains). The cap
+makes it structural.
+
+**Edge cases walked:**
+
+- **Sustained saturation / retry storm** (EAS worst case): delay queues pinned at cap, parked
+  timeouts pinned at cap, accumulators grow in value only. Retry amplification is itself bounded —
+  `SdkClientStage` stops generating retries at `clientAttempt + 1 >= maxAttempts`, so each original
+  request spawns at most a fixed number of drops-and-retries before terminating.
+- **Throughput = 0 / loss = 100%**: every request drops → one timeout → one retry → drops again, up
+  to `maxAttempts`, then dead. Fixed multiplier per original arrival; no cross-tick growth.
+- **Response stream stalls / large lag**: parked-timeout population would grow with lag — exactly why
+  the hard cap on that set is required.
+- **`EndOfTime` with backlog**: on ingress `EndOfTime`, clear the ingress delay queue (drop) and stop
+  generating request-side timeouts; on egress `EndOfTime`, flush-or-drop parked timeouts, then emit
+  `EndOfTime` **last** so it stays the terminal sentinel. Nothing survives teardown.
+- **Idle tick (zero arrivals)**: budgets reset, queues drain, nothing accumulates.
+
+The only unbounded-in-principle *input* — per-tick arrival count — is never accumulated across ticks:
+each tick's batch is processed to pass / capped-queue / drop within that tick, leaving only capped
+residue. No structure is keyed by request, by (region-pair × key), or by anything that scales with
+volume or time.
+
+---
+
 ## Open design decisions
 
 These are the decisions to settle before/at implementation. None are blockers; each is a lane to
 pick.
 
-1. **Over-limit policy: bounded queue vs. drop-as-timeout vs. back-pressure.**
-   Lean: a **bounded** queue (respects the no-unbounded-state principle) that **drops-as-error when
+1. **Over-limit policy: bounded queue vs. drop-as-timeout vs. back-pressure.** *(Still open — the
+   next to lock.)*
+   Lean: a **bounded** queue (respects the no-unbounded-state principle) that **drops-as-timeout when
    full** — bounded *and* composes with SDK retries. Pure Pekko back-pressure does not map cleanly
-   onto simulated time, so we avoid relying on it as the model. Queue depth cap and drop semantics
-   TBD.
+   onto simulated time, so we avoid relying on it as the model. Locked so far via the boundedness
+   analysis: **all three queues (two per-direction delay queues + the parked synthetic-timeout set)
+   are hard-capped with a defined drop-on-full policy.** A separate **loss coin flip** (feature 3)
+   drops independently of budget. Still to settle: the actual cap values / units (depth vs. bytes),
+   whether over-budget delays before dropping or drops immediately, and drop-oldest vs. drop-incoming.
 
-2. **Topology: one stage or two (bidirectional).**
-   A request-path-only `Flow` is simplest but only limits/prices the request direction — the
-   *smaller, unbilled* one for DynamoDB. To limit and price responses (the dominant direction) the
-   boundary must touch the response path too: either a single 2-in/2-out component with shared
-   throughput/credit/latency state, or a coupled pair of stages sharing state. Synthesizing timeout
-   responses for dropped requests also requires reaching the response path. **This is the biggest
-   structural decision.**
+2. **Topology: one stage or two (bidirectional).** *(RESOLVED.)*
+   **Option C: a single bidirectional component** — a custom `GraphStage` over a `BidiShape`
+   (`requestIn` / `requestOut` / `responseIn` / `responseOut`) with shared state. Throughput is
+   modeled as **two independent per-direction budgets** inside it (full-duplex fidelity), while the
+   shared concerns (in-flight/connection count, drop→timeout synthesis, cost metering) live in the
+   shared state. Request-path-only (A) was rejected — it misses the dominant, billed direction
+   (responses) and cannot synthesize timeout responses. Two independent stages (B) was rejected —
+   timeout synthesis needs the response outlet, and bidirectional concurrency/connection state can't
+   live in either independent stage.
+   **Both drop sides are supported**, and they fall out of the per-direction design rather than being
+   a bolt-on: ingress saturation/loss → **request-side drop** (request never reaches the table — no
+   service capacity consumed, no state change); egress saturation/loss → **response-side drop**
+   (table did the work — capacity consumed, state mutated — but the result is lost, so the retry
+   causes duplicate work / double-writes). Neither side needs per-request correlation state: on a
+   request-side drop the request is in hand to build the timeout (`originalRequest = Some(req)`); on a
+   response-side drop the real response is in hand to drop-and-replace. Telemetry **must distinguish
+   the two drop kinds** (never-reached vs. done-but-lost) — their cost signatures differ and that
+   difference is a primary teaching point.
 
 3. **Cost-metering scope.**
    Does the component *emit* transfer consumption events (unifying with `CrossRegionTransferPricing`)
@@ -167,9 +233,13 @@ pick.
    *network-transport* semantics specifically or keeps the door open for non-network boundaries.
 
 7. **Configuration surface & subtype strategy.**
-   Whether cross-VPC / cross-AZ / cross-region are configurations of one component or thin subtypes,
-   and what the `Config` looks like (throughput, latency distribution, loss rate, directional split,
-   cost rate / rate source). Decide once features 1–4/7 are locked.
+   Whether cross-VPC / cross-AZ / cross-region are configurations of one component or thin subtypes.
+   Following the topology resolution, the config is **per-direction** (there is *no* `dropSide` enum):
+   ingress throughput / egress throughput, ingress loss prob / egress loss prob, ingress/egress
+   latency distribution, plus the shared cost rate / rate source. A "request-side-failure" boundary is
+   one configured with ingress limits and no egress limits; a "flaky-return-path" boundary is the
+   mirror; cross-VPC / cross-AZ are different fillings-in of the same per-direction knobs. Still to
+   settle: exact `Config` shape and whether the boundary flavors are subtypes or just presets.
 
 ---
 
