@@ -3,11 +3,13 @@ package stochastacy.aws.boundary
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, Materializer}
 import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
+import org.apache.commons.rng.simple.RandomSource
 import org.apache.pekko.stream.testkit.scaladsl.{TestSink, TestSource}
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.*
+import stochastacy.aws.dynamodb.boundary.DynamoDbBoundaryProtocol
 import stochastacy.aws.transfer.CrossRegionTransferEvent
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, ticks}
 
@@ -64,7 +66,11 @@ class SystemBoundaryStageSpec extends AnyWordSpec with should.Matchers with Befo
         implicit builder => (rs, ps, cs) =>
           import GraphDSL.Implicits.*
           val stage = builder.add(
-            SystemBoundaryStage.componentOf[DynamoDBRequest, DynamoDBResponse, CrossRegionTransferEvent]()
+            SystemBoundaryStage.componentOf[DynamoDBRequest, DynamoDBResponse, CrossRegionTransferEvent](
+              DynamoDbBoundaryProtocol,
+              SystemBoundaryStage.Config(),
+              RandomSource.KISS.create(42L)
+            )
           )
           Source(reqIn)  ~> stage.requestIn
           Source(respIn) ~> stage.responseIn
@@ -133,7 +139,11 @@ class SystemBoundaryStageSpec extends AnyWordSpec with should.Matchers with Befo
         )((a, b) => (a, b)) { implicit builder => (rp, rs) =>
           import GraphDSL.Implicits.*
           val stage = builder.add(
-            SystemBoundaryStage.componentOf[DynamoDBRequest, DynamoDBResponse, CrossRegionTransferEvent]()
+            SystemBoundaryStage.componentOf[DynamoDBRequest, DynamoDBResponse, CrossRegionTransferEvent](
+              DynamoDbBoundaryProtocol,
+              SystemBoundaryStage.Config(),
+              RandomSource.KISS.create(42L)
+            )
           )
           rp ~> stage.requestIn
           Source.empty[TimedElement[DynamoDBResponse]] ~> stage.responseIn

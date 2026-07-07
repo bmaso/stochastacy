@@ -1,50 +1,80 @@
 package stochastacy.aws.boundary
 
+import org.apache.commons.rng.UniformRandomProvider
 import org.apache.pekko.NotUsed
 import org.apache.pekko.stream.stage.{GraphStage, GraphStageLogic, InHandler, OutHandler}
 import org.apache.pekko.stream.{Attributes, Graph, Inlet, Outlet}
-import stochastacy.sim.{TimedControlEvent, TimedElement, TimedEvent}
+import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent, ticks}
 
 import scala.collection.mutable
 
 /** Reusable Pekko graph stage modelling a system / interprocess boundary
  *  (network link, cross-AZ / cross-region hop, VPC endpoint, ...).
  *
- *  Slice 1 — skeleton
- *  ==================
+ *  Slices so far
+ *  =============
  *
- *  This slice establishes the 5-port shape and an **identity pass-through**:
- *  the request direction (`requestIn → requestOut`) and the response direction
- *  (`responseIn → responseOut`) are forwarded unchanged, preserving tick
- *  ordering and the `EndOfTime` terminal sentinel.  The two directions forward
- *  independently — there is no cross-direction coupling yet (that arrives with
- *  the drop → timeout cascade in a later slice).
+ *   - S1 skeleton: 5-port shape, identity pass-through, protocol invariants.
+ *   - S2 transport latency: each business crossing is delayed by a sampled
+ *     latency, applied per direction via the same intra-tick math as
+ *     `TableStorageStage` (`rawOffset = intraTick + latencyMs /
+ *     (tickDurationSeconds * 1000)`; integer part advances `eventTime`,
+ *     fraction becomes the new `intraTick`).  Elements shifted into a later
+ *     tick are parked in per-direction `delayBuckets` and drained when that
+ *     tick's window opens on the outlet (the window rule).  Control events
+ *     (`Tick`, `EndOfTime`) are never delayed.
  *
- *  The consumption outlet carries no business events in this slice; it emits a
- *  single `EndOfTime` once both inputs have finished (a valid, empty timed
- *  stream).  Its tick framing and metering events are added in a later slice.
+ *  The two directions forward independently — no cross-direction coupling yet
+ *  (that arrives with the drop → timeout cascade in a later slice).  The
+ *  consumption outlet still carries no business events; it emits a single
+ *  `EndOfTime` once both inputs finish.
  *
- *  Later slices add: the `BoundaryProtocol` seam and transport latency (S2);
- *  loss, the drop → timeout cascade, and consumption-event metering (S3);
- *  budget dimensions and throughput limiting (S4).
+ *  Later slices add: `measure` / `timeoutResponse` on the seam, loss, the
+ *  drop → timeout cascade, consumption-event metering, and budget dimensions /
+ *  throughput limiting.
  *
  *  Bounded state
  *  =============
  *
- *  One emit queue per flow outlet, each gated to at most one buffered element
- *  (the corresponding inlet is re-pulled only once its queue has drained), so
- *  state is bounded by construction.
+ *  Per direction: one emit queue (bounded by per-tick volume) and one
+ *  `delayBuckets` map whose standing population is bounded by the arrivals
+ *  within the latency horizon.  Latency buckets always drain (windows always
+ *  advance), so — unlike the budget queues of later slices — they are
+ *  self-draining and not hard-capped here.
  */
 object SystemBoundaryStage:
 
-  def componentOf[Req <: TimedEvent, Resp <: TimedEvent, Cons <: TimedEvent]()
-    : Graph[SystemBoundaryShape[Req, Resp, Cons], NotUsed] =
-    new SystemBoundaryStageImpl[Req, Resp, Cons]
+  /** Samples a transport latency in milliseconds for one crossing. */
+  type LatencyMillisSampler = UniformRandomProvider => Double
+
+  /** @param tickDurationSeconds seconds of wall-clock per tick; converts a
+   *                             latency in ms to a fraction of a tick.
+   *  @param ingressLatency      request-direction latency (client → service);
+   *                             `None` = no delay.
+   *  @param egressLatency       response-direction latency (service → client);
+   *                             `None` = no delay. */
+  final case class Config(
+    tickDurationSeconds: Double                       = 1.0,
+    ingressLatency:      Option[LatencyMillisSampler] = None,
+    egressLatency:       Option[LatencyMillisSampler] = None
+  ):
+    require(tickDurationSeconds > 0.0,
+      s"tickDurationSeconds must be positive, got $tickDurationSeconds")
+
+  def componentOf[Req <: TimedEvent, Resp <: TimedEvent, Cons <: TimedEvent](
+    protocol: BoundaryProtocol[Req, Resp],
+    config:   Config,
+    rng:      UniformRandomProvider
+  ): Graph[SystemBoundaryShape[Req, Resp, Cons], NotUsed] =
+    new SystemBoundaryStageImpl[Req, Resp, Cons](protocol, config, rng)
 
 // ── GraphStage implementation ─────────────────────────────────────────────────
 
-private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEvent, Cons <: TimedEvent]
-  extends GraphStage[SystemBoundaryShape[Req, Resp, Cons]]:
+private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEvent, Cons <: TimedEvent](
+  protocol: BoundaryProtocol[Req, Resp],
+  config:   SystemBoundaryStage.Config,
+  rng:      UniformRandomProvider
+) extends GraphStage[SystemBoundaryShape[Req, Resp, Cons]]:
 
   val requestIn:      Inlet[TimedElement[Req]]   = Inlet("SystemBoundary.requestIn")
   val requestOut:     Outlet[TimedElement[Req]]  = Outlet("SystemBoundary.requestOut")
@@ -58,84 +88,101 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
   override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
     new GraphStageLogic(shape):
 
-      /** At most one buffered element each (pull-after-drain → bounded). */
-      private val reqQueue:  mutable.Queue[TimedElement[Req]]  = mutable.Queue.empty
-      private val respQueue: mutable.Queue[TimedElement[Resp]] = mutable.Queue.empty
+      /** One flow direction: latency-aware forwarding from `in` to `out`.
+       *
+       *  `latency` samples a per-crossing delay in ms; `restamp` rebuilds a
+       *  business element with new timing.  Control events pass straight
+       *  through; business elements shifted into a later tick are parked in
+       *  `delayBuckets` and drained when that tick is forwarded. */
+      final class Direction[E <: TimedEvent](
+        in:      Inlet[TimedElement[E]],
+        out:     Outlet[TimedElement[E]],
+        latency: Option[SystemBoundaryStage.LatencyMillisSampler],
+        restamp: (E, SimTime, Double) => E
+      ):
+        private val emitQueue:    mutable.Queue[TimedElement[E]]                 = mutable.Queue.empty
+        private val delayBuckets: mutable.Map[Long, mutable.Queue[TimedElement[E]]] = mutable.Map.empty
+        private var lastForwardedTick: Long    = Long.MinValue
+        var done: Boolean = false
 
-      private var requestInDone:  Boolean = false
-      private var responseInDone: Boolean = false
-      private var consEmitted:    Boolean = false
+        def start(): Unit = pull(in)
+
+        private def onElement(elem: TimedElement[E]): Unit =
+          elem match
+            case tick: TimedControlEvent.Tick =>
+              val t = tick.eventTime.ticks
+              emitQueue.enqueue(tick)
+              lastForwardedTick = t
+              delayBuckets.remove(t).foreach(_.foreach(emitQueue.enqueue))
+
+            case TimedControlEvent.EndOfTime =>
+              // Undrained parked elements target windows beyond the horizon that
+              // will never open; drop them (cf. SdkClientStage end-of-stream).
+              delayBuckets.clear()
+              emitQueue.enqueue(TimedControlEvent.EndOfTime)
+
+            case _ =>
+              val business = elem.asInstanceOf[E]   // not a control event ⇒ E
+              latency match
+                case None =>
+                  emitQueue.enqueue(business)
+                case Some(sampler) =>
+                  val latencyMs    = sampler(rng)
+                  val rawOffset    = business.intraTick + latencyMs / (config.tickDurationSeconds * 1000.0)
+                  val deltaTicks   = rawOffset.toLong
+                  val newIntraTick = rawOffset - deltaTicks
+                  val newTick      = business.eventTime.ticks + deltaTicks
+                  val restamped    = restamp(business, SimTime.of(newTick), newIntraTick)
+                  if newTick <= lastForwardedTick then
+                    emitQueue.enqueue(restamped)                       // window already open
+                  else
+                    delayBuckets.getOrElseUpdate(newTick, mutable.Queue.empty).enqueue(restamped)
+
+        private def emit(): Unit =
+          if isAvailable(out) && emitQueue.nonEmpty then
+            push(out, emitQueue.dequeue())
+
+        private def maybePullIn(): Unit =
+          if emitQueue.isEmpty && !isClosed(in) && !hasBeenPulled(in) then
+            pull(in)
+
+        private def checkCompletion(): Unit =
+          if done && emitQueue.isEmpty && !isClosed(out) then
+            complete(out)
+
+        setHandler(in, new InHandler:
+          override def onPush(): Unit =
+            onElement(grab(in))
+            emit()
+            maybePullIn()
+
+          override def onUpstreamFinish(): Unit =
+            done = true
+            checkCompletion()
+            checkConsTermination()
+        )
+
+        setHandler(out, new OutHandler:
+          override def onPull(): Unit =
+            emit()
+            maybePullIn()
+            checkCompletion()
+        )
+      end Direction
+
+      private val requestDir  =
+        new Direction[Req](requestIn, requestOut, config.ingressLatency, protocol.withRequestTiming)
+      private val responseDir =
+        new Direction[Resp](responseIn, responseOut, config.egressLatency, protocol.withResponseTiming)
+
+      private var consEmitted: Boolean = false
 
       override def preStart(): Unit =
-        pull(requestIn)
-        pull(responseIn)
-
-      // ── request direction ───────────────────────────────────────────────
-      setHandler(requestIn, new InHandler:
-        override def onPush(): Unit =
-          reqQueue.enqueue(grab(requestIn))
-          emitReq()
-          maybePullRequestIn()
-
-        override def onUpstreamFinish(): Unit =
-          requestInDone = true
-          checkReqCompletion()
-          checkConsTermination()
-      )
-
-      setHandler(requestOut, new OutHandler:
-        override def onPull(): Unit =
-          emitReq()
-          maybePullRequestIn()
-          checkReqCompletion()
-      )
-
-      private def emitReq(): Unit =
-        if isAvailable(requestOut) && reqQueue.nonEmpty then
-          push(requestOut, reqQueue.dequeue())
-
-      private def maybePullRequestIn(): Unit =
-        if reqQueue.isEmpty && !isClosed(requestIn) && !hasBeenPulled(requestIn) then
-          pull(requestIn)
-
-      private def checkReqCompletion(): Unit =
-        if requestInDone && reqQueue.isEmpty && !isClosed(requestOut) then
-          complete(requestOut)
-
-      // ── response direction ──────────────────────────────────────────────
-      setHandler(responseIn, new InHandler:
-        override def onPush(): Unit =
-          respQueue.enqueue(grab(responseIn))
-          emitResp()
-          maybePullResponseIn()
-
-        override def onUpstreamFinish(): Unit =
-          responseInDone = true
-          checkRespCompletion()
-          checkConsTermination()
-      )
-
-      setHandler(responseOut, new OutHandler:
-        override def onPull(): Unit =
-          emitResp()
-          maybePullResponseIn()
-          checkRespCompletion()
-      )
-
-      private def emitResp(): Unit =
-        if isAvailable(responseOut) && respQueue.nonEmpty then
-          push(responseOut, respQueue.dequeue())
-
-      private def maybePullResponseIn(): Unit =
-        if respQueue.isEmpty && !isClosed(responseIn) && !hasBeenPulled(responseIn) then
-          pull(responseIn)
-
-      private def checkRespCompletion(): Unit =
-        if responseInDone && respQueue.isEmpty && !isClosed(responseOut) then
-          complete(responseOut)
+        requestDir.start()
+        responseDir.start()
 
       // ── consumption outlet ──────────────────────────────────────────────
-      // Slice 1: no business events; emit a single EndOfTime once both inputs
+      // Slice 1/2: no business events; emit a single EndOfTime once both inputs
       // have finished, then complete.
       setHandler(consumptionOut, new OutHandler:
         override def onPull(): Unit =
@@ -143,7 +190,7 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
       )
 
       private def checkConsTermination(): Unit =
-        if requestInDone && responseInDone && !consEmitted && isAvailable(consumptionOut) then
+        if requestDir.done && responseDir.done && !consEmitted && isAvailable(consumptionOut) then
           val endOfTime: TimedElement[Cons] = TimedControlEvent.EndOfTime
           push(consumptionOut, endOfTime)
           consEmitted = true
