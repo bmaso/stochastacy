@@ -116,12 +116,14 @@ class SystemBoundaryStageSpec extends AnyWordSpec with should.Matchers with Befo
       pOut.last shouldBe TimedControlEvent.EndOfTime
     }
 
-    "emit exactly one EndOfTime on the consumption outlet" in {
+    "frame the consumption outlet with response-paced ticks and a terminal EndOfTime" in {
+      // With no metering configured the consumption stream carries only the
+      // response-paced tick framing plus the terminal EndOfTime.
       val (_, _, cOut) = runIdentity(
         Vector(tick(1), EOT),
-        Vector(tick(1), EOT)
+        Vector(tick(1), tick(2), EOT)
       )
-      cOut shouldBe Vector(TimedControlEvent.EndOfTime)
+      cOut shouldBe Vector(tick(1), tick(2), TimedControlEvent.EndOfTime)
     }
 
     "forward multiple business elements per tick and terminate fully" in {

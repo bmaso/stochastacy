@@ -71,19 +71,32 @@ object SystemBoundaryStage:
     require(maxPendingTimeouts > 0,
       s"maxPendingTimeouts must be positive, got $maxPendingTimeouts")
 
+  /** @param ingressMetering consumption events emitted for a successful request
+   *                         crossing (request direction); default emits none.
+   *  @param egressMetering  consumption events emitted for a successful response
+   *                         crossing (response direction); default emits none.
+   *
+   *  A policy stamps each event's `eventTime` from the crossing element.  It is
+   *  service-specific (knows the concrete types, computes bytes itself), so the
+   *  generic stage needs no `measure`.  Metering fires only for successful
+   *  (non-dropped) crossings, at the element's arrival window. */
   def componentOf[Req <: TimedEvent, Resp <: TimedEvent, Cons <: TimedEvent](
     protocol: BoundaryProtocol[Req, Resp],
     config:   Config,
-    rng:      UniformRandomProvider
+    rng:      UniformRandomProvider,
+    ingressMetering: Req  => Seq[Cons] = (_: Req)  => Seq.empty,
+    egressMetering:  Resp => Seq[Cons] = (_: Resp) => Seq.empty
   ): Graph[SystemBoundaryShape[Req, Resp, Cons], NotUsed] =
-    new SystemBoundaryStageImpl[Req, Resp, Cons](protocol, config, rng)
+    new SystemBoundaryStageImpl[Req, Resp, Cons](protocol, config, rng, ingressMetering, egressMetering)
 
 // ── GraphStage implementation ─────────────────────────────────────────────────
 
 private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEvent, Cons <: TimedEvent](
-  protocol: BoundaryProtocol[Req, Resp],
-  config:   SystemBoundaryStage.Config,
-  rng:      UniformRandomProvider
+  protocol:        BoundaryProtocol[Req, Resp],
+  config:          SystemBoundaryStage.Config,
+  rng:             UniformRandomProvider,
+  ingressMetering: Req  => Seq[Cons],
+  egressMetering:  Resp => Seq[Cons]
 ) extends GraphStage[SystemBoundaryShape[Req, Resp, Cons]]:
 
   val requestIn:      Inlet[TimedElement[Req]]   = Inlet("SystemBoundary.requestIn")
@@ -134,6 +147,15 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
          *  replaces inline. */
         var dropHandler: (E, Long) => Unit = (_, _) => ()
 
+        /** Called for each successful (non-dropped) business crossing, at its
+         *  arrival window — the metering point. */
+        var onCrossing: E => Unit = _ => ()
+        /** Called after this direction forwards a `Tick` — the response
+         *  direction drives the response-paced consumption clock. */
+        var onTickForwarded: Long => Unit = _ => ()
+        /** Called after this direction forwards its terminal `EndOfTime`. */
+        var onEndOfTimeForwarded: () => Unit = () => ()
+
         def start(): Unit = pull(in)
 
         /** Inject a synthetic timeout targeting window `targetWindow`.  Window
@@ -163,7 +185,7 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
             endOfTimeForwarded = true
             emit()
             checkCompletion()
-            checkConsTermination()
+            onEndOfTimeForwarded()
 
         private def onElement(elem: TimedElement[E]): Unit =
           elem match
@@ -176,6 +198,7 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
                 injectedCount -= q.size
                 q.foreach(emitQueue.enqueue)
               }
+              onTickForwarded(t)
 
             case TimedControlEvent.EndOfTime =>
               endOfTimeSeen = true
@@ -187,6 +210,7 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
               if lossProbability > 0.0 && rng.nextDouble() < lossProbability then
                 dropHandler(business, business.eventTime.ticks)
               else
+                onCrossing(business)   // meter successful crossing at its arrival window
                 latency match
                   case None =>
                     emitQueue.enqueue(business)
@@ -224,7 +248,6 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
             // Terminal EndOfTime is delivered as an element; onUpstreamFinish is
             // the follow-up close.  Completion is driven by endOfTimeForwarded.
             checkCompletion()
-            checkConsTermination()
         )
 
         setHandler(out, new OutHandler:
@@ -232,7 +255,6 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
             emit()
             maybePullIn()
             checkCompletion()
-            checkConsTermination()
         )
       end Direction
 
@@ -248,7 +270,6 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
       responseDir.releaseGuard = () => requestDir.endOfTimeSeen
       requestDir.onEndOfTimeSeen = () =>
         responseDir.forwardEndOfTimeIfReady()
-        checkConsTermination()
 
       // Ingress drop: request never reaches the service; inject a timeout onto
       // the response outlet at the request's window (cross-direction window rule).
@@ -264,24 +285,65 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
           responseDir.inject(timeout, window)
         }
 
-      private var consEmitted: Boolean = false
+      // ── metering / consumption clock ─────────────────────────────────────
+      // The consumption stream is response-paced: the response direction drives
+      // its ticks and its terminal EndOfTime.  Response-direction events emit in
+      // their arrival window (the consumption Tick is already forwarded when a
+      // window's responses arrive); request-direction events lead the clock and
+      // are parked, draining when the consumption clock reaches their window.
+      requestDir.onCrossing =
+        (req: Req)   => ingressMetering(req).foreach(c => routeConsumption(c, req.eventTime.ticks))
+      responseDir.onCrossing =
+        (resp: Resp) => egressMetering(resp).foreach(c => routeConsumption(c, resp.eventTime.ticks))
+      responseDir.onTickForwarded      = t  => forwardConsumptionTick(t)
+      responseDir.onEndOfTimeForwarded = () => finishConsumption()
+
+      private val consEmitQueue:    mutable.Queue[TimedElement[Cons]]        = mutable.Queue.empty
+      private val consDelayBuckets: mutable.Map[Long, mutable.Queue[Cons]]   = mutable.Map.empty
+      private var consLastForwardedTick:  Long    = Long.MinValue
+      private var consEndOfTimeForwarded: Boolean = false
+
+      /** Place a consumption event in its window: emit now if the window is open,
+       *  else park until the (response-paced) consumption clock reaches it.
+       *  By construction the target window is never behind the clock, so no
+       *  restamping is needed. */
+      private def routeConsumption(event: Cons, window: Long): Unit =
+        if consEndOfTimeForwarded then ()
+        else if window <= consLastForwardedTick then
+          consEmitQueue.enqueue(event)
+          emitConsumption()
+        else
+          consDelayBuckets.getOrElseUpdate(window, mutable.Queue.empty).enqueue(event)
+
+      private def forwardConsumptionTick(t: Long): Unit =
+        if !consEndOfTimeForwarded then
+          consEmitQueue.enqueue(TimedControlEvent.Tick(SimTime.of(t)))
+          consLastForwardedTick = t
+          consDelayBuckets.remove(t).foreach(_.foreach(consEmitQueue.enqueue))
+          emitConsumption()
+
+      private def finishConsumption(): Unit =
+        if !consEndOfTimeForwarded then
+          consDelayBuckets.clear()
+          consEmitQueue.enqueue(TimedControlEvent.EndOfTime)
+          consEndOfTimeForwarded = true
+          emitConsumption()
+          checkConsCompletion()
+
+      private def emitConsumption(): Unit =
+        if isAvailable(consumptionOut) && consEmitQueue.nonEmpty then
+          push(consumptionOut, consEmitQueue.dequeue())
+
+      private def checkConsCompletion(): Unit =
+        if consEndOfTimeForwarded && consEmitQueue.isEmpty && !isClosed(consumptionOut) then
+          complete(consumptionOut)
+
+      setHandler(consumptionOut, new OutHandler:
+        override def onPull(): Unit =
+          emitConsumption()
+          checkConsCompletion()
+      )
 
       override def preStart(): Unit =
         requestDir.start()
         responseDir.start()
-
-      // ── consumption outlet ──────────────────────────────────────────────
-      // Slices 1–3a: no business events; emit a single EndOfTime once both
-      // flow directions have forwarded their terminal EndOfTime.
-      setHandler(consumptionOut, new OutHandler:
-        override def onPull(): Unit =
-          checkConsTermination()
-      )
-
-      private def checkConsTermination(): Unit =
-        if requestDir.endOfTimeForwarded && responseDir.endOfTimeForwarded
-           && !consEmitted && isAvailable(consumptionOut) then
-          val endOfTime: TimedElement[Cons] = TimedControlEvent.EndOfTime
-          push(consumptionOut, endOfTime)
-          consEmitted = true
-          complete(consumptionOut)
