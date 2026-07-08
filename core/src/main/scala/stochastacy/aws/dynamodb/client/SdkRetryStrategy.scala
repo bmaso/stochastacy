@@ -53,9 +53,10 @@ object SdkRetryStrategy:
    *  Declared before the preset vals so the case class's default parameter can
    *  resolve it during preset initialisation. */
   val AwsDefaultRetryable: DynamoDBResponse => Boolean = {
-    case _: ThrottledResponse    => true
-    case _: SystemErrorResponse  => true
-    case _                       => false
+    case _: ThrottledResponse       => true
+    case _: SystemErrorResponse     => true
+    case _: BoundaryTimeoutResponse => true
+    case _                          => false
   }
 
   /** AWS Java SDK v2 "standard" retry mode: 3 attempts total, 100ms base, 20s

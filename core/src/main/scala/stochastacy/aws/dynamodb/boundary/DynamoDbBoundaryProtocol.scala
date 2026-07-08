@@ -1,6 +1,6 @@
 package stochastacy.aws.dynamodb.boundary
 
-import stochastacy.aws.boundary.BoundaryProtocol
+import stochastacy.aws.boundary.{BoundaryDropDirection, BoundaryProtocol}
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.SimTime
 
@@ -42,5 +42,25 @@ object DynamoDbBoundaryProtocol extends BoundaryProtocol[DynamoDBRequest, Dynamo
       case r: ItemCollectionSizeLimitExceededResponse => r.copy(eventTime = eventTime, intraTick = intraTick)
       case r: SystemErrorResponse                     => r.copy(eventTime = eventTime, intraTick = intraTick)
       case r: ReconfigurationRejectedResponse         => r.copy(eventTime = eventTime, intraTick = intraTick)
+      case r: BoundaryTimeoutResponse                 => r.copy(eventTime = eventTime, intraTick = intraTick)
       case r: TransactWriteItemsResponse              => r.copy(eventTime = eventTime, intraTick = intraTick)
       case r: TransactGetItemsResponse                => r.copy(eventTime = eventTime, intraTick = intraTick)
+
+  override def timeoutResponse(
+    req:       DynamoDBRequest,
+    eventTime: SimTime,
+    intraTick: Double,
+    direction: BoundaryDropDirection
+  ): DynamoDBResponse =
+    BoundaryTimeoutResponse(
+      eventTime        = eventTime,
+      usecase          = req.usecase,
+      droppedDirection = direction,
+      intraTick        = intraTick,
+      flowId           = req.flowId,
+      clientAttempt    = req.clientAttempt,
+      originalRequest  = Some(req)
+    )
+
+  override def originalRequestOf(resp: DynamoDBResponse): Option[DynamoDBRequest] =
+    resp.originalRequest

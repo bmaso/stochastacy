@@ -303,6 +303,22 @@ final case class SystemErrorResponse(
 ) extends DynamoDBResponse
 
 /**
+ * Synthetic timeout emitted by `SystemBoundaryStage` when a crossing is dropped (lost, or —
+ * in a later slice — over a throughput budget).  Retryable, so it drives an `SdkClientStage`
+ * retry.  `droppedDirection` distinguishes an ingress drop (never reached the service, no
+ * capacity consumed) from an egress drop (service did the work, response lost).
+ */
+final case class BoundaryTimeoutResponse(
+  override val eventTime: SimTime,
+  override val usecase:   Any,
+  droppedDirection:       stochastacy.aws.boundary.BoundaryDropDirection,
+  override val intraTick: Double                  = 0.0,
+  flowId:                 Option[String]          = None,
+  clientAttempt:          Int                     = 0,
+  originalRequest:        Option[DynamoDBRequest] = None
+) extends DynamoDBResponse
+
+/**
  * Emitted when a management-API reconfiguration event is rejected. The simulator enforces
  * real DynamoDB constraints (e.g., the 24-hour billing mode switch cooldown) and emits this
  * response instead of applying the change when the constraint is violated.

@@ -27,3 +27,15 @@ trait BoundaryProtocol[Req <: TimedEvent, Resp <: TimedEvent]:
   /** Rebuild `resp` with new timing, preserving its concrete type and all other
    *  fields.  Used when transport latency shifts a response into a later tick. */
   def withResponseTiming(resp: Resp, eventTime: SimTime, intraTick: Double): Resp
+
+  /** Synthesize a retryable timeout response for a dropped crossing.  The result
+   *  must carry `req` as its originating request (so the SDK can rebuild the
+   *  retry) and be recognised as retryable by the active retry strategy.
+   *  `direction` records which side dropped it. */
+  def timeoutResponse(req: Req, eventTime: SimTime, intraTick: Double,
+                      direction: BoundaryDropDirection): Resp
+
+  /** The originating request carried by `resp`, if any.  Used on an egress drop
+   *  to build the replacement timeout from the request the lost response was
+   *  answering. */
+  def originalRequestOf(resp: Resp): Option[Req]
