@@ -64,3 +64,26 @@ object DynamoDbBoundaryProtocol extends BoundaryProtocol[DynamoDBRequest, Dynamo
 
   override def originalRequestOf(resp: DynamoDBResponse): Option[DynamoDBRequest] =
     resp.originalRequest
+
+  override def measureRequest(req: DynamoDBRequest, dimension: String): Long =
+    dimension match
+      case "requests" => 1L
+      case "bytes" =>
+        req match
+          case r: PutItemRequest    => r.itemBytes
+          case r: UpdateItemRequest => r.itemBytes
+          case _                    => 0L   // reads carry a negligible request payload
+      case _ => 0L
+
+  override def measureResponse(resp: DynamoDBResponse, dimension: String): Long =
+    dimension match
+      case "requests" => 1L
+      case "bytes" =>
+        resp match
+          case r: GetItemResponse    => r.itemBytes.getOrElse(0L)
+          case r: QueryResponse      => r.returnedBytes
+          case r: ScanResponse       => r.returnedBytes
+          case r: PutItemResponse    => r.storedItemBytes
+          case r: UpdateItemResponse => r.storedItemBytes
+          case _                     => 0L
+      case _ => 0L

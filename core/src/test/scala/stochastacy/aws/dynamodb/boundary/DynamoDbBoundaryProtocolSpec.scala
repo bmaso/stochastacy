@@ -127,3 +127,37 @@ class DynamoDbBoundaryProtocolSpec extends AnyWordSpec with should.Matchers:
       P.originalRequestOf(resp) shouldBe None
     }
   }
+
+  "measureRequest" should {
+    "count 1 for the requests dimension" in {
+      P.measureRequest(GetItemRequest(SimTime.of(1L), "uc"), "requests") shouldBe 1L
+    }
+    "return item bytes for a write in the bytes dimension" in {
+      P.measureRequest(PutItemRequest(SimTime.of(1L), "uc", itemBytes = 500L), "bytes") shouldBe 500L
+    }
+    "return 0 bytes for a read (negligible request payload)" in {
+      P.measureRequest(GetItemRequest(SimTime.of(1L), "uc"), "bytes") shouldBe 0L
+    }
+    "return 0 for an unknown dimension" in {
+      P.measureRequest(PutItemRequest(SimTime.of(1L), "uc", itemBytes = 500L), "widgets") shouldBe 0L
+    }
+  }
+
+  "measureResponse" should {
+    "count 1 for the requests dimension" in {
+      P.measureResponse(GetItemResponse(SimTime.of(1L), "uc", itemFound = true, itemBytes = Some(9L)),
+        "requests") shouldBe 1L
+    }
+    "return item bytes for a GetItemResponse in the bytes dimension" in {
+      P.measureResponse(GetItemResponse(SimTime.of(1L), "uc", itemFound = true, itemBytes = Some(140L)),
+        "bytes") shouldBe 140L
+    }
+    "return stored bytes for a PutItemResponse" in {
+      P.measureResponse(PutItemResponse(SimTime.of(1L), "uc", storedItemBytes = 300L,
+        createdNewItem = true, previousItemBytes = None), "bytes") shouldBe 300L
+    }
+    "return 0 for an unknown dimension" in {
+      P.measureResponse(GetItemResponse(SimTime.of(1L), "uc", itemFound = false, itemBytes = None),
+        "widgets") shouldBe 0L
+    }
+  }

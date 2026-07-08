@@ -39,3 +39,11 @@ trait BoundaryProtocol[Req <: TimedEvent, Resp <: TimedEvent]:
    *  to build the replacement timeout from the request the lost response was
    *  answering. */
   def originalRequestOf(resp: Resp): Option[Req]
+
+  /** How many units of the named budget dimension this request consumes (e.g.
+   *  `"bytes"`, `"requests"`).  Unknown dimensions should return `0` (never
+   *  binding) rather than throw. */
+  def measureRequest(req: Req, dimension: String): Long
+
+  /** How many units of the named budget dimension this response consumes. */
+  def measureResponse(resp: Resp, dimension: String): Long

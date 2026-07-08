@@ -54,13 +54,21 @@ object SystemBoundaryStage:
    *  @param egressLossProbability  response-side drop probability (service did
    *                               the work, response lost — retry duplicates it).
    *  @param maxPendingTimeouts     hard cap on the injected-timeout backlog. */
+  /** One throughput-budget dimension: at most `capPerTick` units of `name` may
+   *  cross per tick in the configured direction. */
+  final case class BudgetDimension(name: String, capPerTick: Long):
+    require(capPerTick > 0L, s"capPerTick must be positive, got $capPerTick")
+
   final case class Config(
     tickDurationSeconds:    Double                       = 1.0,
     ingressLatency:         Option[LatencyMillisSampler] = None,
     egressLatency:          Option[LatencyMillisSampler] = None,
     ingressLossProbability: Double                       = 0.0,
     egressLossProbability:  Double                       = 0.0,
-    maxPendingTimeouts:     Int                          = 100000
+    maxPendingTimeouts:     Int                          = 100000,
+    ingressBudget:          Vector[BudgetDimension]      = Vector.empty,
+    egressBudget:           Vector[BudgetDimension]      = Vector.empty,
+    maxBudgetQueue:         Int                          = 100000
   ):
     require(tickDurationSeconds > 0.0,
       s"tickDurationSeconds must be positive, got $tickDurationSeconds")
@@ -70,6 +78,8 @@ object SystemBoundaryStage:
       s"egressLossProbability must be in [0,1], got $egressLossProbability")
     require(maxPendingTimeouts > 0,
       s"maxPendingTimeouts must be positive, got $maxPendingTimeouts")
+    require(maxBudgetQueue > 0,
+      s"maxBudgetQueue must be positive, got $maxBudgetQueue")
 
   /** @param ingressMetering consumption events emitted for a successful request
    *                         crossing (request direction); default emits none.
@@ -123,13 +133,20 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
         out:             Outlet[TimedElement[E]],
         latency:         Option[SystemBoundaryStage.LatencyMillisSampler],
         restamp:         (E, SimTime, Double) => E,
-        lossProbability: Double
+        lossProbability: Double,
+        budget:          Vector[SystemBoundaryStage.BudgetDimension],
+        measure:         (E, String) => Long
       ):
         private val emitQueue:       mutable.Queue[TimedElement[E]]                 = mutable.Queue.empty
         private val delayBuckets:    mutable.Map[Long, mutable.Queue[TimedElement[E]]] = mutable.Map.empty
         private val injectedBuckets: mutable.Map[Long, mutable.Queue[E]]           = mutable.Map.empty
         private var injectedCount:   Int  = 0
         private var lastForwardedTick: Long = Long.MinValue
+
+        // Budget admission: units consumed this tick per dimension (reset at tick
+        // boundary), and a bounded delay queue for over-budget elements.
+        private val consumed:    mutable.Map[String, Long] = mutable.Map.empty
+        private val budgetQueue: mutable.Queue[E]          = mutable.Queue.empty
 
         /** Set once this inlet's terminal `EndOfTime` element has been observed. */
         var endOfTimeSeen: Boolean = false
@@ -181,6 +198,7 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
             delayBuckets.clear()
             injectedBuckets.clear()
             injectedCount = 0
+            budgetQueue.clear()   // over-budget elements that never crossed
             emitQueue.enqueue(TimedControlEvent.EndOfTime)
             endOfTimeForwarded = true
             emit()
@@ -199,6 +217,9 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
                 q.foreach(emitQueue.enqueue)
               }
               onTickForwarded(t)
+              // New tick: reset the per-tick budget and re-admit queued elements.
+              consumed.clear()
+              drainBudgetQueue(t)
 
             case TimedControlEvent.EndOfTime =>
               endOfTimeSeen = true
@@ -210,21 +231,63 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
               if lossProbability > 0.0 && rng.nextDouble() < lossProbability then
                 dropHandler(business, business.eventTime.ticks)
               else
-                onCrossing(business)   // meter successful crossing at its arrival window
-                latency match
-                  case None =>
-                    emitQueue.enqueue(business)
-                  case Some(sampler) =>
-                    val latencyMs    = sampler(rng)
-                    val rawOffset    = business.intraTick + latencyMs / (config.tickDurationSeconds * 1000.0)
-                    val deltaTicks   = rawOffset.toLong
-                    val newIntraTick = rawOffset - deltaTicks
-                    val newTick      = business.eventTime.ticks + deltaTicks
-                    val restamped    = restamp(business, SimTime.of(newTick), newIntraTick)
-                    if newTick <= lastForwardedTick then
-                      emitQueue.enqueue(restamped)
-                    else
-                      delayBuckets.getOrElseUpdate(newTick, mutable.Queue.empty).enqueue(restamped)
+                admitOrQueue(business, business.eventTime.ticks)
+
+        /** True if `business` fits the remaining budget of every dimension. */
+        private def fits(business: E): Boolean =
+          budget.forall(d => consumed.getOrElse(d.name, 0L) + measure(business, d.name) <= d.capPerTick)
+
+        private def consumeBudget(business: E): Unit =
+          budget.foreach(d => consumed(d.name) = consumed.getOrElse(d.name, 0L) + measure(business, d.name))
+
+        /** Admit immediately if it fits; else delay in the bounded budget queue;
+         *  else (queue full) tail-drop it into a timeout. */
+        private def admitOrQueue(business: E, arrivalWindow: Long): Unit =
+          if budget.isEmpty || fits(business) then
+            consumeBudget(business)
+            admit(business, arrivalWindow)
+          else if budgetQueue.size < config.maxBudgetQueue then
+            budgetQueue.enqueue(business)
+          else
+            dropHandler(business, arrivalWindow)   // tail-drop → timeout
+
+        /** A crossing was admitted at `window`: restamp to the admission window,
+         *  meter it, and forward it (with transport latency). */
+        private def admit(business: E, window: Long): Unit =
+          val atWindow = restamp(business, SimTime.of(window), business.intraTick)
+          onCrossing(atWindow)        // meter at the admission window
+          emitWithLatency(atWindow)
+
+        /** Strict-FIFO drain against the fresh budget of window `w`: admit from the
+         *  head while it fits; stop at the first element that does not (HOL). */
+        private def drainBudgetQueue(w: Long): Unit =
+          var progress = true
+          while budgetQueue.nonEmpty && progress do
+            val head = budgetQueue.head
+            if budget.isEmpty || fits(head) then
+              budgetQueue.dequeue()
+              consumeBudget(head)
+              admit(head, w)
+            else
+              progress = false
+
+        /** Forward a business element, applying transport latency (Slice 2): emit
+         *  now, or park in `delayBuckets` if it lands in a later tick. */
+        private def emitWithLatency(business: E): Unit =
+          latency match
+            case None =>
+              emitQueue.enqueue(business)
+            case Some(sampler) =>
+              val latencyMs    = sampler(rng)
+              val rawOffset    = business.intraTick + latencyMs / (config.tickDurationSeconds * 1000.0)
+              val deltaTicks   = rawOffset.toLong
+              val newIntraTick = rawOffset - deltaTicks
+              val newTick      = business.eventTime.ticks + deltaTicks
+              val restamped    = restamp(business, SimTime.of(newTick), newIntraTick)
+              if newTick <= lastForwardedTick then
+                emitQueue.enqueue(restamped)
+              else
+                delayBuckets.getOrElseUpdate(newTick, mutable.Queue.empty).enqueue(restamped)
 
         private def emit(): Unit =
           if isAvailable(out) && emitQueue.nonEmpty then
@@ -260,10 +323,12 @@ private final class SystemBoundaryStageImpl[Req <: TimedEvent, Resp <: TimedEven
 
       private val requestDir  =
         new Direction[Req](requestIn, requestOut, config.ingressLatency,
-          protocol.withRequestTiming, config.ingressLossProbability)
+          protocol.withRequestTiming, config.ingressLossProbability,
+          config.ingressBudget, protocol.measureRequest)
       private val responseDir =
         new Direction[Resp](responseIn, responseOut, config.egressLatency,
-          protocol.withResponseTiming, config.egressLossProbability)
+          protocol.withResponseTiming, config.egressLossProbability,
+          config.egressBudget, protocol.measureResponse)
 
       // The response outlet holds its terminal EndOfTime until the request side
       // has ended — a late ingress drop may still need to inject a timeout.
