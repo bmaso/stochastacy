@@ -4,9 +4,12 @@ import org.apache.commons.rng.simple.RandomSource
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, Materializer}
 import org.apache.pekko.stream.scaladsl.{Broadcast, GraphDSL, RunnableGraph, Sink, Source}
+import stochastacy.aws.boundary.SystemBoundaryStage
 import stochastacy.aws.dynamodb.{DynamoDBRequest, DynamoDBResponse, ThrottledResponse}
+import stochastacy.aws.dynamodb.boundary.DynamoDbBoundaryProtocol
 import stochastacy.aws.dynamodb.client.SdkClientStage
 import stochastacy.aws.dynamodb.table.{DynamoDbConsumptionEvent, DynamoDbTable}
+import stochastacy.aws.transfer.CrossRegionTransferEvent
 import stochastacy.aws.dynamodb.pricing.DynamoDbPricingRates
 import stochastacy.demo.{DemoMetric, SimulationTimeSeriesPoint, SingleTrialRunner, TrialResult, TrialRunConfig, TrialSummaryValue}
 import stochastacy.sim.{TimedElement, ticks}
@@ -45,6 +48,10 @@ final class EasSingleTrialRunner()(using ActorSystem, Materializer, ExecutionCon
     val alertsSdkClientRng = RandomSource.KISS.create(masterRng.nextLong())
     val uasWorkloadRng     = RandomSource.KISS.create(masterRng.nextLong())
     val uasSamplerRng      = RandomSource.KISS.create(masterRng.nextLong())
+    // Derived AFTER the pre-existing five so their seed values are unchanged.
+    // The identity-configured boundary draws nothing from it (loss and latency
+    // are both off), so trial output is bit-identical to the pre-boundary graph.
+    val alertsBoundaryRng  = RandomSource.KISS.create(masterRng.nextLong())
 
     // Use-case samplers
     val alertsSampler = EasAlertsSampler(config.alertsConfig, alertsSamplerRng)
@@ -79,17 +86,32 @@ final class EasSingleTrialRunner()(using ActorSystem, Materializer, ExecutionCon
           //   WorkloadGraph                                        [a1-poll, a3-write, a2-fetch]
           //   ├─ requestOut → SdkClientStage.in0
           //   │                     ↓ out              (primary + injected SDK retries)
-          //   │              reqBcast(2) → alertsTable.in
-          //   │                         ↘ flowCountSink      [counts every attempt separately]
+          //   │              reqBcast(2) → boundary.requestIn → alertsTable.in
+          //   │                         ↘ flowCountSink      [client-side: counts every attempt sent]
           //   │
-          //   alertsTable.out0 → respBcast(3) → SdkClientStage.in1     [retry decisions]
-          //   │                              → WorkloadGraph.responseIn [a2-fetch decisions]
-          //   └─                            → throttleSink              [metrics]
+          //   alertsTable.out0 → boundary.responseIn
+          //   boundary.responseOut → respBcast(3) → SdkClientStage.in1     [retry decisions]
+          //   │                                  → WorkloadGraph.responseIn [a2-fetch decisions]
+          //   └─                                → throttleSink              [metrics]
+          //
+          //   The SystemBoundaryStage models the network between the SDK client and
+          //   the table.  Task 5.1: identity Config() — pure pass-through, zero
+          //   behavior change.  Task 5.2 moves the config into EasScenarioConfig
+          //   and enables loss/budget so the boundary bites during the burst.
+          //   Both Broadcast taps sit on the CLIENT side of the boundary:
+          //   flow counts = attempts the client sends (even if the network later
+          //   drops them); the SDK sees boundary timeouts (needed for retries).
           val workloadG   = b.add(WorkloadGraph(aw, allWorkloads, alertsWorkloadRng, config.simulationTicks))
           val sdkClient   = b.add(SdkClientStage.componentOf(
                                     strategy            = config.sdkRetryStrategy,
                                     tickDurationSeconds = 1.0,
                                     rng                 = alertsSdkClientRng
+                                  ))
+          val boundary    = b.add(SystemBoundaryStage.componentOf[
+                                    DynamoDBRequest, DynamoDBResponse, CrossRegionTransferEvent](
+                                    DynamoDbBoundaryProtocol,
+                                    SystemBoundaryStage.Config(),
+                                    alertsBoundaryRng
                                   ))
           val alertsTable = b.add(DynamoDbTable.componentOf(alertsTableCfg))
           val reqBcast    = b.add(Broadcast[TimedElement[DynamoDBRequest]](2))
@@ -97,13 +119,17 @@ final class EasSingleTrialRunner()(using ActorSystem, Materializer, ExecutionCon
 
           workloadG.requestOut ~> sdkClient.in0
           sdkClient.out        ~> reqBcast.in
-          reqBcast.out(0)      ~> alertsTable.in
+          reqBcast.out(0)      ~> boundary.requestIn
           reqBcast.out(1)      ~> flowCountSinkShape
+          boundary.requestOut  ~> alertsTable.in
 
-          alertsTable.out0     ~> respBcast.in
+          alertsTable.out0     ~> boundary.responseIn
+          boundary.responseOut ~> respBcast.in
           respBcast.out(0)     ~> sdkClient.in1
           respBcast.out(1)     ~> workloadG.responseIn
           respBcast.out(2)     ~> throttleSinkShape
+
+          boundary.consumptionOut ~> b.add(Sink.ignore)   // metering unused until 5.2/slice 6
 
           alertsTable.out1     ~> alertsConsSinkShape
           alertsTable.out2     ~> b.add(Sink.ignore)
