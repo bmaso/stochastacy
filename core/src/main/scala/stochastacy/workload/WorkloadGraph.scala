@@ -273,8 +273,8 @@ private final class WorkloadRequestBusStage(
             if flow.proportion >= 1.0 then n
             else if flow.proportion <= 0.0 then 0
             else BinomialDistribution.of(n, flow.proportion).createSampler(transformerRng).sample()
-          Vector.fill(count)(
-            WorkloadRequestStream.buildRequest(emitTick, flow.usecase, flow.id, flow.shape, transformerRng, transformerRng.nextDouble())
+          Vector.fill[TimedElement[DynamoDBRequest]](count)(
+            flow.shape.build(emitTick, flow.usecase, flow.id, transformerRng, transformerRng.nextDouble())
           )
 
       private def drainQueues(upTo: Long): Vector[TimedElement[DynamoDBRequest]] =

@@ -1,7 +1,13 @@
 package stochastacy.workload
 
-import stochastacy.aws.dynamodb.DynamoDbReadTarget
+import org.apache.commons.rng.UniformRandomProvider
+import stochastacy.aws.dynamodb.{
+  DynamoDBRequest, DynamoDbReadTarget, DeleteItemRequest, GetItemRequest, PutItemRequest,
+  QueryRequest, ScanRequest, TransactGetItemsRequest, TransactWriteItemsRequest,
+  UpdateItemRequest
+}
 import stochastacy.aws.dynamodb.table.ReadConsistency
+import stochastacy.sim.SimTime
 
 /** Which class of simulator response outcome drives a derived flow. */
 enum OutcomeFilter:
@@ -46,30 +52,65 @@ object FlowDefinition:
     require(proportion >= 0.0 && proportion <= 1.0, s"Retry.proportion must be in [0,1], got $proportion")
     require(lagTicks >= 1, s"Retry.lagTicks must be >= 1, got $lagTicks")
 
-sealed trait RequestShape
+/** The DynamoDB request factories. Each variant knows how to mint its own request type,
+ *  carrying whatever parameter samplers that request needs.
+ *
+ *  Still `sealed` — no in-repo code needs to extend it, and sealing keeps the DSL's
+ *  `TemplateShape` → bound-form mapping exhaustively checked. Downstream projects extend
+ *  `RequestFactory` directly with their own request type rather than adding cases here. */
+sealed trait RequestShape extends RequestFactory[DynamoDBRequest]
 
 object RequestShape:
-  case object GetItem  extends RequestShape
-  case object DeleteItem extends RequestShape
+  case object GetItem extends RequestShape:
+    def build(tick: Long, usecase: String, flowId: String,
+              rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+      GetItemRequest(SimTime.of(tick), usecase, intraTick, Some(flowId))
 
-  case class PutItem(itemBytes: StatelessSampler[Long]) extends RequestShape
-  case class UpdateItem(itemBytes: StatelessSampler[Long]) extends RequestShape
+  case object DeleteItem extends RequestShape:
+    def build(tick: Long, usecase: String, flowId: String,
+              rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+      DeleteItemRequest(SimTime.of(tick), usecase, intraTick, Some(flowId))
+
+  case class PutItem(itemBytes: StatelessSampler[Long]) extends RequestShape:
+    def build(tick: Long, usecase: String, flowId: String,
+              rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+      PutItemRequest(SimTime.of(tick), usecase, itemBytes.sample(tick, rng, ())._1, intraTick, Some(flowId))
+
+  case class UpdateItem(itemBytes: StatelessSampler[Long]) extends RequestShape:
+    def build(tick: Long, usecase: String, flowId: String,
+              rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+      UpdateItemRequest(SimTime.of(tick), usecase, itemBytes.sample(tick, rng, ())._1, intraTick, Some(flowId))
 
   case class Query(
     target:          DynamoDbReadTarget,
     readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
-  ) extends RequestShape
+  ) extends RequestShape:
+    def build(tick: Long, usecase: String, flowId: String,
+              rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+      QueryRequest(SimTime.of(tick), usecase, target, readConsistency,
+                   intraTick = intraTick, flowId = Some(flowId))
 
   case class Scan(
     target:          DynamoDbReadTarget,
     readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
-  ) extends RequestShape
+  ) extends RequestShape:
+    def build(tick: Long, usecase: String, flowId: String,
+              rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+      ScanRequest(SimTime.of(tick), usecase, target, readConsistency,
+                  intraTick = intraTick, flowId = Some(flowId))
 
   case class TransactWriteItems(
     perItemBytes: Vector[StatelessSampler[Long]]
-  ) extends RequestShape
+  ) extends RequestShape:
+    def build(tick: Long, usecase: String, flowId: String,
+              rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+      TransactWriteItemsRequest(SimTime.of(tick), usecase,
+                                perItemBytes.map(_.sample(tick, rng, ())._1), intraTick, Some(flowId))
 
-  case class TransactGetItems(itemCount: StatelessSampler[Int]) extends RequestShape
+  case class TransactGetItems(itemCount: StatelessSampler[Int]) extends RequestShape:
+    def build(tick: Long, usecase: String, flowId: String,
+              rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+      TransactGetItemsRequest(SimTime.of(tick), usecase, itemCount.sample(tick, rng, ())._1, intraTick, Some(flowId))
 
 
 case class RequestShapeDefinition(

@@ -1,6 +1,11 @@
 # IPS Hand-Off
 
-Last updated: 2026-05-11 (Phase 7 Slices 1–3 complete — sampler hierarchy, workload model, demo migration; 490 tests passing)
+Last updated: 2026-07-27 (Phase 7 complete incl. YAML DSL + visualizer; Phase 7b complete — intra-tick arrival model; Phase 8 paused; Generic Workload Layer planned)
+
+> **Note:** sections below dated from the 2026-05-11 revision describe Phase 7 Slices 1–3 and
+> have not all been revised. Where this document and `CLAUDE.md` disagree, **`CLAUDE.md` is
+> authoritative** — it has been kept current. Test counts quoted below predate Phase 7b and are
+> stale; run `sbt test` for the true figure.
 
 ## Current Position
 
@@ -271,21 +276,64 @@ Total: 317 core tests + 173 examples tests = 490 tests all passing.
 
 ## Recommended Next Work
 
-**Phase 7 Slice 4 — YAML DSL.** Slices 1–3 are complete. See [ips-phase7.md](../roadmaps/ips-phase7.md) for the full Phase 7 spec.
+**Generic Workload Layer.** Phase 7 (all 5 slices) and Phase 7b are complete; Phase 8 (EAS burst
+simulator) is paused and stashed. The active work is making the workload arrival layer polymorphic
+over request type.
 
-Slice 4 delivers a YAML schema and parser that produces a `WorkloadDefinition` from a YAML document, making workloads portable and independent of Scala code. Scope: stateless samplers only (all seven distribution samplers + `ConstantSampler`); all temporal shape functions from `TemporalShapeFunctions`; `WorkloadDefinition` and `RequestShapeDefinition` structure. Stateful samplers (`RandomBurstSampler`, `ErasedSampler`) remain available programmatically but are not representable in YAML. Round-trip tests verify that parsing a YAML document produces a definition whose sampled output matches the equivalent programmatically-constructed definition.
+**Read [generic-workload-layer.md](../specs/generic-workload-layer.md) first** — it carries the full
+six-slice plan, the naming rationale, the scope boundary, and four open questions (two already
+resolved with recorded findings).
 
-After Slice 4, Phase 7 continues with Slices 5+ (web-based workload visualizer, to be broken into slices once the DSL is complete).
+Motivation: the `stochastacy.workload` package is two things bolted together. `Sampler[S, T]` and
+everything built on it has zero AWS imports and is reusable as-is; `RequestShape` /
+`RequestShapeDefinition` / `WorkloadDefinition` / `WorkloadRequestStream` are hard-typed to
+`DynamoDBRequest`. An out-of-repo consumer cannot add cases to a sealed `RequestShape`, so the only
+way to model a non-DynamoDB workload today is to reimplement the arrival protocol — `Tick` framing,
+the `EndOfTime` sentinel, three-RNG discipline, intra-tick draw — which is exactly the part that is
+easy to get subtly wrong.
 
-### Phase 7 Status
+Target vocabulary (three names, one job each):
+
+| New | Replaces | Role |
+|-----|----------|------|
+| `RequestFactory[Req <: TimedEvent]` | `RequestShape` (bound form) | Mints one request; `build` returns `Req`, not `TimedElement[Req]` |
+| `RatedRequestFactory[Req]` | `RequestShapeDefinition` | A factory that also knows its arrival rate; **extends** `RequestFactory[Req]` |
+| `WorkloadFlow[Req]` | `FlowDefinition` | One named flow; `Workload*` prefix also disambiguates from Pekko's `Flow` |
+
+Explicitly **out of scope**: `FollowOnTransformerStage`, `WorkloadGraph`, and the YAML DSL
+(`WorkloadDsl` / `WorkloadFile` / `WorkloadTemplate` / `TemplateShape`) all stay DynamoDB-specific.
+Derived flows key off simulator response outcomes; a workload-only consumer has no outcomes to
+observe and gets **independent flows only**.
+
+Start with slice 1 (introduce `RequestFactory`, move construction onto the shapes, delete
+`WorkloadRequestStream.buildRequest`). It is provably test-neutral — `grep -rn buildRequest
+core/src/test/` returns nothing, so if a test needs editing during slice 1, behaviour changed and
+something is wrong.
+
+### Phase 7 Status (complete — all 5 slices)
 
 | Slice | Status | Summary |
 |-------|--------|---------|
 | 1. Core sampler hierarchy | **Done** | `Sampler[S, T]` trait; `StatelessSampler[T]` alias; 7 distribution samplers; `MappedSampler` / `CombiningSampler` combinators; `TemporalShapeFunctions`; `RandomBurstSampler`; `ErasedSampler` |
 | 2. Workload definition model | **Done** | `RequestShape` sealed ADT; `RequestShapeDefinition`; `WorkloadDefinition`; `WorkloadRequestStream` generator |
 | 3. Demo migration | **Done** | All runners use `WorkloadRequestStream`; `toWorkloadDefinition(region)` on `ThermostatFleetScenarioConfig`; `generateRequestsForRegion` deleted |
-| 4. YAML DSL | Planned | YAML schema + parser; stateless samplers only; round-trip tests |
-| 5+ Workload visualizer | To be sliced | Web tool; timeline + decomposition views; Tauri desktop packaging |
+| 4. YAML DSL | **Done** | `WorkloadDsl` / `WorkloadEvaluator` / `WorkloadFile` / `WorkloadTemplate`; separate `TemplateShape` ADT as the parsed form |
+| 5. Workload visualizer | **Done** | `visualizer` module |
+
+### Phase 7b Status (complete)
+
+Intra-tick arrival model. `intraTick: Double ∈ [0.0, 1.0)` on the `TimedEvent` trait (concrete `val`,
+default `0.0` — so consumption/metric events inherit it without constructor changes).
+`WorkloadRequestStream` draws arrival positions from `Uniform(0,1)` with an RNG independent of the
+rate and param RNGs. `TableStorageStage` samples latency **once** per admitted request and threads it
+through `StorageAdmitted(sample, latencyMs)` so the same draw feeds both the
+`SuccessfulRequestLatency` metric and the response's `intraTick`/`eventTime`. Response timing:
+`rawOffset = req.intraTick + latencyMs / (tickDurationSeconds * 1000)`. `ThrottledResponse.intraTick`
+stays `0.0`, deferred.
+
+Test helper: `stochastacy.test.clearTiming` (in `core/src/test/.../test/stream_assertions.scala`)
+zeroes `intraTick` on any DynamoDB response so tests can compare response objects by value without
+latency noise. Apply at comparison sites, not in production code.
 
 ### Phase 6 Status (complete — all 10 slices)
 
@@ -318,3 +366,19 @@ After Slice 4, Phase 7 continues with Slices 5+ (web-based workload visualizer, 
 - `DynamoDbAutoScaler` (in `core/.../autoscaling/`) is an actor-based external controller that bridges the metric outlet and `componentOfManaged.managementIn` without forming a stream cycle. It uses `Source.queue[TimedElement[DynamoDbManagementEvent]](64).preMaterialize()` (non-deprecated `BoundedSourceQueue` API) and `Sink.actorRef` for metric ingestion. Stream completion: metric stream ends → `StreamComplete` → actor calls `queue.complete()` → management source completes → graph resolves. The runner calls `autoScaler.stop()` after the trial completes to release the actor.
 - `PricingSchedule.default` is `StaticPricingSchedule(Map.empty, DynamoDbPricingRates.phase1Default)` — used by all single-region demos without any change in behavior; callers that need per-region rates construct via `PricingSchedule.byRegion(...)`
 - Provisioned cost uses `provisionedReadCapacityUnitHourlyPrice`/`provisionedWriteCapacityUnitHourlyPrice` from `RateSet`, NOT the on-demand per-unit prices; the two differ by 520× for writes
+- The workload arrival layer is mid-redesign — see [generic-workload-layer.md](../specs/generic-workload-layer.md) before touching `WorkloadDefinition.scala` or `WorkloadRequestStream.scala`. `buildRequest` has **three** callers (`WorkloadRequestStream:50`, `FollowOnTransformerStage:98`, `WorkloadGraph:277`), not one
+- `TemplateShape` (DSL parsed form) and `RequestShape` (bound form) are distinct ADTs. All exhaustive matching in `WorkloadEvaluator` and `WorkloadDslSpec` targets `TemplateShape`; the only exhaustive match on `RequestShape` is `buildRequest`. This is why the bound form can become an open trait without breaking tooling
+- `sbt core/publishM2` publishes core to `~/.m2` as `com.bmaso:stochastacy_3:0.1.0-SNAPSHOT` for standalone downstream projects. Root has `publish / skip := true`, so scope to `core`
+
+## Known Open Issues
+
+- **Grafana dashboard time range.** After adding `--start-time` to the order-tracking `generate`
+  command (default: midnight 2026-05-01 US/Pacific = epoch `1777618800`), the dashboard renders
+  correctly only when the time picker starts at "now" — the intended 2026-05-01 default window
+  shows no data. Unresolved. The tick→epoch offset is applied in
+  `OrderTrackingPhase2DemoRunner.applyTickOffset`, which shifts `tick` on per-tick records and
+  `windowStartTick` on windowed records; summary records are passed through. Suspect either the
+  staged Postgres rows or the dashboard's `time.from`/`to` are not both in the shifted domain.
+- **Phase 6 slices 9 & 10 never visually verified.** Transactions and PITR Pricing pass all tests
+  but were never checked through a full `generate → stage → view` cycle; the capstone Grafana
+  dashboard still has no PITR cost panel.

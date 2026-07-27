@@ -94,8 +94,8 @@ object FollowOnTransformerStage:
             if flow.proportion >= 1.0 then n
             else if flow.proportion <= 0.0 then 0
             else BinomialDistribution.of(n, flow.proportion).createSampler(rng).sample()
-          Vector.fill(count)(
-            WorkloadRequestStream.buildRequest(emitTick, flow.usecase, flow.id, flow.shape, rng, rng.nextDouble())
+          Vector.fill[TimedElement[DynamoDBRequest]](count)(
+            flow.shape.build(emitTick, flow.usecase, flow.id, rng, rng.nextDouble())
           )
 
       /** Drains any batches from delayQueues whose target tick <= drainUpTo. */
