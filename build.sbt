@@ -1,4 +1,5 @@
 ThisBuild / scalaVersion := "3.3.1"
+ThisBuild / organization := "com.bmaso"
 
 lazy val Versions = new {
   val pekkoStreamVersion = "1.1.3"
@@ -17,7 +18,7 @@ lazy val Versions = new {
 lazy val core = (project in file("core"))
   .settings(
     name := "stochastacy",
-    version := "0.0.1",
+    version := "0.1.0-SNAPSHOT",
     libraryDependencies ++= Seq(
       // Pekko -- streaming, actors, and HTTP server
       "org.apache.pekko" %% "pekko-stream" % Versions.pekkoStreamVersion,
