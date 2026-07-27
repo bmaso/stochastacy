@@ -554,7 +554,7 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
   /** Extract the RequestShape from a FlowDefinition.Independent for assertion convenience. */
   private def independentShape(f: FlowDefinition): RequestShape =
     f match
-      case FlowDefinition.Independent(_, defn) => defn.shape
+      case FlowDefinition.Independent(_, paced) => paced.factory
       case other => fail(s"Expected Independent flow, got: $other")
 
   "WorkloadTemplate bind" should {

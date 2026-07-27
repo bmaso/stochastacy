@@ -362,7 +362,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
           FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "base", proportion = 0.5, lagTicks = 1),
           FlowDefinition.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1",   proportion = 0.5, lagTicks = 2),
           FlowDefinition.Retry(id = "r3", sourceId = "uc", sourceFlowId = "r2",   proportion = 0.5, lagTicks = 4)
@@ -378,7 +378,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
           FlowDefinition.FollowOn(id = "fo", sourceId = "uc", sourceFlowId = "base",
             outcome = OutcomeFilter.Success, proportion = 0.5, lagTicks = 1, shape = putShape),
           FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "fo", proportion = 0.5, lagTicks = 1),
@@ -394,7 +394,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
           FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 1)
         )
       )
@@ -410,7 +410,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
           FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "r2", proportion = 0.5, lagTicks = 1),
           FlowDefinition.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 1)
         )
@@ -426,7 +426,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = getShape)),
+          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
           FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "nope", proportion = 0.5, lagTicks = 1)
         )
       )
@@ -441,7 +441,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "tA",
         usecase   = "wA",
         flows     = Vector(
-          FlowDefinition.Independent("base", RequestShapeDefinition(rate = ConstantSampler(0), shape = putShape))
+          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = putShape))
         )
       )
       val wB = WorkloadDefinition(

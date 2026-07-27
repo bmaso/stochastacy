@@ -34,7 +34,7 @@ trait RequestFactory[Req <: TimedEvent]:
             rng: UniformRandomProvider, intraTick: Double): Req
 
 /** A factory that also knows its arrival rate. */
-final case class RatedRequestFactory[Req <: TimedEvent](
+final case class PacedRequestFactory[Req <: TimedEvent](
   rate:    StatelessSampler[Int],
   factory: RequestFactory[Req]
 ) extends RequestFactory[Req]:
@@ -48,7 +48,7 @@ sealed trait WorkloadFlow[Req <: TimedEvent]:
 
 object WorkloadFlow:
   final case class Independent[Req <: TimedEvent](
-    id: String, factory: RatedRequestFactory[Req]) extends WorkloadFlow[Req]
+    id: String, factory: PacedRequestFactory[Req]) extends WorkloadFlow[Req]
 
   final case class FollowOn[Req <: TimedEvent](
     id: String, sourceId: String, sourceFlowId: String, outcome: OutcomeFilter,
@@ -64,10 +64,10 @@ object WorkloadFlow:
 - `RequestFactory` — it mints requests; "shape" described inert data and stopped fitting
   the moment construction moved onto the type. `Shape` survives where it is still
   accurate: `TemplateShape`, the DSL's parsed form.
-- `RatedRequestFactory extends RequestFactory` — the IS-A is real, and the subtype
+- `PacedRequestFactory extends RequestFactory` — the IS-A is real, and the subtype
   relation lines up with a distinction the ADT already makes. `Independent` needs a rate;
   `FollowOn`/`Retry` deliberately do not (their rate derives from source outcomes). So
-  `Retry` resolution can copy a source flow's factory uniformly, rated or bare.
+  `Retry` resolution can copy a source flow's factory uniformly, paced or bare.
 - `WorkloadFlow` replaces `FlowDefinition` — `Workload*` is already this package's naming
   convention (`WorkloadDefinition`, `WorkloadGraph`, `WorkloadDsl`, `WorkloadEvaluator`,
   `WorkloadFile`, `WorkloadTemplate`, `WorkloadRequestStream`); `FlowDefinition` was the
@@ -119,7 +119,7 @@ Verify: no behavioural change intended. Existing tests should pass unedited unle
 `WorkloadRequestStreamSpec` calls `buildRequest` directly (it is `private[workload]`, so
 it may) — see open question 4.
 
-### Slice 2 — `RequestShapeDefinition` → `RatedRequestFactory`
+### Slice 2 — `RequestShapeDefinition` → `PacedRequestFactory`
 
 - Rename the type; add `extends RequestFactory[DynamoDBRequest]` delegating `build` to
   the inner factory.
@@ -138,7 +138,7 @@ bodies accordingly.
 
 ### Slice 4 — Genericize over `Req`
 
-- Add `[Req <: TimedEvent]` to `RatedRequestFactory`, `WorkloadFlow`,
+- Add `[Req <: TimedEvent]` to `PacedRequestFactory`, `WorkloadFlow`,
   `WorkloadDefinition`, `WorkloadRequestStream`.
 - Pin every DynamoDB-bound consumer to `WorkloadDefinition[DynamoDBRequest]` (see scope
   table). Consider `type DynamoDbWorkload = WorkloadDefinition[DynamoDBRequest]` to keep
@@ -183,7 +183,7 @@ point works.
    decide package placement: stay in `stochastacy.workload`, or move to
    `stochastacy.aws.dynamodb.workload` to make the generic/specific split visible in the
    directory tree.
-3. **Should `RatedRequestFactory` extend `RequestFactory`?** This spec says yes. The
+3. **Should `PacedRequestFactory` extend `RequestFactory`?** This spec says yes. The
    alternative is plain composition, which avoids a `build` that ignores `rate` — a mild
    trap for callers. Revisit if the IS-A causes confusion in practice.
 4. ~~**Does `WorkloadRequestStreamSpec` call `buildRequest` directly?**~~ *Resolved: no.*

@@ -145,20 +145,20 @@ final case class ThermostatFleetScenarioConfig(
                          alertStormDurationTicks, stormBurstAmount)
     )
 
-    val telemetryShape: RequestShapeDefinition = transactWriteItemsPerItemBytes match
+    val telemetryShape: PacedRequestFactory = transactWriteItemsPerItemBytes match
       case Some(perItemBytes) =>
-        RequestShapeDefinition.transactWriteItems(telemetryRateSampler,
+        PacedRequestFactory.transactWriteItems(telemetryRateSampler,
           perItemBytes.map(b => ConstantSampler(b)))
       case None =>
-        RequestShapeDefinition.putItem(telemetryRateSampler, ConstantSampler(telemetryItemMeanBytes))
+        PacedRequestFactory.putItem(telemetryRateSampler, ConstantSampler(telemetryItemMeanBytes))
 
-    val queryShape = RequestShapeDefinition.query(
+    val queryShape = PacedRequestFactory.query(
       PoissonSampler.constant(customerSupportQueryRatePerTick),
       DynamoDbReadTarget.GlobalSecondaryIndex(tableName, ThermostatFleetScenarioConfig.CustomerDevicesGsiName),
       readConsistency
     )
 
-    val scanShape = RequestShapeDefinition.scan(
+    val scanShape = PacedRequestFactory.scan(
       PoissonSampler.constant(fleetDashboardScanRatePerTick),
       DynamoDbReadTarget.GlobalSecondaryIndex(tableName, ThermostatFleetScenarioConfig.FleetAlertsGsiName)
     )

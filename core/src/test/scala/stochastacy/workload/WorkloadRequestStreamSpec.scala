@@ -30,7 +30,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
   private val noRequestsWorkload = WorkloadDefinition.ofIndependent(
     tableName = "t",
     usecase   = "test",
-    requests  = Vector(RequestShapeDefinition.getItem(ConstantSampler(0)))
+    requests  = Vector(PacedRequestFactory.getItem(ConstantSampler(0)))
   )
 
   // ── Tick framing ───────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "emit a Tick before any requests for each tick" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.getItem(ConstantSampler(2))))
+        Vector(PacedRequestFactory.getItem(ConstantSampler(2))))
       val events = run(workload, ticks = 2L)
       // Structure should be: Tick(1), req, req, Tick(2), req, req, Tick(3), EndOfTime
       events(0) shouldBe a[TimedControlEvent.Tick]
@@ -63,7 +63,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "produce exactly rate requests per tick for a constant rate" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.putItem(ConstantSampler(5), ConstantSampler(100L))))
+        Vector(PacedRequestFactory.putItem(ConstantSampler(5), ConstantSampler(100L))))
       val events = run(workload, ticks = 4L)
       // 4 ticks × 5 requests = 20 requests, plus 5 Tick events
       requests(events).size shouldBe 20
@@ -71,8 +71,8 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "sum rates across multiple shapes" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test", Vector(
-        RequestShapeDefinition.putItem(ConstantSampler(3), ConstantSampler(100L)),
-        RequestShapeDefinition.getItem(ConstantSampler(2))
+        PacedRequestFactory.putItem(ConstantSampler(3), ConstantSampler(100L)),
+        PacedRequestFactory.getItem(ConstantSampler(2))
       ))
       val events = run(workload, ticks = 1L)
       requests(events).size shouldBe 5
@@ -85,32 +85,32 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "produce only PutItemRequests for a PutItem shape" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.putItem(ConstantSampler(3), ConstantSampler(64L))))
+        Vector(PacedRequestFactory.putItem(ConstantSampler(3), ConstantSampler(64L))))
       requests(run(workload)).foreach(_ shouldBe a[PutItemRequest])
     }
 
     "produce only GetItemRequests for a GetItem shape" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.getItem(ConstantSampler(3))))
+        Vector(PacedRequestFactory.getItem(ConstantSampler(3))))
       requests(run(workload)).foreach(_ shouldBe a[GetItemRequest])
     }
 
     "produce only UpdateItemRequests for an UpdateItem shape" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.updateItem(ConstantSampler(2), ConstantSampler(64L))))
+        Vector(PacedRequestFactory.updateItem(ConstantSampler(2), ConstantSampler(64L))))
       requests(run(workload)).foreach(_ shouldBe a[UpdateItemRequest])
     }
 
     "produce only DeleteItemRequests for a DeleteItem shape" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.deleteItem(ConstantSampler(2))))
+        Vector(PacedRequestFactory.deleteItem(ConstantSampler(2))))
       requests(run(workload)).foreach(_ shouldBe a[DeleteItemRequest])
     }
 
     "produce correct mix of types for multiple shapes" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test", Vector(
-        RequestShapeDefinition.putItem(ConstantSampler(3), ConstantSampler(64L)),
-        RequestShapeDefinition.getItem(ConstantSampler(2))
+        PacedRequestFactory.putItem(ConstantSampler(3), ConstantSampler(64L)),
+        PacedRequestFactory.getItem(ConstantSampler(2))
       ))
       val rs = requests(run(workload, ticks = 1L))
       rs.count(_.isInstanceOf[PutItemRequest]) shouldBe 3
@@ -124,7 +124,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "set itemBytes on PutItemRequest from the sampler" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.putItem(ConstantSampler(2), ConstantSampler(512L))))
+        Vector(PacedRequestFactory.putItem(ConstantSampler(2), ConstantSampler(512L))))
       requests(run(workload)).foreach {
         case r: PutItemRequest => r.itemBytes shouldBe 512L
         case _ =>
@@ -133,7 +133,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "set itemBytes on UpdateItemRequest from the sampler" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.updateItem(ConstantSampler(2), ConstantSampler(256L))))
+        Vector(PacedRequestFactory.updateItem(ConstantSampler(2), ConstantSampler(256L))))
       requests(run(workload)).foreach {
         case r: UpdateItemRequest => r.itemBytes shouldBe 256L
         case _ =>
@@ -143,7 +143,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
     "set target and readConsistency on QueryRequest" in {
       val target = DynamoDbReadTarget.GlobalSecondaryIndex("t", "gsi-1")
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.query(ConstantSampler(1), target,
+        Vector(PacedRequestFactory.query(ConstantSampler(1), target,
           ReadConsistency.StronglyConsistent)))
       requests(run(workload, ticks = 1L)).foreach {
         case r: QueryRequest =>
@@ -156,7 +156,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
     "set target and readConsistency on ScanRequest" in {
       val target = DynamoDbReadTarget.Table("t")
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.scan(ConstantSampler(1), target)))
+        Vector(PacedRequestFactory.scan(ConstantSampler(1), target)))
       requests(run(workload, ticks = 1L)).foreach {
         case r: ScanRequest =>
           r.target          shouldBe target
@@ -167,7 +167,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "set perItemBytes on TransactWriteItemsRequest from samplers" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.transactWriteItems(
+        Vector(PacedRequestFactory.transactWriteItems(
           ConstantSampler(1),
           Vector(ConstantSampler(100L), ConstantSampler(200L))
         )))
@@ -179,7 +179,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "set itemCount on TransactGetItemsRequest" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.transactGetItems(ConstantSampler(1), itemCount = ConstantSampler(3))))
+        Vector(PacedRequestFactory.transactGetItems(ConstantSampler(1), itemCount = ConstantSampler(3))))
       requests(run(workload, ticks = 1L)).foreach {
         case r: TransactGetItemsRequest => r.itemCount shouldBe 3
         case _ =>
@@ -193,13 +193,13 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "propagate the workload usecase to all requests" in {
       val workload = WorkloadDefinition.ofIndependent("t", "my-usecase",
-        Vector(RequestShapeDefinition.putItem(ConstantSampler(2), ConstantSampler(64L))))
+        Vector(PacedRequestFactory.putItem(ConstantSampler(2), ConstantSampler(64L))))
       requests(run(workload)).foreach(_.usecase shouldBe "my-usecase")
     }
 
     "stamp each request with the SimTime of its tick" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.getItem(ConstantSampler(1))))
+        Vector(PacedRequestFactory.getItem(ConstantSampler(1))))
       val rs = requests(run(workload, ticks = 3L))
       rs.map(_.eventTime) shouldBe Vector(SimTime.of(1), SimTime.of(2), SimTime.of(3))
     }
@@ -221,7 +221,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "end with EndOfTime even when requests are present in the stream" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.getItem(ConstantSampler(3))))
+        Vector(PacedRequestFactory.getItem(ConstantSampler(3))))
       run(workload, ticks = 5L).last shouldBe TimedControlEvent.EndOfTime
     }
   }
@@ -232,7 +232,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "stamp each request with intraTick in [0.0, 1.0)" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.putItem(ConstantSampler(10), ConstantSampler(64L))))
+        Vector(PacedRequestFactory.putItem(ConstantSampler(10), ConstantSampler(64L))))
       requests(run(workload, ticks = 5L)).foreach { r =>
         r.intraTick should be >= 0.0
         r.intraTick should be < 1.0
@@ -241,7 +241,7 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "produce non-degenerate intraTick values across many requests" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test",
-        Vector(RequestShapeDefinition.getItem(ConstantSampler(20))))
+        Vector(PacedRequestFactory.getItem(ConstantSampler(20))))
       val vals = requests(run(workload, ticks = 10L)).map(_.intraTick)
       vals should have size 200
       // 200 Uniform(0,1) draws — probability all are exactly 0.0 is astronomically small
@@ -252,8 +252,8 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
     "produce independent intraTick draws for different shapes" in {
       val workload = WorkloadDefinition.ofIndependent("t", "test", Vector(
-        RequestShapeDefinition.getItem(ConstantSampler(5)),
-        RequestShapeDefinition.putItem(ConstantSampler(5), ConstantSampler(64L))
+        PacedRequestFactory.getItem(ConstantSampler(5)),
+        PacedRequestFactory.putItem(ConstantSampler(5), ConstantSampler(64L))
       ))
       val rs   = requests(run(workload, ticks = 10L))
       val gets = rs.collect { case r: GetItemRequest => r.intraTick }
@@ -272,14 +272,14 @@ class WorkloadRequestStreamSpec extends AnyWordSpec with should.Matchers:
 
   // ── Convenience constructors ───────────────────────────────────────────────
 
-  "RequestShapeDefinition convenience constructors" should {
+  "PacedRequestFactory convenience constructors" should {
 
     "produce the same result as direct construction" in {
-      val direct = RequestShapeDefinition(
+      val direct = PacedRequestFactory(
         rate  = ConstantSampler(5),
-        shape = RequestShape.PutItem(ConstantSampler(128L))
+        factory = RequestShape.PutItem(ConstantSampler(128L))
       )
-      val convenient = RequestShapeDefinition.putItem(ConstantSampler(5), ConstantSampler(128L))
+      val convenient = PacedRequestFactory.putItem(ConstantSampler(5), ConstantSampler(128L))
       // Compare by running both through the generator and checking output
       val w1 = WorkloadDefinition.ofIndependent("t", "test", Vector(direct))
       val w2 = WorkloadDefinition.ofIndependent("t", "test", Vector(convenient))

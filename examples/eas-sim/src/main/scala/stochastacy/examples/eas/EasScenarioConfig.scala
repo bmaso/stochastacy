@@ -73,11 +73,11 @@ case class EasScenarioConfig(
       flows = Vector(
         FlowDefinition.Independent(
           id   = "a1-poll",
-          defn = RequestShapeDefinition(
+          factory = PacedRequestFactory(
             rate  = PoissonSampler(
               TemporalShapeFunctions.sinusoid(400.0, 400.0 * burstMultiplier, 900L, 450L)
             ),
-            shape = RequestShape.Query(
+            factory = RequestShape.Query(
               target          = DynamoDbReadTarget.GlobalSecondaryIndex("alerts", "by-region-index"),
               readConsistency = ReadConsistency.EventuallyConsistent
             )
@@ -85,9 +85,9 @@ case class EasScenarioConfig(
         ),
         FlowDefinition.Independent(
           id   = "a3-write",
-          defn = RequestShapeDefinition(
+          factory = PacedRequestFactory(
             rate  = PoissonSampler(tick => if tick >= 295L && tick <= 305L then 0.2 else 0.0),
-            shape = RequestShape.PutItem(ConstantSampler(4500L))
+            factory = RequestShape.PutItem(ConstantSampler(4500L))
           )
         ),
         FlowDefinition.FollowOn(
@@ -121,25 +121,25 @@ case class EasScenarioConfig(
       flows = Vector(
         FlowDefinition.Independent(
           id   = "s1-delivered",
-          defn = RequestShapeDefinition(
+          factory = PacedRequestFactory(
             rate  = PoissonSampler(tick =>
               math.max(0.0, TemporalShapeFunctions.triangularFactor(280L, 360L, 8334.0)(tick) - 1.0)
             ),
-            shape = RequestShape.PutItem(itemBytesSampler)
+            factory = RequestShape.PutItem(itemBytesSampler)
           )
         ),
         FlowDefinition.Independent(
           id   = "s2-opened",
-          defn = RequestShapeDefinition(
+          factory = PacedRequestFactory(
             rate  = PoissonSampler(TemporalShapeFunctions.sinusoid(28.0, 833.0, 900L, 480L)),
-            shape = RequestShape.UpdateItem(itemBytesSampler)
+            factory = RequestShape.UpdateItem(itemBytesSampler)
           )
         ),
         FlowDefinition.Independent(
           id   = "s3-acknowledged",
-          defn = RequestShapeDefinition(
+          factory = PacedRequestFactory(
             rate  = PoissonSampler(TemporalShapeFunctions.sinusoid(17.0, 500.0, 900L, 520L)),
-            shape = RequestShape.UpdateItem(itemBytesSampler)
+            factory = RequestShape.UpdateItem(itemBytesSampler)
           )
         )
       )

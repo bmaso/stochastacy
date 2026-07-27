@@ -297,7 +297,7 @@ Target vocabulary (three names, one job each):
 | New | Replaces | Role |
 |-----|----------|------|
 | `RequestFactory[Req <: TimedEvent]` | `RequestShape` (bound form) | Mints one request; `build` returns `Req`, not `TimedElement[Req]` |
-| `RatedRequestFactory[Req]` | `RequestShapeDefinition` | A factory that also knows its arrival rate; **extends** `RequestFactory[Req]` |
+| `PacedRequestFactory[Req]` | `RequestShapeDefinition` | A factory that also knows its arrival rate; **extends** `RequestFactory[Req]` |
 | `WorkloadFlow[Req]` | `FlowDefinition` | One named flow; `Workload*` prefix also disambiguates from Pekko's `Flow` |
 
 Explicitly **out of scope**: `FollowOnTransformerStage`, `WorkloadGraph`, and the YAML DSL

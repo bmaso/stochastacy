@@ -39,11 +39,11 @@ object WorkloadRequestStream:
     (1L to simulationTicks).iterator.flatMap { tick =>
       Iterator.single(TimedControlEvent.Tick(SimTime.of(tick)): TimedElement[DynamoDBRequest]) ++
         (0 until n).iterator.flatMap { i =>
-          val defn = independent(i).defn
-          val (count, _) = defn.rate.sample(tick, rateRngs(i), ())
+          val paced = independent(i).factory
+          val (count, _) = paced.rate.sample(tick, rateRngs(i), ())
           Iterator.fill[TimedElement[DynamoDBRequest]](count) {
             val φ = intraTickRngs(i).nextDouble()   // Uniform(0, 1) arrival position
-            defn.shape.build(tick, workload.usecase, independent(i).id, paramRngs(i), φ)
+            paced.build(tick, workload.usecase, independent(i).id, paramRngs(i), φ)
           }
         }
     } ++ Iterator[TimedElement[DynamoDBRequest]](

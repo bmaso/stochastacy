@@ -7,7 +7,7 @@ import org.apache.commons.rng.UniformRandomProvider
  *
  *  The `Unit` state parameter received by `sample` is ignored; the internal state
  *  advances on every call. This adapter is single-use and not thread-safe. It is
- *  designed for use in `RequestShapeDefinition.rate`, where `WorkloadRequestStream`
+ *  designed for use in `PacedRequestFactory.rate`, where `WorkloadRequestStream`
  *  guarantees single-call-per-tick semantics in tick order. */
 final class ErasedSampler[T] private (
   private var _state: Any,

@@ -227,7 +227,7 @@ object FollowOnTransformerStage:
       )
     )
     sourceFlow match
-      case FlowDefinition.Independent(_, defn)            => defn.shape
+      case FlowDefinition.Independent(_, paced)           => paced.factory
       case FlowDefinition.FollowOn(_, _, _, _, _, _, sh)  => sh
       case FlowDefinition.Retry(_, sId, sFid, _, _)       =>
         resolveSourceShape(sId, sFid, retryId, allWorkloads, visited + ((workloadId, flowId)))

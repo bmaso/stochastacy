@@ -22,7 +22,7 @@ sealed trait FlowDefinition:
 object FlowDefinition:
 
   /** An independent arrival flow with its own rate sampler. */
-  final case class Independent(id: String, defn: RequestShapeDefinition) extends FlowDefinition
+  final case class Independent(id: String, factory: PacedRequestFactory) extends FlowDefinition
 
   /** A derived flow whose per-tick request count = Binomial(sourceOutcomeCount, proportion).
    *  Driven by the `outcome` class of `sourceFlowId` within workload `sourceId`,
@@ -113,47 +113,59 @@ object RequestShape:
       TransactGetItemsRequest(SimTime.of(tick), usecase, itemCount.sample(tick, rng, ())._1, intraTick, Some(flowId))
 
 
-case class RequestShapeDefinition(
-  rate:  StatelessSampler[Int],
-  shape: RequestShape
-)
+/** A request factory that also knows its own arrival rate.
+ *
+ *  Extends `RequestFactory` and delegates `build` to the wrapped factory, so call sites
+ *  that only need to mint a request never reach through to `.factory`. Only code that
+ *  genuinely needs to *unwrap* — `Retry` resolution copying a source flow's factory —
+ *  touches the field directly.
+ *
+ *  The paced/bare distinction mirrors one the flow ADT already makes: `Independent` flows
+ *  carry their own rate; `FollowOn` and `Retry` derive theirs from source outcomes. */
+final case class PacedRequestFactory(
+  rate:    StatelessSampler[Int],
+  factory: RequestShape
+) extends RequestFactory[DynamoDBRequest]:
+  def build(tick: Long, usecase: String, flowId: String,
+            rng: UniformRandomProvider, intraTick: Double): DynamoDBRequest =
+    factory.build(tick, usecase, flowId, rng, intraTick)
 
-object RequestShapeDefinition:
+object PacedRequestFactory:
 
-  def getItem(rate: StatelessSampler[Int]): RequestShapeDefinition =
-    RequestShapeDefinition(rate, RequestShape.GetItem)
+  def getItem(rate: StatelessSampler[Int]): PacedRequestFactory =
+    PacedRequestFactory(rate, RequestShape.GetItem)
 
-  def putItem(rate: StatelessSampler[Int], itemBytes: StatelessSampler[Long]): RequestShapeDefinition =
-    RequestShapeDefinition(rate, RequestShape.PutItem(itemBytes))
+  def putItem(rate: StatelessSampler[Int], itemBytes: StatelessSampler[Long]): PacedRequestFactory =
+    PacedRequestFactory(rate, RequestShape.PutItem(itemBytes))
 
-  def updateItem(rate: StatelessSampler[Int], itemBytes: StatelessSampler[Long]): RequestShapeDefinition =
-    RequestShapeDefinition(rate, RequestShape.UpdateItem(itemBytes))
+  def updateItem(rate: StatelessSampler[Int], itemBytes: StatelessSampler[Long]): PacedRequestFactory =
+    PacedRequestFactory(rate, RequestShape.UpdateItem(itemBytes))
 
-  def deleteItem(rate: StatelessSampler[Int]): RequestShapeDefinition =
-    RequestShapeDefinition(rate, RequestShape.DeleteItem)
+  def deleteItem(rate: StatelessSampler[Int]): PacedRequestFactory =
+    PacedRequestFactory(rate, RequestShape.DeleteItem)
 
   def query(
     rate:            StatelessSampler[Int],
     target:          DynamoDbReadTarget,
     readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
-  ): RequestShapeDefinition =
-    RequestShapeDefinition(rate, RequestShape.Query(target, readConsistency))
+  ): PacedRequestFactory =
+    PacedRequestFactory(rate, RequestShape.Query(target, readConsistency))
 
   def scan(
     rate:            StatelessSampler[Int],
     target:          DynamoDbReadTarget,
     readConsistency: ReadConsistency = ReadConsistency.EventuallyConsistent
-  ): RequestShapeDefinition =
-    RequestShapeDefinition(rate, RequestShape.Scan(target, readConsistency))
+  ): PacedRequestFactory =
+    PacedRequestFactory(rate, RequestShape.Scan(target, readConsistency))
 
   def transactWriteItems(
     rate:         StatelessSampler[Int],
     perItemBytes: Vector[StatelessSampler[Long]]
-  ): RequestShapeDefinition =
-    RequestShapeDefinition(rate, RequestShape.TransactWriteItems(perItemBytes))
+  ): PacedRequestFactory =
+    PacedRequestFactory(rate, RequestShape.TransactWriteItems(perItemBytes))
 
-  def transactGetItems(rate: StatelessSampler[Int], itemCount: StatelessSampler[Int]): RequestShapeDefinition =
-    RequestShapeDefinition(rate, RequestShape.TransactGetItems(itemCount))
+  def transactGetItems(rate: StatelessSampler[Int], itemCount: StatelessSampler[Int]): PacedRequestFactory =
+    PacedRequestFactory(rate, RequestShape.TransactGetItems(itemCount))
 
 
 case class WorkloadDefinition(
@@ -178,10 +190,10 @@ object WorkloadDefinition:
   def ofIndependent(
     tableName: String,
     usecase:   String,
-    requests:  Vector[RequestShapeDefinition]
+    requests:  Vector[PacedRequestFactory]
   ): WorkloadDefinition =
     WorkloadDefinition(
       tableName,
       usecase,
-      requests.zipWithIndex.map { (defn, i) => FlowDefinition.Independent(s"flow-$i", defn) }
+      requests.zipWithIndex.map { (paced, i) => FlowDefinition.Independent(s"flow-$i", paced) }
     )

@@ -43,7 +43,7 @@ final class WorkloadTemplate private[workload] (
     val boundIndependent = flows.zipWithIndex.map { (f, i) =>
       val id   = f.id.getOrElse(s"flow-$i")
       val shape = bindShape(f.shape, tableName, indices)
-      FlowDefinition.Independent(id, RequestShapeDefinition(f.rate, shape))
+      FlowDefinition.Independent(id, PacedRequestFactory(f.rate, shape))
     }
     WorkloadDefinition(tableName, usecase, boundIndependent ++ derivedFlows)
 

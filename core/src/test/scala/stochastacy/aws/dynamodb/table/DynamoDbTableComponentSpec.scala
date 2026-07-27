@@ -7,7 +7,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.dynamodb.*
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent}
-import stochastacy.workload.{ConstantSampler, RequestShapeDefinition, WorkloadDefinition, WorkloadRequestStream}
+import stochastacy.workload.{ConstantSampler, PacedRequestFactory, WorkloadDefinition, WorkloadRequestStream}
 import stochastacy.test.*
 
 import java.util.concurrent.atomic.AtomicInteger
@@ -742,7 +742,7 @@ class DynamoDbTableComponentSpec extends AnyWordSpec with should.Matchers:
         readConsistency  = ReadConsistency.StronglyConsistent
       )
       val workload = WorkloadDefinition.ofIndependent("orders", "get",
-        Vector(RequestShapeDefinition.getItem(ConstantSampler(1))))
+        Vector(PacedRequestFactory.getItem(ConstantSampler(1))))
       val rng     = RandomSource.KISS.create(42L)
       val stream  = WorkloadRequestStream(workload, rng, simulationTicks = 3L)
 
