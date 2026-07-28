@@ -21,7 +21,7 @@ import scala.collection.mutable
  * @param proportion   Binomial probability p: count ~ Binomial(n, proportion).
  * @param lagTicks     Ticks of delay between the observed outcome tick and emission tick.
  *                     Must be >= 1.
- * @param shape        RequestShape for the derived requests to emit.
+ * @param factory      RequestShape for the derived requests to emit.
  * @param usecase      Usecase tag to stamp on emitted requests (inherits from workload).
  */
 case class ResolvedDerivedFlow(
@@ -30,7 +30,7 @@ case class ResolvedDerivedFlow(
   outcome:      OutcomeFilter,
   proportion:   Double,
   lagTicks:     Int,
-  shape:        RequestShape,
+  factory:      RequestShape,
   usecase:      String
 )
 
@@ -95,7 +95,7 @@ object FollowOnTransformerStage:
             else if flow.proportion <= 0.0 then 0
             else BinomialDistribution.of(n, flow.proportion).createSampler(rng).sample()
           Vector.fill[TimedElement[DynamoDBRequest]](count)(
-            flow.shape.build(emitTick, flow.usecase, flow.id, rng, rng.nextDouble())
+            flow.factory.build(emitTick, flow.usecase, flow.id, rng, rng.nextDouble())
           )
 
       /** Drains any batches from delayQueues whose target tick <= drainUpTo. */
@@ -169,7 +169,7 @@ object FollowOnTransformerStage:
     }
 
   /**
-   * Resolves the `FlowDefinition.FollowOn` and `FlowDefinition.Retry` entries in `workload`
+   * Resolves the `WorkloadFlow.FollowOn` and `WorkloadFlow.Retry` entries in `workload`
    * into `ResolvedDerivedFlow` instances ready for use by `FollowOnTransformerStage`.
    *
    * For `FollowOn`: straightforward projection of the ADT fields.
@@ -189,16 +189,16 @@ object FollowOnTransformerStage:
     allWorkloads: Map[String, WorkloadDefinition]
   ): Vector[ResolvedDerivedFlow] =
     workload.derivedFlows.map {
-      case FlowDefinition.FollowOn(id, sourceId, sourceFlowId, outcome, proportion, lagTicks, shape) =>
+      case WorkloadFlow.FollowOn(id, sourceId, sourceFlowId, outcome, proportion, lagTicks, shape) =>
         ResolvedDerivedFlow(id, sourceFlowId, outcome, proportion, lagTicks, shape, workload.usecase)
 
-      case FlowDefinition.Retry(id, sourceId, sourceFlowId, proportion, lagTicks) =>
+      case WorkloadFlow.Retry(id, sourceId, sourceFlowId, proportion, lagTicks) =>
         val shape = resolveSourceShape(sourceId, sourceFlowId, id, allWorkloads, Set.empty)
         ResolvedDerivedFlow(id, sourceFlowId, OutcomeFilter.Throttled, proportion, lagTicks, shape, workload.usecase)
 
       case f =>
         // Independent flows are excluded by derivedFlows; this case should not be reached.
-        throw IllegalStateException(s"Unexpected FlowDefinition in derivedFlows: $f")
+        throw IllegalStateException(s"Unexpected WorkloadFlow in derivedFlows: $f")
     }
 
   /** Walks the source chain of a Retry to find the underlying `RequestShape`.  Recurses
@@ -227,7 +227,7 @@ object FollowOnTransformerStage:
       )
     )
     sourceFlow match
-      case FlowDefinition.Independent(_, paced)           => paced.factory
-      case FlowDefinition.FollowOn(_, _, _, _, _, _, sh)  => sh
-      case FlowDefinition.Retry(_, sId, sFid, _, _)       =>
+      case WorkloadFlow.Independent(_, paced)           => paced.factory
+      case WorkloadFlow.FollowOn(_, _, _, _, _, _, sh)  => sh
+      case WorkloadFlow.Retry(_, sId, sFid, _, _)       =>
         resolveSourceShape(sId, sFid, retryId, allWorkloads, visited + ((workloadId, flowId)))

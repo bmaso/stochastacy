@@ -105,7 +105,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
       outcome      = OutcomeFilter.Throttled,
       proportion   = 1.0,
       lagTicks     = 1,
-      shape        = RequestShape.GetItem,
+      factory      = RequestShape.GetItem,
       usecase      = "test"
     )
 
@@ -153,7 +153,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
       outcome      = OutcomeFilter.Success,
       proportion   = 1.0,
       lagTicks     = 1,
-      shape        = RequestShape.GetItem,
+      factory      = RequestShape.GetItem,
       usecase      = "test"
     )
 
@@ -201,7 +201,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
       outcome      = OutcomeFilter.Throttled,
       proportion   = 1.0,
       lagTicks     = 2,
-      shape        = RequestShape.GetItem,
+      factory      = RequestShape.GetItem,
       usecase      = "test"
     )
 
@@ -258,7 +258,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         outcome      = OutcomeFilter.Throttled,
         proportion   = 1.0,
         lagTicks     = 1,
-        shape        = RequestShape.GetItem,
+        factory      = RequestShape.GetItem,
         usecase      = "test"
       )
       val cascadeRetryFlow = ResolvedDerivedFlow(
@@ -267,7 +267,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         outcome      = OutcomeFilter.Throttled,
         proportion   = 1.0,
         lagTicks     = 1,
-        shape        = RequestShape.GetItem,
+        factory      = RequestShape.GetItem,
         usecase      = "test"
       )
 
@@ -300,7 +300,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
       outcome      = OutcomeFilter.Throttled,
       proportion   = 0.0,
       lagTicks     = 1,
-      shape        = RequestShape.GetItem,
+      factory      = RequestShape.GetItem,
       usecase      = "test"
     )
 
@@ -328,7 +328,7 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         outcome      = OutcomeFilter.Throttled,
         proportion   = 1.0,
         lagTicks     = 1,
-        shape        = RequestShape.GetItem,
+        factory      = RequestShape.GetItem,
         usecase      = "test"
       )
       val input: Seq[TimedElement[DynamoDBResponse]] = Seq(
@@ -362,15 +362,15 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
-          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "base", proportion = 0.5, lagTicks = 1),
-          FlowDefinition.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1",   proportion = 0.5, lagTicks = 2),
-          FlowDefinition.Retry(id = "r3", sourceId = "uc", sourceFlowId = "r2",   proportion = 0.5, lagTicks = 4)
+          WorkloadFlow.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
+          WorkloadFlow.Retry(id = "r1", sourceId = "uc", sourceFlowId = "base", proportion = 0.5, lagTicks = 1),
+          WorkloadFlow.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1",   proportion = 0.5, lagTicks = 2),
+          WorkloadFlow.Retry(id = "r3", sourceId = "uc", sourceFlowId = "r2",   proportion = 0.5, lagTicks = 4)
         )
       )
       val resolved = FollowOnTransformerStage.resolveFlows(workload, Map("uc" -> workload))
       resolved.map(_.id)    shouldBe Vector("r1", "r2", "r3")
-      resolved.map(_.shape) shouldBe Vector(getShape, getShape, getShape)
+      resolved.map(_.factory) shouldBe Vector(getShape, getShape, getShape)
     }
 
     "resolve a Retry chain terminating at a FollowOn flow" in {
@@ -378,15 +378,15 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
-          FlowDefinition.FollowOn(id = "fo", sourceId = "uc", sourceFlowId = "base",
-            outcome = OutcomeFilter.Success, proportion = 0.5, lagTicks = 1, shape = putShape),
-          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "fo", proportion = 0.5, lagTicks = 1),
-          FlowDefinition.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 2)
+          WorkloadFlow.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
+          WorkloadFlow.FollowOn(id = "fo", sourceId = "uc", sourceFlowId = "base",
+            outcome = OutcomeFilter.Success, proportion = 0.5, lagTicks = 1, factory = putShape),
+          WorkloadFlow.Retry(id = "r1", sourceId = "uc", sourceFlowId = "fo", proportion = 0.5, lagTicks = 1),
+          WorkloadFlow.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 2)
         )
       )
       val resolved = FollowOnTransformerStage.resolveFlows(workload, Map("uc" -> workload))
-      resolved.find(_.id == "r2").map(_.shape) shouldBe Some(putShape)
+      resolved.find(_.id == "r2").map(_.factory) shouldBe Some(putShape)
     }
 
     "reject a Retry that points at itself (self-cycle)" in {
@@ -394,8 +394,8 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
-          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 1)
+          WorkloadFlow.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
+          WorkloadFlow.Retry(id = "r1", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 1)
         )
       )
       val ex = intercept[IllegalArgumentException] {
@@ -410,9 +410,9 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
-          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "r2", proportion = 0.5, lagTicks = 1),
-          FlowDefinition.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 1)
+          WorkloadFlow.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
+          WorkloadFlow.Retry(id = "r1", sourceId = "uc", sourceFlowId = "r2", proportion = 0.5, lagTicks = 1),
+          WorkloadFlow.Retry(id = "r2", sourceId = "uc", sourceFlowId = "r1", proportion = 0.5, lagTicks = 1)
         )
       )
       val ex = intercept[IllegalArgumentException] {
@@ -426,8 +426,8 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "t",
         usecase   = "uc",
         flows     = Vector(
-          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
-          FlowDefinition.Retry(id = "r1", sourceId = "uc", sourceFlowId = "nope", proportion = 0.5, lagTicks = 1)
+          WorkloadFlow.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = getShape)),
+          WorkloadFlow.Retry(id = "r1", sourceId = "uc", sourceFlowId = "nope", proportion = 0.5, lagTicks = 1)
         )
       )
       val ex = intercept[IllegalArgumentException] {
@@ -441,19 +441,19 @@ class FollowOnTransformerStageSpec extends AnyWordSpec with should.Matchers:
         tableName = "tA",
         usecase   = "wA",
         flows     = Vector(
-          FlowDefinition.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = putShape))
+          WorkloadFlow.Independent("base", PacedRequestFactory(rate = ConstantSampler(0), factory = putShape))
         )
       )
       val wB = WorkloadDefinition(
         tableName = "tB",
         usecase   = "wB",
         flows     = Vector(
-          FlowDefinition.Retry(id = "r1", sourceId = "wA", sourceFlowId = "base", proportion = 0.5, lagTicks = 1),
-          FlowDefinition.Retry(id = "r2", sourceId = "wB", sourceFlowId = "r1",   proportion = 0.5, lagTicks = 2)
+          WorkloadFlow.Retry(id = "r1", sourceId = "wA", sourceFlowId = "base", proportion = 0.5, lagTicks = 1),
+          WorkloadFlow.Retry(id = "r2", sourceId = "wB", sourceFlowId = "r1",   proportion = 0.5, lagTicks = 2)
         )
       )
       val resolved = FollowOnTransformerStage.resolveFlows(wB, Map("wA" -> wA, "wB" -> wB))
       resolved.map(_.id)    shouldBe Vector("r1", "r2")
-      resolved.map(_.shape) shouldBe Vector(putShape, putShape)
+      resolved.map(_.factory) shouldBe Vector(putShape, putShape)
     }
   }

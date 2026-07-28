@@ -28,7 +28,7 @@ private[workload] case class TemplateFlow(
 final class WorkloadTemplate private[workload] (
   val flows:            Vector[TemplateFlow],
   val requiredBindings: Set[String],
-  val derivedFlows:     Vector[FlowDefinition] = Vector.empty
+  val derivedFlows:     Vector[WorkloadFlow] = Vector.empty
 ):
   def bind(
     tableName: String,
@@ -43,7 +43,7 @@ final class WorkloadTemplate private[workload] (
     val boundIndependent = flows.zipWithIndex.map { (f, i) =>
       val id   = f.id.getOrElse(s"flow-$i")
       val shape = bindShape(f.shape, tableName, indices)
-      FlowDefinition.Independent(id, PacedRequestFactory(f.rate, shape))
+      WorkloadFlow.Independent(id, PacedRequestFactory(f.rate, shape))
     }
     WorkloadDefinition(tableName, usecase, boundIndependent ++ derivedFlows)
 

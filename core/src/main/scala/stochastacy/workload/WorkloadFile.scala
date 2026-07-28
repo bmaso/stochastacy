@@ -3,7 +3,7 @@ package stochastacy.workload
 private[workload] case class RawEntry(
   include:      Vector[String],
   flows:        Vector[TemplateFlow],
-  derivedFlows: Vector[FlowDefinition] = Vector.empty
+  derivedFlows: Vector[WorkloadFlow] = Vector.empty
 )
 
 final class WorkloadFile private[workload] (
@@ -18,7 +18,7 @@ final class WorkloadFile private[workload] (
   private def collectFlows(
     name:    String,
     visited: Vector[String]
-  ): (Vector[TemplateFlow], Set[String], Vector[FlowDefinition]) =
+  ): (Vector[TemplateFlow], Set[String], Vector[WorkloadFlow]) =
     if visited.contains(name) then
       throw WorkloadDslException(
         s"Circular include: ${(visited :+ name).mkString(" -> ")}"
@@ -28,7 +28,7 @@ final class WorkloadFile private[workload] (
     val newVisited = visited :+ name
 
     val (incFlows, incBindings, incDerived) = entry.include.foldLeft(
-      (Vector.empty[TemplateFlow], Set.empty[String], Vector.empty[FlowDefinition])
+      (Vector.empty[TemplateFlow], Set.empty[String], Vector.empty[WorkloadFlow])
     ) { case ((flows, bindings, derived), incName) =>
       val (f, b, d) = collectFlows(incName, newVisited)
       (flows ++ f, bindings ++ b, derived ++ d)

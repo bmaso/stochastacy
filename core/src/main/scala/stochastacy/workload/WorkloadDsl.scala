@@ -28,7 +28,7 @@ object WorkloadDsl:
       case null => Vector.empty[String]
       case v    => requireList(v, s"workload '$name' include").asScala.map(_.toString).toVector
     val (templateFlows, derivedFlows) = m.get("flows") match
-      case null => (Vector.empty[TemplateFlow], Vector.empty[FlowDefinition])
+      case null => (Vector.empty[TemplateFlow], Vector.empty[WorkloadFlow])
       case v    =>
         requireList(v, s"workload '$name' flows").asScala.map { item =>
           parseAnyFlow(requireMap(item, s"flow in workload '$name'"))
@@ -36,8 +36,8 @@ object WorkloadDsl:
     RawEntry(includes, templateFlows, derivedFlows)
 
   /** Parses any flow type, returning Left[TemplateFlow] for independent flows
-   *  and Right[FlowDefinition] for derived flows (follow-on, retry). */
-  private def parseAnyFlow(m: JMap[String, Any]): Either[TemplateFlow, FlowDefinition] =
+   *  and Right[WorkloadFlow] for derived flows (follow-on, retry). */
+  private def parseAnyFlow(m: JMap[String, Any]): Either[TemplateFlow, WorkloadFlow] =
     val flowType = m.get("type") match
       case null => throw WorkloadDslException("Flow missing required 'type' field")
       case v    => v.toString
@@ -65,7 +65,7 @@ object WorkloadDsl:
       case other                  => throw WorkloadDslException(s"Unknown flow type: '$other'")
     TemplateFlow(rate, shape, id)
 
-  private def parseFollowOn(m: JMap[String, Any]): FlowDefinition.FollowOn =
+  private def parseFollowOn(m: JMap[String, Any]): WorkloadFlow.FollowOn =
     val id = m.get("id") match
       case null => throw WorkloadDslException("follow-on flow missing required 'id' field")
       case v    => v.toString
@@ -103,7 +103,7 @@ object WorkloadDsl:
       case null => throw WorkloadDslException(s"follow-on flow '$id' missing required 'request' field")
       case v    => requireMap(v, s"follow-on flow '$id' request")
     val shape = parseFollowOnRequestShape(requestMap, id)
-    FlowDefinition.FollowOn(id, sourceId, sourceFlowId, outcome, proportion, lagTicks, shape)
+    WorkloadFlow.FollowOn(id, sourceId, sourceFlowId, outcome, proportion, lagTicks, shape)
 
   private def parseFollowOnRequestShape(m: JMap[String, Any], flowId: String): RequestShape =
     val flowType = m.get("type") match
@@ -171,7 +171,7 @@ object WorkloadDsl:
     if isQuery then RequestShape.Query(target, rc)
     else RequestShape.Scan(target, rc)
 
-  private def parseRetry(m: JMap[String, Any]): FlowDefinition.Retry =
+  private def parseRetry(m: JMap[String, Any]): WorkloadFlow.Retry =
     val id = m.get("id") match
       case null => throw WorkloadDslException("retry flow missing required 'id' field")
       case v    => v.toString
@@ -197,7 +197,7 @@ object WorkloadDsl:
           s"retry flow '$id': lag-ticks must be >= 1, got $n"
         )
         n
-    FlowDefinition.Retry(id, sourceId, sourceFlowId, proportion, lagTicks)
+    WorkloadFlow.Retry(id, sourceId, sourceFlowId, proportion, lagTicks)
 
   private def parseItemBytesResolved(m: JMap[String, Any], ctx: String): StatelessSampler[Long] =
     m.get("item-bytes") match

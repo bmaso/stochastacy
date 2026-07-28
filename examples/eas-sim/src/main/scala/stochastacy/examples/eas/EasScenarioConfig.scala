@@ -40,7 +40,7 @@ case class EasScenarioConfig(
    * (failure-tick + 1).  A 1s base with no jitter reproduces the previous demo's
    * three-attempt chained-Retry pattern with exponential backoff of 1, 2, 4 ticks —
    * exactly the retry tail shape the pre-Slice-D demo displayed via chained
-   * `FlowDefinition.Retry` entries with `lagTicks = 1, 2, 4`.
+   * `WorkloadFlow.Retry` entries with `lagTicks = 1, 2, 4`.
    *
    * Future work: switching to sub-second tick resolution (e.g., `tickDurationSeconds =
    * 0.1`) would let this use the true SDK-standard `baseBackoff = 100.millis` and
@@ -71,7 +71,7 @@ case class EasScenarioConfig(
       tableName = "alerts",
       usecase   = "alerts",
       flows = Vector(
-        FlowDefinition.Independent(
+        WorkloadFlow.Independent(
           id   = "a1-poll",
           factory = PacedRequestFactory(
             rate  = PoissonSampler(
@@ -83,21 +83,21 @@ case class EasScenarioConfig(
             )
           )
         ),
-        FlowDefinition.Independent(
+        WorkloadFlow.Independent(
           id   = "a3-write",
           factory = PacedRequestFactory(
             rate  = PoissonSampler(tick => if tick >= 295L && tick <= 305L then 0.2 else 0.0),
             factory = RequestShape.PutItem(ConstantSampler(4500L))
           )
         ),
-        FlowDefinition.FollowOn(
+        WorkloadFlow.FollowOn(
           id           = "a2-fetch",
           sourceId     = "alerts",
           sourceFlowId = "a1-poll",
           outcome      = OutcomeFilter.Success,
           proportion   = 0.70,
           lagTicks     = 1,
-          shape        = RequestShape.GetItem
+          factory      = RequestShape.GetItem
         )
       )
     )
@@ -119,7 +119,7 @@ case class EasScenarioConfig(
       tableName = "user-alert-status",
       usecase   = "user-alert-status",
       flows = Vector(
-        FlowDefinition.Independent(
+        WorkloadFlow.Independent(
           id   = "s1-delivered",
           factory = PacedRequestFactory(
             rate  = PoissonSampler(tick =>
@@ -128,14 +128,14 @@ case class EasScenarioConfig(
             factory = RequestShape.PutItem(itemBytesSampler)
           )
         ),
-        FlowDefinition.Independent(
+        WorkloadFlow.Independent(
           id   = "s2-opened",
           factory = PacedRequestFactory(
             rate  = PoissonSampler(TemporalShapeFunctions.sinusoid(28.0, 833.0, 900L, 480L)),
             factory = RequestShape.UpdateItem(itemBytesSampler)
           )
         ),
-        FlowDefinition.Independent(
+        WorkloadFlow.Independent(
           id   = "s3-acknowledged",
           factory = PacedRequestFactory(
             rate  = PoissonSampler(TemporalShapeFunctions.sinusoid(17.0, 500.0, 900L, 520L)),

@@ -551,10 +551,10 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
 
   // ── Bind ────────────────────────────────────────────────────────────────────
 
-  /** Extract the RequestShape from a FlowDefinition.Independent for assertion convenience. */
-  private def independentShape(f: FlowDefinition): RequestShape =
+  /** Extract the RequestShape from a WorkloadFlow.Independent for assertion convenience. */
+  private def independentShape(f: WorkloadFlow): RequestShape =
     f match
-      case FlowDefinition.Independent(_, paced) => paced.factory
+      case WorkloadFlow.Independent(_, paced) => paced.factory
       case other => fail(s"Expected Independent flow, got: $other")
 
   "WorkloadTemplate bind" should {
@@ -630,7 +630,7 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
 
   "WorkloadDsl derived flow parsing" should {
 
-    "parse a follow-on flow and produce FlowDefinition.FollowOn in the bound WorkloadDefinition" in {
+    "parse a follow-on flow and produce WorkloadFlow.FollowOn in the bound WorkloadDefinition" in {
       val yaml = """
         workloads:
           A1:
@@ -651,8 +651,8 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
       val defn = WorkloadDsl.parse(yaml).resolve("A1").bind("my-table", "my-usecase")
       defn.derivedFlows should have size 1
       val fo = defn.derivedFlows.head
-      fo shouldBe a[FlowDefinition.FollowOn]
-      val FlowDefinition.FollowOn(id, sourceId, sourceFlowId, outcome, proportion, lagTicks, shape) =
+      fo shouldBe a[WorkloadFlow.FollowOn]
+      val WorkloadFlow.FollowOn(id, sourceId, sourceFlowId, outcome, proportion, lagTicks, shape) =
         fo: @unchecked
       id           shouldBe "a2-fetch"
       sourceId     shouldBe "A1"
@@ -685,7 +685,7 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
         """
       val defn = WorkloadDsl.parse(yaml).resolve("W").bind("t", "uc")
       defn.derivedFlows should have size 1
-      val FlowDefinition.FollowOn(id, _, _, outcome, proportion, lagTicks, shape) =
+      val WorkloadFlow.FollowOn(id, _, _, outcome, proportion, lagTicks, shape) =
         defn.derivedFlows.head: @unchecked
       id         shouldBe "w-retry"
       outcome    shouldBe OutcomeFilter.Throttled
@@ -694,7 +694,7 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
       shape      shouldBe a[RequestShape.PutItem]
     }
 
-    "parse a retry flow and produce FlowDefinition.Retry in the bound WorkloadDefinition" in {
+    "parse a retry flow and produce WorkloadFlow.Retry in the bound WorkloadDefinition" in {
       val yaml = """
         workloads:
           A1:
@@ -712,8 +712,8 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
       val defn = WorkloadDsl.parse(yaml).resolve("A1").bind("my-table", "my-usecase")
       defn.derivedFlows should have size 1
       val r = defn.derivedFlows.head
-      r shouldBe a[FlowDefinition.Retry]
-      val FlowDefinition.Retry(id, sourceId, sourceFlowId, proportion, lagTicks) = r: @unchecked
+      r shouldBe a[WorkloadFlow.Retry]
+      val WorkloadFlow.Retry(id, sourceId, sourceFlowId, proportion, lagTicks) = r: @unchecked
       id           shouldBe "a1-retry"
       sourceId     shouldBe "A1"
       sourceFlowId shouldBe "a1-poll"
@@ -768,7 +768,7 @@ class WorkloadDslSpec extends AnyWordSpec with should.Matchers:
                   type: delete-item
         """
       val defn = WorkloadDsl.parse(yaml).resolve("SomeWorkload").bind("t", "uc")
-      val FlowDefinition.FollowOn(id, sourceId, sourceFlowId, _, _, lagTicks, shape) =
+      val WorkloadFlow.FollowOn(id, sourceId, sourceFlowId, _, _, lagTicks, shape) =
         defn.derivedFlows.head: @unchecked
       sourceId     shouldBe "OtherWorkload"
       sourceFlowId shouldBe "other-source-flow"

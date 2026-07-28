@@ -292,23 +292,31 @@ way to model a non-DynamoDB workload today is to reimplement the arrival protoco
 the `EndOfTime` sentinel, three-RNG discipline, intra-tick draw — which is exactly the part that is
 easy to get subtly wrong.
 
-Target vocabulary (three names, one job each):
+Target vocabulary (three names, one job each). **Slices 1–3 have landed these renames, but
+without the type parameter** — everything is still bound to `DynamoDBRequest` until slice 4:
 
-| New | Replaces | Role |
-|-----|----------|------|
+| Name | Replaced | Role |
+|------|----------|------|
 | `RequestFactory[Req <: TimedEvent]` | `RequestShape` (bound form) | Mints one request; `build` returns `Req`, not `TimedElement[Req]` |
-| `PacedRequestFactory[Req]` | `RequestShapeDefinition` | A factory that also knows its arrival rate; **extends** `RequestFactory[Req]` |
-| `WorkloadFlow[Req]` | `FlowDefinition` | One named flow; `Workload*` prefix also disambiguates from Pekko's `Flow` |
+| `PacedRequestFactory` | `RequestShapeDefinition` | A factory that also knows its arrival rate; **extends** `RequestFactory` and delegates `build` |
+| `WorkloadFlow` | `FlowDefinition` | One named flow; `Workload*` prefix also disambiguates from Pekko's `Flow` |
+
+Field renames that came with them: `PacedRequestFactory.shape` → `.factory`,
+`WorkloadFlow.Independent.defn` → `.factory`, `WorkloadFlow.FollowOn.shape` → `.factory`,
+`ResolvedDerivedFlow.shape` → `.factory`. `TemplateShape` and `TemplateFlow.shape` keep their
+names — "shape" is still accurate for the DSL's parsed form, and it is a separate ADT.
 
 Explicitly **out of scope**: `FollowOnTransformerStage`, `WorkloadGraph`, and the YAML DSL
 (`WorkloadDsl` / `WorkloadFile` / `WorkloadTemplate` / `TemplateShape`) all stay DynamoDB-specific.
 Derived flows key off simulator response outcomes; a workload-only consumer has no outcomes to
 observe and gets **independent flows only**.
 
-Start with slice 1 (introduce `RequestFactory`, move construction onto the shapes, delete
-`WorkloadRequestStream.buildRequest`). It is provably test-neutral — `grep -rn buildRequest
-core/src/test/` returns nothing, so if a test needs editing during slice 1, behaviour changed and
-something is wrong.
+**Next: slice 4 — genericize over `Req`.** Add `[Req <: TimedEvent]` to `PacedRequestFactory`,
+`WorkloadFlow`, `WorkloadDefinition`, and `WorkloadRequestStream`, and pin every DynamoDB-bound
+consumer to `WorkloadDefinition[DynamoDBRequest]`. `WorkloadRequestStream.apply` needs no logic
+change — its body is already fully generic; only the signature moves. Open question to settle
+during this slice: `WorkloadDefinition.tableName`, which has exactly two readers (both assertions
+in `OrderTrackingScenarioConfigSpec`), so dropping it from the generic type costs two test edits.
 
 ### Phase 7 Status (complete — all 5 slices)
 

@@ -16,13 +16,13 @@ enum OutcomeFilter:
 
 /** A single named flow within a WorkloadDefinition. Either an independent arrival process
  *  or a derived flow whose rate is computed from another flow's simulator outcomes. */
-sealed trait FlowDefinition:
+sealed trait WorkloadFlow:
   def id: String
 
-object FlowDefinition:
+object WorkloadFlow:
 
   /** An independent arrival flow with its own rate sampler. */
-  final case class Independent(id: String, factory: PacedRequestFactory) extends FlowDefinition
+  final case class Independent(id: String, factory: PacedRequestFactory) extends WorkloadFlow
 
   /** A derived flow whose per-tick request count = Binomial(sourceOutcomeCount, proportion).
    *  Driven by the `outcome` class of `sourceFlowId` within workload `sourceId`,
@@ -34,8 +34,8 @@ object FlowDefinition:
     outcome:      OutcomeFilter,
     proportion:   Double,
     lagTicks:     Int,
-    shape:        RequestShape
-  ) extends FlowDefinition:
+    factory:      RequestShape
+  ) extends WorkloadFlow:
     require(proportion >= 0.0 && proportion <= 1.0, s"FollowOn.proportion must be in [0,1], got $proportion")
     require(lagTicks >= 1, s"FollowOn.lagTicks must be >= 1, got $lagTicks")
 
@@ -48,7 +48,7 @@ object FlowDefinition:
     sourceFlowId: String,
     proportion:   Double,
     lagTicks:     Int
-  ) extends FlowDefinition:
+  ) extends WorkloadFlow:
     require(proportion >= 0.0 && proportion <= 1.0, s"Retry.proportion must be in [0,1], got $proportion")
     require(lagTicks >= 1, s"Retry.lagTicks must be >= 1, got $lagTicks")
 
@@ -171,16 +171,16 @@ object PacedRequestFactory:
 case class WorkloadDefinition(
   tableName: String,
   usecase:   String,
-  flows:     Vector[FlowDefinition]
+  flows:     Vector[WorkloadFlow]
 ):
   /** The independent flows only — what WorkloadRequestStream generates. */
-  def independentFlows: Vector[FlowDefinition.Independent] =
-    flows.collect { case f: FlowDefinition.Independent => f }
+  def independentFlows: Vector[WorkloadFlow.Independent] =
+    flows.collect { case f: WorkloadFlow.Independent => f }
 
   /** The derived flows (follow-on and retry) — what FollowOnTransformerStage handles. */
-  def derivedFlows: Vector[FlowDefinition] =
+  def derivedFlows: Vector[WorkloadFlow] =
     flows.filter {
-      case _: FlowDefinition.Independent => false
+      case _: WorkloadFlow.Independent => false
       case _ => true
     }
 
@@ -195,5 +195,5 @@ object WorkloadDefinition:
     WorkloadDefinition(
       tableName,
       usecase,
-      requests.zipWithIndex.map { (paced, i) => FlowDefinition.Independent(s"flow-$i", paced) }
+      requests.zipWithIndex.map { (paced, i) => WorkloadFlow.Independent(s"flow-$i", paced) }
     )

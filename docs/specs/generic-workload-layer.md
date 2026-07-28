@@ -1,8 +1,17 @@
 # Generic Workload Layer
 
-Status: proposed
+Status: **in progress — slices 1–3 of 6 complete**
 Motivation: enable out-of-repo projects to define workloads over their own request
 types, without forking the arrival protocol.
+
+| Slice | Status |
+|-------|--------|
+| 1. Introduce `RequestFactory`; construction onto the shapes | **Done** |
+| 2. `RequestShapeDefinition` → `PacedRequestFactory` | **Done** |
+| 3. `FlowDefinition` → `WorkloadFlow` | **Done** |
+| 4. Genericize over `Req` | Next |
+| 5. Relocate the DynamoDB factory namespace | Planned |
+| 6. Publish and prove | Planned |
 
 ## Why
 
@@ -97,7 +106,7 @@ outcomes to observe.
 
 Each slice compiles and leaves `sbt core/test` and `sbt examples/compile` green on its own.
 
-### Slice 1 — Introduce `RequestFactory`; move construction onto the shapes
+### Slice 1 — Introduce `RequestFactory`; move construction onto the shapes — DONE
 
 No generics, no renames. Highest value, lowest risk.
 
@@ -119,7 +128,7 @@ Verify: no behavioural change intended. Existing tests should pass unedited unle
 `WorkloadRequestStreamSpec` calls `buildRequest` directly (it is `private[workload]`, so
 it may) — see open question 4.
 
-### Slice 2 — `RequestShapeDefinition` → `PacedRequestFactory`
+### Slice 2 — `RequestShapeDefinition` → `PacedRequestFactory` — DONE
 
 - Rename the type; add `extends RequestFactory[DynamoDBRequest]` delegating `build` to
   the inner factory.
@@ -128,13 +137,23 @@ it may) — see open question 4.
 - Update `WorkloadTemplate.bind:46`, `WorkloadDefinition.ofIndependent`, and the demo
   scenario configs (`ThermostatFleetScenarioConfig`, `EasScenarioConfig`).
 
-### Slice 3 — `FlowDefinition` → `WorkloadFlow`
+### Slice 3 — `FlowDefinition` → `WorkloadFlow` — DONE
 
-Pure mechanical rename, no semantic change. Touches `WorkloadDefinition.scala`,
-`FollowOnTransformerStage.scala`, `WorkloadGraph.scala`, `WorkloadTemplate.scala`,
-`WorkloadFile.scala`, `WorkloadDsl.scala`, plus `FollowOnTransformerStageSpec` and
-`WorkloadDslSpec`. Also rename `WorkloadDefinition.independentFlows` / `.derivedFlows`
-bodies accordingly.
+Pure mechanical rename, no semantic change: 66 occurrences across 8 files. `FlowDefinition`
+is a unique token, so unlike slice 2's `shape` this part was a safe global substitution.
+
+**Correction to the original scope note in this spec:** `WorkloadGraph.scala` was listed here
+as a `FlowDefinition` site. It has **zero** — it references only `ResolvedDerivedFlow`. It was
+in scope solely because of the field rename below. The actual `FlowDefinition` files were
+`WorkloadDefinition.scala`, `FollowOnTransformerStage.scala`, `WorkloadTemplate.scala`,
+`WorkloadFile.scala`, `WorkloadDsl.scala`, `EasScenarioConfig.scala`, plus
+`FollowOnTransformerStageSpec` and `WorkloadDslSpec`.
+
+Also renamed `WorkloadFlow.FollowOn.shape` → `.factory` (field decl + 2 named-arg sites;
+`WorkloadDsl` constructs it positionally) and `ResolvedDerivedFlow.shape` → `.factory`
+(field decl, `@param` doc, 7 named-arg test constructions, 2 read sites at
+`FollowOnTransformerStage:98` and `WorkloadGraph:277`). `ResolvedDerivedFlow` itself keeps
+its name — it is a resolved runtime projection, not a `WorkloadFlow`.
 
 ### Slice 4 — Genericize over `Req`
 
