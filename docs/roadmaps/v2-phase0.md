@@ -357,7 +357,7 @@ delivery increments — each independently testable, each carrying its own miles
 | Slice | Status | Milestone |
 |-------|--------|-----------|
 | 1. Core machinery foundation | **Done** | Toy sampler runs through the transducer with correct tick-ordered release + `EndOfTime` flush |
-| 2. Store domain + `StoreSampler` | Planned | `StoreSampler` unit-tested across all three families; no graph |
+| 2. Store domain + `StoreSampler` | **Done** | `StoreSampler` unit-tested across all three families; no graph |
 | 3. First runnable simulation | Planned | source → datastore runs end-to-end; `Future[TrialResult]` completes |
 | 4. Observation plane | Planned | `TrialResult` carries real per-use-case p50/p99; sketch `combine` associative |
 | 5. Multi-component composition | Planned | 3-component graph runs; observations merge across components; `Component`-trait decision made |
@@ -399,6 +399,17 @@ stochastic error branch).
 
 **Validated by:** pure unit tests — feed `(request, state)`, assert on the `Emission`. No graph.
 Proves the contract is expressive enough for real domain behavior.
+
+**Delivered** (188 examples tests green, +13 new; **zero `core` changes** — the contract held):
+- `stochastacy.examples.store` — `StoreProtocol.scala` (requests, `SelectivityClass`/`SortMode`/
+  `Pagination`, timeless `StoreResponse`/`Consumption`, `StoreState`), `StoreConfig.scala`,
+  `StoreSampler.scala` (`RequestResponseSampler` over `StoreState`).
+- Decisions realized: D-A (`usecase: Any` label + typed `sel` field), D-B (consumption at
+  completion, `delay = latency`), D-C (latency deterministic from work), D-D (`SelectivityClass`
+  pure; realization in `StoreSampler`), D-E (`stochastacy.examples.store`).
+- Tests demonstrate the emergent behaviors at the sampler level: deep-offset `evaluated` cliff,
+  `PointLookup` constant-count vs `CategoryFilter` constant-fraction, report evaluate-all/return-few,
+  and cardinality growth under threaded `Put`s.
 
 ### 3. First runnable simulation — *(core run machinery + examples wiring)*
 
@@ -468,6 +479,45 @@ report is enough to call phase 0 done.)
 - `TrialResult` is introduced in slice 3 and enriched in 4 (statistics) and 7 (cross-trial) — expect
   it to grow, not to be final at 3.
 - The `Component`-trait decision is parked until slice 5's checkpoint.
+
+---
+
+## Deferred work (carried forward)
+
+Consolidated tracker of things intentionally left incomplete, so they are not forgotten. Each
+names the slice/phase where it is meant to land.
+
+**Targeted at a specific later slice:**
+
+- **Transducer → `GraphStageWithMaterializedValue`** *(Slice 3)*. The Slice-1 transducer is a
+  `statefulMapConcat` + `Broadcast`; promote it so residue/final-state can route to the
+  materialized `TrialResult`. Scheduling logic carries over unchanged.
+- **Post-horizon residue → `TrialResult` diagnostic** *(Slice 3)*. Slice 1 flushes all pending
+  onto the streams at `EndOfTime`; replace with a residue *summary* (count/total/by-type) on the
+  materialized value as a "horizon may be truncating N events" signal.
+- **Latency distributional jitter** *(post–Slice 2 refinement)*. Slice-2 latency is a deterministic
+  function of modeled work; add distributional jitter later if needed (load-induced variance is the
+  admission component's job, Slice 6).
+- **State-dependent selectivity laws** *(post–Slice 2 refinement)*. Slice-2 realization is
+  fixed-fraction / fixed-count / full; richer laws (e.g. a `RecentWindow` class whose selectivity
+  drifts with state) can be added without touching the protocol.
+- **Request/response chaining uniformity** *(Slice 5)*. Decide whether requests also become
+  `Timed[_]` payloads (like outputs) for cross-component uniformity, or stay self-timed `TimedEvent`s.
+- **`Component` trait vs. convention + helpers** *(Slice 5 checkpoint)*. Promote only if the
+  observation plane's shape justifies it.
+
+**Targeted at the later AWS-extraction phase (post–Phase 0):**
+
+- **Fully type `TimedEvent.usecase`.** Promote from the `Any` demux tag to a typed, first-class
+  intent/dispatch key. Slice 2 works around it by carrying `SelectivityClass` as a typed field on
+  query requests and leaving `usecase: Any` as a label.
+- **Move timed-event types into `stochastacy.core`** (`TimedEvent`, `TimedControlEvent`,
+  `TimedElement`, `SimTime`, stream combinators) and **retire `stochastacy.sim`** (see *Interim vs.
+  target state* below).
+- **Delete the `stochastacy.workload` sampler export shim** (`samplerExports.scala`) once `ips`
+  consumers import from `stochastacy.core.sampler` directly.
+- **Relocate AWS `ips` code out of `core`** into its own module behind the new `core` boundary.
+- **Port or delete the legacy `ips` demos** (order-tracking, thermostat-fleet).
 
 ---
 
