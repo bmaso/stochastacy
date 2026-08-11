@@ -62,6 +62,24 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
   private def timedOnly[E](s: Seq[TimedElement[Timed[E]]]): Seq[Timed[E]] =
     s.collect { case x: Timed[E] @unchecked => x }
 
+  /** Materialize the component and drain both streams, returning its `ComponentResult` (the Mat). */
+  private def runResult(
+    sampler: RequestResponseSampler[Int, ToyReq, ToyResp, ToyCons],
+    input:   Vector[TimedElement[ToyReq]]
+  ): ComponentResult[Int] =
+    val rng = RandomSource.KISS.create(1L)
+    val graph = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(ScheduleReleaseTransducer.componentOf(sampler, rng)) { implicit b => comp =>
+        import GraphDSL.Implicits.*
+        val src = b.add(Source(input))
+        src ~> comp.in
+        comp.out0 ~> b.add(Sink.ignore)
+        comp.out1 ~> b.add(Sink.ignore)
+        ClosedShape
+      }
+    )
+    Await.result(graph.run(), 5.seconds)
+
   "ScheduleReleaseTransducer" should {
 
     "stamp a response's eventTime/intraTick from request time + delay via the rawOffset rule" in {
@@ -105,17 +123,26 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
       timedOnly(resp).map(_.intraTick) shouldBe Seq(0.1, 0.5)
     }
 
-    "flush still-pending (post-horizon) outputs on EndOfTime, before the terminal" in {
-      // request at last tick 10, latency 1.5 → eventTime 11 == flush-tick window; the flush
-      // Tick(11) drains only eventTime < 11, so this output is released by the EndOfTime flush.
+    "summarize post-horizon outputs in the ComponentResult residue, absent from the streams" in {
+      // request at last tick 10 with latency 1.5 and consDelay 1.5 → both outputs land at
+      // eventTime 11. Tick(11) drains only eventTime < 11, so both are post-horizon: summarized in
+      // the residue, never emitted; the streams still end cleanly at EndOfTime.
       val input = TickFraming.frame(Vector(ToyReq(t(10), 0.0, "uc")).iterator, 10).toVector
-      val (resp, _) = run(new ToySampler(latency = 1.5), input)
+      val (resp, cons) = run(new ToySampler(latency = 1.5, consDelay = 1.5), input)
 
-      val r = timedOnly(resp)
-      r should have size 1
-      r.head.eventTime.ticks shouldBe 11L
-      resp.indexOf(Tick(t(11))) should be < resp.indexWhere { case _: Timed[?] => true; case _ => false }
+      timedOnly(resp) shouldBe empty
+      timedOnly(cons) shouldBe empty
       resp.last shouldBe EndOfTime
+      cons.last shouldBe EndOfTime
+
+      runResult(new ToySampler(latency = 1.5, consDelay = 1.5), input).residue shouldBe ResidueSummary(1L, 1L)
+    }
+
+    "expose the final sampler state as the ComponentResult's finalState" in {
+      val reqs  = Vector(ToyReq(t(2), 0.0, "uc"), ToyReq(t(4), 0.0, "uc"), ToyReq(t(6), 0.0, "uc"))
+      val input = TickFraming.frame(reqs.iterator, 8).toVector
+      // ToySampler increments state once per request → finalState == request count.
+      runResult(new ToySampler(latency = 0.0), input).finalState shouldBe 3
     }
 
     "carry every control event on BOTH output planes and thread state across requests" in {

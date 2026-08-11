@@ -358,7 +358,7 @@ delivery increments — each independently testable, each carrying its own miles
 |-------|--------|-----------|
 | 1. Core machinery foundation | **Done** | Toy sampler runs through the transducer with correct tick-ordered release + `EndOfTime` flush |
 | 2. Store domain + `StoreSampler` | **Done** | `StoreSampler` unit-tested across all three families; no graph |
-| 3. First runnable simulation | Planned | source → datastore runs end-to-end; `Future[TrialResult]` completes |
+| 3. First runnable simulation | **Done** | source → datastore runs end-to-end; `Future[TrialResult]` completes |
 | 4. Observation plane | Planned | `TrialResult` carries real per-use-case p50/p99; sketch `combine` associative |
 | 5. Multi-component composition | Planned | 3-component graph runs; observations merge across components; `Component`-trait decision made |
 | 6. Admission / throttling | Planned | throttle rate + p99 respond to offered load, not mean rate |
@@ -420,6 +420,17 @@ residue summary.
 
 **Validated by:** source → datastore runs end-to-end; `Future[TrialResult]` completes with sane
 final state and a protocol-respecting stream.
+
+**Delivered** (core 467 / examples 191 green): **D-1 resolved to Option A** — `ScheduleReleaseTransducer`
+rewritten as a `GraphStageWithMaterializedValue` with a clean `FanOutShape2` and a
+`Future[ComponentResult[S]]` materialized value (the scheduling logic — pending PQ, `stamp`,
+`drainBelow`, residue summary — lifted verbatim; the new surface is the `InHandler`/`OutHandler`s +
+the `maybePull` fan-out-demand guard). `core.component.ComponentResult`/`ResidueSummary`;
+`core.run.TrialResult` + generic `SingleTrialRunner` (reads the component's Mat directly);
+`examples.store.StoreWorkload` (Poisson rates, `intraTick ~ U(0,1)`, eager draw) + `StoreTrialRunner`
+(split workload/sampler RNGs, deterministic per seed). Post-horizon residue is summarized to the
+result, not flushed to the streams (D-2). Store runner tests prove end-to-end completion, monotonic
+growth under create-only writes, and seed determinism.
 
 ### 4. Observation plane — *(core)*
 
@@ -489,12 +500,12 @@ names the slice/phase where it is meant to land.
 
 **Targeted at a specific later slice:**
 
-- **Transducer → `GraphStageWithMaterializedValue`** *(Slice 3)*. The Slice-1 transducer is a
-  `statefulMapConcat` + `Broadcast`; promote it so residue/final-state can route to the
-  materialized `TrialResult`. Scheduling logic carries over unchanged.
-- **Post-horizon residue → `TrialResult` diagnostic** *(Slice 3)*. Slice 1 flushes all pending
-  onto the streams at `EndOfTime`; replace with a residue *summary* (count/total/by-type) on the
-  materialized value as a "horizon may be truncating N events" signal.
+- ~~**Transducer → `GraphStageWithMaterializedValue`** *(Slice 3)*~~ — **done** (Slice 3, Option A):
+  `ScheduleReleaseTransducer` is now a `GraphStageWithMaterializedValue` (`FanOutShape2` +
+  `Future[ComponentResult[S]]`).
+- ~~**Post-horizon residue → result diagnostic** *(Slice 3)*~~ — **done** (Slice 3): residue is
+  summarized as `ResidueSummary(responses, consumptions)` on `ComponentResult`, not emitted. (A finer
+  "emit the `N+1` window, summarize only beyond" remains a possible refinement.)
 - **Latency distributional jitter** *(post–Slice 2 refinement)*. Slice-2 latency is a deterministic
   function of modeled work; add distributional jitter later if needed (load-induced variance is the
   admission component's job, Slice 6).
