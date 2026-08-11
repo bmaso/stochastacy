@@ -1,4 +1,4 @@
-package stochastacy.workload
+package stochastacy.core.sampler
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec

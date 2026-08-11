@@ -1,4 +1,4 @@
-package stochastacy.workload
+package stochastacy.core.sampler
 
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.statistics.distribution.PoissonDistribution

@@ -1,4 +1,4 @@
-package stochastacy.workload
+package stochastacy.core.sampler
 
 /** Pure `Long => Double` and `Long => Boolean` factories for common temporal
  *  patterns. Pass these to `Sampler.deterministic` to obtain a sampler, or

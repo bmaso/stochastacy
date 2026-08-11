@@ -1,4 +1,4 @@
-package stochastacy.workload
+package stochastacy.core.sampler
 
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should

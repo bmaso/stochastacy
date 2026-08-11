@@ -356,7 +356,7 @@ delivery increments — each independently testable, each carrying its own miles
 
 | Slice | Status | Milestone |
 |-------|--------|-----------|
-| 1. Core machinery foundation | Planned | Toy sampler runs through the transducer with correct tick-ordered release + `EndOfTime` flush |
+| 1. Core machinery foundation | **Done** | Toy sampler runs through the transducer with correct tick-ordered release + `EndOfTime` flush |
 | 2. Store domain + `StoreSampler` | Planned | `StoreSampler` unit-tested across all three families; no graph |
 | 3. First runnable simulation | Planned | source → datastore runs end-to-end; `Future[TrialResult]` completes |
 | 4. Observation plane | Planned | `TrialResult` carries real per-use-case p50/p99; sketch `combine` associative |
@@ -375,6 +375,20 @@ transducer is defined in terms of it.
 
 **Validated by:** a toy sampler driven through the transducer — asserts tick-ordered release,
 correct intra-tick stamping, and `EndOfTime` flush.
+
+**Delivered** (465 tests green, +9 new):
+- `stochastacy.core.sampler` — the six relocated sampler files (package-move only, zero logic
+  change); a `stochastacy/workload/samplerExports.scala` top-level `export` shim keeps all `ips`
+  consumers compiling untouched (D1a). To be deleted when `ips` is ported.
+- `stochastacy.core.stream` — `TimedStream` (`empty`/`of`/`fromIterator`/`fromLazyList`) and
+  `TickFraming` (`frame`/`frameSource`/`unframe`), extracted from `WorkloadRequestStream`.
+- `stochastacy.core.component` — `Delay`/`Scheduled`/`Emission`/`RequestResponseSampler`
+  (`SamplerContract.scala`), the `Timed[E]` output envelope (D4), and `ScheduleReleaseTransducer`
+  (D5: `statefulMapConcat` scheduling core + `Broadcast`-to-two-outlets, with an internal
+  plane-tag ADT because `Timed[Resp]`/`Timed[Cons]` are erasure-identical).
+- Decisions realized as planned: D1a (export shim), D2 (three sub-packages), D3 (`stochastacy.sim`
+  left in place), D4 (`Timed[E]` envelope), D5 (`statefulMapConcat`+`Broadcast`; promotion to a
+  `GraphStageWithMaterializedValue` deferred to Slice 3 when residue/state route to `TrialResult`).
 
 ### 2. Store domain + `StoreSampler` — *(examples)*
 
@@ -466,3 +480,23 @@ report is enough to call phase 0 done.)
   service, wiring, runner config).
 - (Later phase, out of scope for Phase 0) AWS-specific `ips` code relocates out of `core` into its
   own module behind the new `core` boundary.
+
+### Interim vs. target state (the `stochastacy.sim` question)
+
+The target above has **all** timed-event types — `TimedEvent`, `TimedControlEvent`, `TimedElement`,
+`SimTime`, and the timed-stream combinators — living in `stochastacy.core`. The package
+`stochastacy.sim` is **not** part of the intended long-term core; it survives only as a transitional
+measure.
+
+- **Interim (through Phase 0):** `stochastacy.sim` keeps the timed-event types in place, and
+  `stochastacy.core` imports from it. This avoids a large ripple (~77 files reference
+  `stochastacy.sim`, including the opaque `SimTime`) that would buy nothing during the early slices.
+  During this window, `stochastacy.sim` + `stochastacy.core` together constitute the reusable core.
+- **Eventual (later phase):** the timed-event types **move into `stochastacy.core`** and
+  `stochastacy.sim` is retired (relocated, then its shim deleted). This happens alongside relocating
+  the AWS `ips` code out of `core` into its own module.
+- **Legacy examples:** the `ips`-era demos (order-tracking, thermostat-fleet) are **ported to the
+  new `core` API or deleted** as part of that same later phase. Phase 0 does not touch them.
+
+So D3 in the Slice 1 plan (keeping `stochastacy.sim` where it is) is a deliberate deferral of
+timing, not a design endorsement of `stochastacy.sim` as a permanent second root.
