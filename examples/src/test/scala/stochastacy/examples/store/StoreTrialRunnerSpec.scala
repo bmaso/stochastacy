@@ -38,4 +38,21 @@ class StoreTrialRunnerSpec extends AnyWordSpec with should.Matchers with BeforeA
       val sc = StoreConfig()
       run(wl, sc, seed = 7L, ticks = 30L) shouldBe run(wl, sc, seed = 7L, ticks = 30L)
     }
+
+    "record per-use-case latency statistics" in {
+      val result = run(StoreWorkloadConfig(), StoreConfig(), seed = 1L, ticks = 50L)
+      val getLatency = result.stats.get(StoreStatKey("get", "latency"))
+      getLatency.map(_.count) getOrElse 0L should be > 0L
+      getLatency.map(_.p50) getOrElse 0.0 should be > 0.0
+    }
+
+    "show the emergent cost ordering: report latency p99 exceeds get latency p99" in {
+      val result   = run(StoreWorkloadConfig(), StoreConfig(), seed = 1L, ticks = 100L)
+      val getP99    = result.stats.get(StoreStatKey("get", "latency")).map(_.p99)
+      val reportP99 = result.stats.get(StoreStatKey("report", "latency")).map(_.p99)
+
+      getP99 shouldBe defined
+      reportP99 shouldBe defined
+      reportP99.get should be > getP99.get // reports evaluate the whole set; gets are O(1)
+    }
   }

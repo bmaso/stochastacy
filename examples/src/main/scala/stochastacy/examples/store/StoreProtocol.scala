@@ -93,6 +93,7 @@ sealed trait Consumption
 final case class WorkPerformed(items: Long, bytes: Long) extends Consumption // scan/eval cost proxy
 final case class DataReturned(items: Long, bytes: Long)  extends Consumption // egress proxy
 final case class StorageDelta(bytesDelta: Long)          extends Consumption // storage change
+final case class RequestServiced(latencyTicks: Double)   extends Consumption // observed servicing latency
 
 // --- bounded summary state (no per-key maps) ---
 

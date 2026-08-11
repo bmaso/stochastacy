@@ -45,6 +45,7 @@ final class StoreSampler(cfg: StoreConfig)
       s, // reads do not mutate state
       Scheduled(GetResult(hit, bytes), lat),
       List(
+        Scheduled(RequestServiced(lat), lat),
         Scheduled(WorkPerformed(1L, bytes), lat),
         Scheduled(DataReturned(if hit then 1L else 0L, bytes), lat)
       )
@@ -60,7 +61,7 @@ final class StoreSampler(cfg: StoreConfig)
     Emission(
       next,
       Scheduled(WriteResult(created), lat),
-      List(Scheduled(StorageDelta(delta), lat), Scheduled(WorkPerformed(1L, p.sizeBytes), lat))
+      List(Scheduled(RequestServiced(lat), lat), Scheduled(StorageDelta(delta), lat), Scheduled(WorkPerformed(1L, p.sizeBytes), lat))
     )
 
   private def delete(s: StoreState, rng: UniformRandomProvider): Emission[StoreState, StoreResponse, Consumption] =
@@ -70,8 +71,9 @@ final class StoreSampler(cfg: StoreConfig)
       else s
     val lat = cfg.writeLatency
     val cons =
-      if deleted then List(Scheduled(StorageDelta(-s.meanBytes), lat), Scheduled(WorkPerformed(1L, s.meanBytes), lat))
-      else List(Scheduled(WorkPerformed(1L, 0L), lat))
+      Scheduled(RequestServiced(lat), lat) ::
+        (if deleted then List(Scheduled(StorageDelta(-s.meanBytes), lat), Scheduled(WorkPerformed(1L, s.meanBytes), lat))
+         else List(Scheduled(WorkPerformed(1L, 0L), lat)))
     Emission(next, Scheduled(DeleteResult(deleted), lat), cons)
 
   // --- list (ordered retrieval) ---
@@ -86,7 +88,7 @@ final class StoreSampler(cfg: StoreConfig)
     Emission(
       s,
       Scheduled(QueryResult(returned, retBytes, evaluated, evalBytes), lat),
-      List(Scheduled(WorkPerformed(evaluated, evalBytes), lat), Scheduled(DataReturned(returned, retBytes), lat))
+      List(Scheduled(RequestServiced(lat), lat), Scheduled(WorkPerformed(evaluated, evalBytes), lat), Scheduled(DataReturned(returned, retBytes), lat))
     )
 
   // --- report (aggregation) ---
@@ -101,7 +103,7 @@ final class StoreSampler(cfg: StoreConfig)
     Emission(
       s,
       Scheduled(QueryResult(returned, retBytes, evaluated, evalBytes), lat),
-      List(Scheduled(WorkPerformed(evaluated, evalBytes), lat), Scheduled(DataReturned(returned, retBytes), lat))
+      List(Scheduled(RequestServiced(lat), lat), Scheduled(WorkPerformed(evaluated, evalBytes), lat), Scheduled(DataReturned(returned, retBytes), lat))
     )
 
   // --- cost-model helpers ---

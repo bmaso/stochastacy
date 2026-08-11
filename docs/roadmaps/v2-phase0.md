@@ -359,7 +359,7 @@ delivery increments — each independently testable, each carrying its own miles
 | 1. Core machinery foundation | **Done** | Toy sampler runs through the transducer with correct tick-ordered release + `EndOfTime` flush |
 | 2. Store domain + `StoreSampler` | **Done** | `StoreSampler` unit-tested across all three families; no graph |
 | 3. First runnable simulation | **Done** | source → datastore runs end-to-end; `Future[TrialResult]` completes |
-| 4. Observation plane | Planned | `TrialResult` carries real per-use-case p50/p99; sketch `combine` associative |
+| 4. Observation plane | **Done** | `TrialResult` carries real per-use-case p50/p99; sketch `combine` associative |
 | 5. Multi-component composition | Planned | 3-component graph runs; observations merge across components; `Component`-trait decision made |
 | 6. Admission / throttling | Planned | throttle rate + p99 respond to offered load, not mean rate |
 | 7. Monte Carlo | Planned | N-trial aggregate statistics stable; deterministic under a fixed master seed |
@@ -440,6 +440,18 @@ latency/throughput/p99. `TrialResult` now carries real statistics.
 
 **Validated by:** a known input distribution yields expected p50/p99 within tolerance; sketch
 `combine` is associative.
+
+**Delivered** (core 475 / examples 197 green) — **reshaped**: `core` provides *base types*, not a
+generic observation-processing runner. `core.stats` — `Statistic` (additive moments + a mergeable
+**log-bucket `Histogram`**, so `combine` is exactly associative for cross-trial merging; built-in, no
+dependency) and `Statistics[K]`. `core.run.TrialRunner` is run *plumbing* that hands the consumption
+stream to a **caller-supplied `Sink`** (imposes no observation semantics); `SingleTrialRunner` is
+rebuilt on it as the trivial case. The **store writes its own runner**: `StoreStats` maps structured
+`Consumption` → `(metric, value)`, `RequestServiced(latencyTicks)` carries latency (the only way it
+reaches plane 3), and `StoreTrialRunner` folds into `Statistics[StoreStatKey]`, returning a
+store-specific `StoreTrialResult`. **No generic `Observation` wire type, no mapper, no forced
+`Cons = Observation`.** The emergent cost model is now observable end-to-end: `report.latency.p99 >
+get.latency.p99`.
 
 ### 5. Multi-component composition — *(core composition + examples)*
 
