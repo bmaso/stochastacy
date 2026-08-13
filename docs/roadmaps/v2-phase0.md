@@ -362,7 +362,7 @@ delivery increments — each independently testable, each carrying its own miles
 | 4. Observation plane | **Done** | `TrialResult` carries real per-use-case p50/p99; sketch `combine` associative |
 | 5a. Uniform-`Timed` refactor | **Done** | Option A landed (uniform `Timed[payload]` wire, `ComponentSampler` rename); all Slice 1–4 tests green (no behavior change) |
 | 5b. API protocol + service components | **Done** | `IngressSampler`/`EgressSampler` unit-tested; API protocol defined; no graph |
-| 5c. Round-trip composition | Planned | 4-stage graph runs; `TrialResult` merges all three planes; end-to-end latency; `Component`-trait decision made |
+| 5c. Round-trip composition | **Done** | 4-stage graph runs; `TrialResult` merges all three planes; end-to-end latency; `Component`-trait decision made (deferred) |
 | 6. Admission / throttling | Planned | throttle rate + p99 respond to offered load, not mean rate |
 | 7. Monte Carlo | Planned | N-trial aggregate statistics stable; deterministic under a fixed master seed |
 | 8. Workload, emergent behavior, reporting | Planned | both emergent behaviors + throttling visibly exhibited; results exported |
@@ -527,6 +527,20 @@ only if the three-fold wiring warrants it. Resolve the `Component`-trait checkpo
 **Validated by:** the 4-stage graph runs end-to-end; `TrialResult` carries all three planes' metrics;
 end-to-end latency ≈ ingress + datastore + egress; determinism under a fixed seed; protocol intact
 across every boundary.
+
+**Delivered** (examples 205; core untouched): `ApiWorkload` (`Timed[ApiRequest]`). Refinements agreed
+before implementing: (a) **no `core` results combiner** — the Mat combination is wired inline (a
+3-materialized `GraphDSL.createGraph`); revisit once a second consumer shows its shape. (b) **Collapsed
+to one runner** — `StoreTrialRunner` grew from datastore-only to the full pipeline; `StorePipelineRunner`
+was never created and `StoreWorkload`/`StoreWorkloadConfig` were deleted (datastore-in-isolation stays
+covered by `StoreSamplerSpec`). (c) The three consumption planes fold into one `Statistics` via per-stage
+normalizing `Flow`s → `Merge` → one `Sink.fold` (`ingress.latency`/`egress.latency` tags; datastore keeps
+`latency`/`work.*`/`returned.*`). (d) `residue` = the datastore stage's (ingress/egress stateless).
+(e) Client `ApiResponse`s collected into `StoreTrialResult.responses` for 1:1 integrity checks (noted as
+cost-bearing on larger examples). **`Component`-trait checkpoint → deferred:** composition lives in the
+problem-specific runner (plain `GraphDSL` + transducer components + `core.stats`); introduce a role-typed
+`Component` trait only when a second domain needs it. Fan-in/out stay additive (merge/broadcast/route +
+an envelope routing tag; stateful joins modeled stochastically) — no corner.
 
 ### 6. Admission / throttling — *(core pattern + examples)*
 
