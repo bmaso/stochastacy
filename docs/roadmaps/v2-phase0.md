@@ -364,7 +364,7 @@ delivery increments — each independently testable, each carrying its own miles
 | 5b. API protocol + service components | **Done** | `IngressSampler`/`EgressSampler` unit-tested; API protocol defined; no graph |
 | 5c. Round-trip composition | **Done** | 4-stage graph runs; `TrialResult` merges all three planes; end-to-end latency; `Component`-trait decision made (deferred) |
 | 6a. Component sense of time | **Done** | `ComponentSampler.onTick` added + called by the transducer; behavior-preserving (default no-op); core test proves per-tick reset |
-| 6b. Admission / throttling | Planned | load-aware admission gate; throttle rate + p99 respond to offered load, not mean rate; 1:1 preserved via 429s |
+| 6b. Admission / throttling | **Done** | load-aware admission gate (fork + tick-aligned rejoin); throttle rate is burst-sensitive (mean-under-capacity still throttles); 1:1 preserved via 429s; exact via a drain pad |
 | 7. Monte Carlo | Planned | N-trial aggregate statistics stable; deterministic under a fixed master seed |
 | 8. Workload, emergent behavior, reporting | Planned | both emergent behaviors + throttling visibly exhibited; results exported |
 
@@ -578,6 +578,27 @@ preserved. Admission's consumption folds a fourth stats plane (`admission.latenc
 **Validated by:** under a burst the gate throttles; throttle rate + p99 respond to the burst, not the
 mean rate; steady load under capacity never throttles; 1:1 integrity holds via 429s; determinism.
 
+**Delivered** (core 476 unchanged; examples 215 +10 — 4 `AdmissionSampler` unit + 6 runner integration):
+`AdmissionModel` (config + `AdmissionOutcome` + `AdmissionConsumption` + `AdmissionState`), `AdmissionSampler`
+(hard per-tick cap; `onTick` resets the counter — the first real use of the 6a hook; **constant admission
+latency, D-2** — the burst-sensitive observable is the throttle *rate*, since a hard cap over Poisson
+arrivals throttles a nonzero fraction even when the *mean* rate is under capacity; no queueing-latency
+model). `StoreStats.admissionObservations` emits `admission.latency` + a 0/1 `throttled` (mean = throttle
+rate, count = requests reaching admission). `StoreTrialRunner` inserts admission between ingress and
+datastore and forks: `Broadcast(2)` → {admitted → `Timed[StoreRequest]` → datastore; throttled →
+`Timed[ErrorResult("throttled")]`}, rejoined with `dsShape.out0` via `MergeTimedEventGraph.graphOf()`
+(tick-aligned — one `Tick`/window, single `EndOfTime`), then a `TimedEvent`→`TimedElement[Timed[StoreResponse]]`
+cast into egress (which already maps `ErrorResult` → `ApiError`). Stats `Merge` grew 3 → 4. **D-3(a)**:
+runner gains `requestTicks` (generate over `[1,requestTicks]`, frame over `[1,simulationTicks]`) so a padded
+tail drains every response and the 1:1 identity `responses.size == Σ throttled.count` is exact (co-asserted
+with `residue == ResidueSummary(0,0)`). `admissionCfg` + `requestTicks` are defaulted, so existing call
+sites are untouched (no throttling at the default cap of 20/tick). Diamond safety mirrors the proven
+`DynamoDbGlobalTable` transducer-then-tick-aligned-merge shape.
+
+**Deferred (D-1):** `MergeTimedEventGraph` is typed on the legacy `TimedEvent`, forcing a one-line cast on
+its outlet back to `TimedElement[Timed[StoreResponse]]`. A `Timed`-aware merge in `core.component` would
+remove the cast — deferred until a second consumer justifies it (same posture as the `core` results combiner).
+
 ### 7. Monte Carlo — *(core)*
 
 The multi-trial executor (N independent seeds, bounded parallelism) + cross-trial sketch
@@ -635,6 +656,10 @@ names the slice/phase where it is meant to land.
   `ComponentSampler` rename rides along.
 - **`Component` trait vs. convention + helpers** *(Slice 5c checkpoint)*. Promote only if the
   observation plane's shape justifies it; current lean is defer.
+- **`Timed`-aware tick-aligned merge in `core.component`** *(Slice 6b, D-1)*. 6b reuses
+  `MergeTimedEventGraph` (typed on legacy `TimedEvent`) to rejoin the throttle and datastore response
+  streams, forcing a one-line `TimedEvent` → `TimedElement[Timed[StoreResponse]]` cast on its outlet.
+  A `Timed`-parameterized merge would remove the cast; deferred until a second consumer justifies it.
 
 **Targeted at the later AWS-extraction phase (post–Phase 0):**
 

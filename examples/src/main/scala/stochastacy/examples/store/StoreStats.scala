@@ -16,3 +16,9 @@ object StoreStats:
     case DataReturned(items, bytes) =>
       Seq("returned.items" -> items.toDouble, "returned.bytes" -> bytes.toDouble)
     case StorageDelta(_) => Seq.empty
+
+  /** Admission facts as `(metric, value)` observations. `throttled` is a 0/1 per request, so its
+   *  mean is the throttle rate and its count is the number of requests that reached admission. */
+  def admissionObservations(c: AdmissionConsumption): Seq[(String, Double)] = c match
+    case AdmissionLatency(ticks)   => Seq("admission.latency" -> ticks)
+    case AdmissionDecision(thr)    => Seq("throttled" -> (if thr then 1.0 else 0.0))
