@@ -1,7 +1,5 @@
 package stochastacy.examples.store
 
-import stochastacy.sim.{SimTime, TimedEvent}
-
 /** The datastore protocol for the v2/phase0 store simulator.
  *
  *  Three operation families with three distinct cost signatures — point (O(1)), list (evaluated
@@ -9,11 +7,10 @@ import stochastacy.sim.{SimTime, TimedEvent}
  *  matched set, returns little). Variety within a family is expressed as parameters, not as a
  *  proliferation of types.
  *
- *  Requests are self-timed `TimedEvent`s (they arrive on the wire). Responses and consumption are
- *  *timeless* payloads — the schedule-and-release transducer stamps their timing (see
- *  `stochastacy.core.component.Timed`). `usecase` is left as the base `Any` label for now; the
- *  behavior-driving intent for queries rides as the typed `sel` field (fully typing
- *  `TimedEvent.usecase` is deferred — see docs/roadmaps/v2-phase0.md). */
+ *  Requests, responses, and consumption are all **timeless** payloads — the wire carries
+ *  `Timed[StoreRequest]` etc., and the schedule-and-release transducer stamps timing and use-case
+ *  onto the envelope (see `stochastacy.core.component.Timed`). The behavior-driving intent for
+ *  queries rides as the typed `sel` field. */
 
 // --- request parameters (client intent) ---
 
@@ -31,47 +28,15 @@ enum Pagination:
   case Offset(pageIndex: Int, pageSize: Int)
   case Keyset(pageSize: Int)
 
-// --- requests ---
+// --- requests (timeless payloads; timing + use-case live on the Timed envelope) ---
 
-sealed trait StoreRequest extends TimedEvent
+sealed trait StoreRequest
 
-final case class Get(
-  eventTime:              SimTime,
-  override val intraTick: Double = 0.0,
-  usecase:                Any    = "get"
-) extends StoreRequest
-
-final case class Put(
-  sizeBytes:              Long,
-  eventTime:              SimTime,
-  override val intraTick: Double = 0.0,
-  usecase:                Any    = "put"
-) extends StoreRequest
-
-final case class Delete(
-  eventTime:              SimTime,
-  override val intraTick: Double = 0.0,
-  usecase:                Any    = "delete"
-) extends StoreRequest
-
-final case class ListQuery(
-  sel:                    SelectivityClass,
-  sort:                   SortMode,
-  page:                   Pagination,
-  eventTime:              SimTime,
-  override val intraTick: Double = 0.0,
-  usecase:                Any    = "list"
-) extends StoreRequest
-
-final case class ReportQuery(
-  sel:                    SelectivityClass,
-  groupCount:             Int,
-  sort:                   SortMode,
-  page:                   Pagination,
-  eventTime:              SimTime,
-  override val intraTick: Double = 0.0,
-  usecase:                Any    = "report"
-) extends StoreRequest
+final case class Get()                                                              extends StoreRequest
+final case class Put(sizeBytes: Long)                                               extends StoreRequest
+final case class Delete()                                                           extends StoreRequest
+final case class ListQuery(sel: SelectivityClass, sort: SortMode, page: Pagination) extends StoreRequest
+final case class ReportQuery(sel: SelectivityClass, groupCount: Int, sort: SortMode, page: Pagination) extends StoreRequest
 
 // --- response payloads (timeless) ---
 

@@ -7,7 +7,7 @@ import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{ClosedShape, FanOutShape2, Graph}
 import org.apache.pekko.stream.scaladsl.{GraphDSL, RunnableGraph, Sink, Source}
 import stochastacy.core.component.{ComponentResult, Timed}
-import stochastacy.sim.{TimedElement, TimedEvent}
+import stochastacy.sim.TimedElement
 
 /** Run *plumbing* for a single trial — a base type for constructing a problem-specific runner, not a
  *  runner that dictates what to do with observations.
@@ -18,10 +18,10 @@ import stochastacy.sim.{TimedElement, TimedEvent}
  *  reduction — is entirely the caller's concern. */
 object TrialRunner:
 
-  def run[S, Req <: TimedEvent, Resp, Cons, M](
-    source: Source[TimedElement[Req], NotUsed],
+  def run[S, In, Out, Cons, M](
+    source: Source[TimedElement[Timed[In]], NotUsed],
     component: Graph[
-      FanOutShape2[TimedElement[Req], TimedElement[Timed[Resp]], TimedElement[Timed[Cons]]],
+      FanOutShape2[TimedElement[Timed[In]], TimedElement[Timed[Out]], TimedElement[Timed[Cons]]],
       Future[ComponentResult[S]]
     ],
     consumptionSink: Sink[TimedElement[Timed[Cons]], Future[M]]

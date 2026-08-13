@@ -7,7 +7,7 @@ import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.{FanOutShape2, Graph}
 import org.apache.pekko.stream.scaladsl.{Sink, Source}
 import stochastacy.core.component.{ComponentResult, Timed}
-import stochastacy.sim.{TimedElement, TimedEvent}
+import stochastacy.sim.TimedElement
 
 /** The trivial single-trial runner: run a component and report its `ComponentResult` as a
  *  [[TrialResult]], discarding the consumption stream. A convenience over [[TrialRunner]] for
@@ -15,10 +15,10 @@ import stochastacy.sim.{TimedElement, TimedEvent}
  *  runner on top of `TrialRunner` (see the store example). */
 object SingleTrialRunner:
 
-  def run[S, Req <: TimedEvent, Resp, Cons](
-    source:        Source[TimedElement[Req], NotUsed],
+  def run[S, In, Out, Cons](
+    source:        Source[TimedElement[Timed[In]], NotUsed],
     component: Graph[
-      FanOutShape2[TimedElement[Req], TimedElement[Timed[Resp]], TimedElement[Timed[Cons]]],
+      FanOutShape2[TimedElement[Timed[In]], TimedElement[Timed[Out]], TimedElement[Timed[Cons]]],
       Future[ComponentResult[S]]
     ],
     durationTicks: Long

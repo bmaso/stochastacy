@@ -2,19 +2,19 @@ package stochastacy.examples.store
 
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.statistics.distribution.PoissonDistribution
-import stochastacy.core.component.{Delay, Emission, RequestResponseSampler, Scheduled}
+import stochastacy.core.component.{ComponentSampler, Delay, Emission, Scheduled}
 
-/** The datastore behavior for the store simulator, as a `RequestResponseSampler` over the bounded
- *  summary [[StoreState]]. For each request it produces exactly one response (a success- or
- *  error-variant of [[StoreResponse]]) plus zero-or-more [[Consumption]] facts, and the updated
- *  state. It is stateless *per request* — load-dependent throttling is a separate admission
- *  component (Slice 6), not this sampler.
+/** The datastore behavior for the store simulator, as a `ComponentSampler` over the bounded summary
+ *  [[StoreState]]. For each request it produces exactly one response (a success- or error-variant of
+ *  [[StoreResponse]]) plus zero-or-more [[Consumption]] facts, and the updated state. It is stateless
+ *  *per request* — load-dependent throttling is a separate admission component (Slice 6), not this
+ *  sampler.
  *
  *  Consumption is accounted at completion (`delay = latency`), matching the response's timing, so
  *  windowed accounting attributes work to when the op finished. State mutates immediately in
  *  request order — that is the logical summary; consumption timing is the observable fact. */
 final class StoreSampler(cfg: StoreConfig)
-    extends RequestResponseSampler[StoreState, StoreRequest, StoreResponse, Consumption]:
+    extends ComponentSampler[StoreState, StoreRequest, StoreResponse, Consumption]:
 
   def initialState: StoreState =
     StoreState(cfg.initialEntities, cfg.initialEntities * cfg.meanEntityBytes)

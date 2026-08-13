@@ -360,7 +360,9 @@ delivery increments — each independently testable, each carrying its own miles
 | 2. Store domain + `StoreSampler` | **Done** | `StoreSampler` unit-tested across all three families; no graph |
 | 3. First runnable simulation | **Done** | source → datastore runs end-to-end; `Future[TrialResult]` completes |
 | 4. Observation plane | **Done** | `TrialResult` carries real per-use-case p50/p99; sketch `combine` associative |
-| 5. Multi-component composition | Planned | 3-component graph runs; observations merge across components; `Component`-trait decision made |
+| 5a. Uniform-`Timed` refactor | **Done** | Option A landed (uniform `Timed[payload]` wire, `ComponentSampler` rename); all Slice 1–4 tests green (no behavior change) |
+| 5b. API protocol + service components | Planned | `IngressSampler`/`EgressSampler` unit-tested; API protocol defined; no graph |
+| 5c. Round-trip composition | Planned | 4-stage graph runs; `TrialResult` merges all three planes; end-to-end latency; `Component`-trait decision made |
 | 6. Admission / throttling | Planned | throttle rate + p99 respond to offered load, not mean rate |
 | 7. Monte Carlo | Planned | N-trial aggregate statistics stable; deterministic under a fixed master seed |
 | 8. Workload, emergent behavior, reporting | Planned | both emergent behaviors + throttling visibly exhibited; results exported |
@@ -455,15 +457,69 @@ get.latency.p99`.
 
 ### 5. Multi-component composition — *(core composition + examples)*
 
-The REST API protocol + the **service** component transducing API calls → datastore calls (1:1).
-The port-bundle convention + `connect`/`collectResults` composition helper (fusing Mat across
-components). Graph becomes source → service → datastore, observations aggregating from both.
+Composes the store simulator into a real graph of components: `workload → ingress → datastore →
+egress`. Split into three sub-slices because Option A reaches back into the core, then a new API
+layer, then the composition — three different kinds of work, mirroring the phase's
+foundation → sampler → runnable rhythm.
 
-**Checkpoint:** decide `Component` trait vs. convention-plus-helpers now that the observation
-plane's shape is known.
+**Design decisions settled (from the Slice-5 design dialogue):**
 
-**Validated by:** 3-component graph runs; `TrialResult` merges service- and datastore-plane
-observations.
+- **The service is a *round trip* (Option C).** A forwarding service has two forward outputs — the
+  downstream request *and* the client response — and the client response depends on the datastore's
+  reply. Rather than feedback (out of scope), the service is split into an **ingress** transform
+  (`ApiRequest → StoreRequest`) and an **egress** transform (`StoreResponse → ApiResponse`), with the
+  datastore between them, so the pipeline is `source → ingress → datastore → egress` and stays
+  **forward-only** (the datastore's response flows forward into egress, fine because a 1:1 service is
+  stateless per request). This yields a genuine `ApiResponse`.
+- **The 3rd sampler type param is the component's *forward output*** — a response for a leaf, a
+  downstream request for a forwarder. Hence the `Resp → Out` rename.
+- **Chaining uniformity = Option A (uniform `Timed[payload]` wire).** Request payloads become
+  *timeless*; every wire event is `Timed[_]`, so components chain with no adapters. Chosen over
+  restamping adapters (Option B) and over a "drop `Timed[E]`, restamp self-timed outputs" world
+  (Option 3) because A makes a mis-timed output **unrepresentable** by construction, keeps one uniform
+  wire type, and needs no `withTiming`/typeclass machinery. Cost: mechanical churn into Slices 1–4
+  (accepted).
+- **`Component` trait:** decided in 5c; current lean is **defer** (convention + helpers), since
+  composition lives in the problem-specific runner (per the Slice-4 steer).
+
+#### 5a — Uniform-`Timed` refactor — *(core + examples; behavior-preserving)*
+
+Option A, and nothing new. **Core:** the transducer operates on `TimedElement[Timed[In]]` (reads
+timing from the envelope, hands `.event` to the sampler); `RequestResponseSampler → ComponentSampler[S,
+In, Out, Cons]`; drop the `In <: TimedEvent` bound. **Store:** `StoreRequest` variants drop `TimedEvent`
++ timing fields (timeless payloads); `StoreWorkload` emits `Timed[StoreRequest]`; `StoreSampler` rename
+only; `StoreTrialRunner` source type follows. Specs updated for the new shapes (toy `In` timeless;
+`StoreSamplerSpec` constructions simplify).
+
+**Validated by:** no behavior change — full `core/test` + `examples/test` green.
+
+**Delivered** (core 475 / examples 197, unchanged from Slice 4 — proving the no-op): transducer
+consumes `TimedElement[Timed[In]]` and unwraps `.event`; `ComponentSampler[S, In, Out, Cons]`
+(`Emission.response → output`); `In <: TimedEvent` bound dropped. `StoreRequest` variants are now
+timeless payloads (`Get()`/`Put(sizeBytes)`/…); `StoreWorkload` emits `Timed[StoreRequest]` carrying
+arrival time + use-case on the envelope. Every wire event is now `Timed[_]`, so components chain with
+no adapters (5c). `StoreTrialRunner` needed no change — types flowed.
+
+#### 5b — API protocol + service components — *(examples; isolated, no composition)*
+
+`ApiRequest`/`ApiResponse` (timeless payloads); `ServiceConsumption` (a `ServiceLatency` fact).
+`IngressSampler: ComponentSampler[Unit, ApiRequest, StoreRequest, ServiceConsumption]` (1:1 translation
++ ingress latency + latency observation) and `EgressSampler: ComponentSampler[Unit, StoreResponse,
+ApiResponse, ServiceConsumption]` (datastore response → `ApiResponse` + egress latency).
+
+**Validated by:** pure `Emission` unit tests for ingress/egress (Slice-2 style); no graph.
+
+#### 5c — Round-trip composition + cross-component observation — *(examples + light core plumbing)*
+
+`ApiWorkload` producing `Timed[ApiRequest]`; a `StorePipelineRunner` that wires
+`source → ingress → datastore → egress → sink`, folds **all three** consumption streams into one
+`Statistics[StoreStatKey]` (stage-tagged: `ingress.latency`, `latency`, `egress.latency`), combines the
+three `ComponentResult`s, and returns a `StoreTrialResult`. Core gains a small observation-merge helper
+only if the three-fold wiring warrants it. Resolve the `Component`-trait checkpoint.
+
+**Validated by:** the 4-stage graph runs end-to-end; `TrialResult` carries all three planes' metrics;
+end-to-end latency ≈ ingress + datastore + egress; determinism under a fixed seed; protocol intact
+across every boundary.
 
 ### 6. Admission / throttling — *(core pattern + examples)*
 
@@ -495,7 +551,9 @@ report is enough to call phase 0 done.)
 
 ### Ordering notes
 
-- Strict dependencies: 1 → 2 → 3 → 4; slice 5 depends on 3–4; slice 8 depends on everything.
+- Strict dependencies: 1 → 2 → 3 → 4; slice 5 depends on 3–4, and its sub-slices are strictly
+  ordered 5a → 5b → 5c (each builds on the prior, each independently committable with its own green
+  gate); slice 8 depends on everything.
 - **Slices 6 and 7 are reorderable.** Admission (6) is placed before Monte Carlo (7) so we scale a
   complete-fidelity single-trial system rather than adding a core component after the MC layer
   exists; swap them to exercise cross-trial sketch-merging earlier.
@@ -524,10 +582,11 @@ names the slice/phase where it is meant to land.
 - **State-dependent selectivity laws** *(post–Slice 2 refinement)*. Slice-2 realization is
   fixed-fraction / fixed-count / full; richer laws (e.g. a `RecentWindow` class whose selectivity
   drifts with state) can be added without touching the protocol.
-- **Request/response chaining uniformity** *(Slice 5)*. Decide whether requests also become
-  `Timed[_]` payloads (like outputs) for cross-component uniformity, or stay self-timed `TimedEvent`s.
-- **`Component` trait vs. convention + helpers** *(Slice 5 checkpoint)*. Promote only if the
-  observation plane's shape justifies it.
+- ~~**Request/response chaining uniformity** *(Slice 5)*~~ — **decided: Option A** (uniform
+  `Timed[payload]` wire; requests become timeless payloads). Lands in **5a**; the `Resp → Out` /
+  `ComponentSampler` rename rides along.
+- **`Component` trait vs. convention + helpers** *(Slice 5c checkpoint)*. Promote only if the
+  observation plane's shape justifies it; current lean is defer.
 
 **Targeted at the later AWS-extraction phase (post–Phase 0):**
 
