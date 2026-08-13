@@ -361,7 +361,7 @@ delivery increments — each independently testable, each carrying its own miles
 | 3. First runnable simulation | **Done** | source → datastore runs end-to-end; `Future[TrialResult]` completes |
 | 4. Observation plane | **Done** | `TrialResult` carries real per-use-case p50/p99; sketch `combine` associative |
 | 5a. Uniform-`Timed` refactor | **Done** | Option A landed (uniform `Timed[payload]` wire, `ComponentSampler` rename); all Slice 1–4 tests green (no behavior change) |
-| 5b. API protocol + service components | Planned | `IngressSampler`/`EgressSampler` unit-tested; API protocol defined; no graph |
+| 5b. API protocol + service components | **Done** | `IngressSampler`/`EgressSampler` unit-tested; API protocol defined; no graph |
 | 5c. Round-trip composition | Planned | 4-stage graph runs; `TrialResult` merges all three planes; end-to-end latency; `Component`-trait decision made |
 | 6. Admission / throttling | Planned | throttle rate + p99 respond to offered load, not mean rate |
 | 7. Monte Carlo | Planned | N-trial aggregate statistics stable; deterministic under a fixed master seed |
@@ -508,6 +508,13 @@ no adapters (5c). `StoreTrialRunner` needed no change — types flowed.
 ApiResponse, ServiceConsumption]` (datastore response → `ApiResponse` + egress latency).
 
 **Validated by:** pure `Emission` unit tests for ingress/egress (Slice-2 style); no graph.
+
+**Delivered** (examples 204, +7): `ApiProtocol` (`ApiRequest` ×6; `ApiResponse` ×5 — a thinner client
+view: `QueryResponse` drops the store's internal `evaluated*`); `ServiceModel` (`ServiceConfig` +
+`ServiceConsumption`/`ServiceLatency`); `IngressSampler` and `EgressSampler`, both stateless with
+constant service latency. Confirmed simplifications (deferred): create/update intent not propagated
+to the store; list vs report indistinguishable at egress (the `Timed` envelope's use-case still
+distinguishes them); API exposes the store's query-planner types. `core` untouched.
 
 #### 5c — Round-trip composition + cross-component observation — *(examples + light core plumbing)*
 
