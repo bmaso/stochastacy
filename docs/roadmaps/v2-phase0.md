@@ -363,7 +363,8 @@ delivery increments — each independently testable, each carrying its own miles
 | 5a. Uniform-`Timed` refactor | **Done** | Option A landed (uniform `Timed[payload]` wire, `ComponentSampler` rename); all Slice 1–4 tests green (no behavior change) |
 | 5b. API protocol + service components | **Done** | `IngressSampler`/`EgressSampler` unit-tested; API protocol defined; no graph |
 | 5c. Round-trip composition | **Done** | 4-stage graph runs; `TrialResult` merges all three planes; end-to-end latency; `Component`-trait decision made (deferred) |
-| 6. Admission / throttling | Planned | throttle rate + p99 respond to offered load, not mean rate |
+| 6a. Component sense of time | **Done** | `ComponentSampler.onTick` added + called by the transducer; behavior-preserving (default no-op); core test proves per-tick reset |
+| 6b. Admission / throttling | Planned | load-aware admission gate; throttle rate + p99 respond to offered load, not mean rate; 1:1 preserved via 429s |
 | 7. Monte Carlo | Planned | N-trial aggregate statistics stable; deterministic under a fixed master seed |
 | 8. Workload, emergent behavior, reporting | Planned | both emergent behaviors + throttling visibly exhibited; results exported |
 
@@ -542,14 +543,40 @@ problem-specific runner (plain `GraphDSL` + transducer components + `core.stats`
 `Component` trait only when a second domain needs it. Fan-in/out stay additive (merge/broadcast/route +
 an envelope routing tag; stateful joins modeled stochastically) — no corner.
 
-### 6. Admission / throttling — *(core pattern + examples)*
+### 6. Admission / throttling — *(core enabler + examples)*
 
-A load-aware **admission** component upstream of the datastore, tracking in-flight/concurrency to
-emit throttle responses under load — resolving the throttling open decision and confirming the
-datastore is ≥2 components. Where the queueing non-linearity becomes real.
+A load-aware **admission** component upstream of the datastore that throttles under load — where the
+queueing non-linearity becomes real, and where the datastore tier becomes ≥2 components. Split into a
+core enabler and the feature, mirroring Slice 5's shape.
 
-**Validated by:** under a burst the admission component throttles; p99 latency and throttle rate
-respond to offered load, not just mean rate.
+#### 6a — A component's sense of time — *(core; behavior-preserving)*
+
+Load accounting is time-dependent, but the transducer hands the sampler only the request payload, so
+a `ComponentSampler` can't tell when a tick begins. Add a defaulted `onTick(tick, state): S = state`
+to `ComponentSampler`; the transducer calls it once per `Tick(t)` (before that tick's requests are
+sampled). Existing components are unaffected (default no-op).
+
+**Validated by:** all existing tests green (no behavior change) + a core test with a per-tick-counting
+toy sampler whose `onTick` resets state, asserting the reset is observable across tick boundaries.
+
+**Delivered** (core 476 +1; examples 205 unchanged): `ComponentSampler.onTick(tick, state): S = state`
+(defaulted); the transducer calls it in the `Tick(t)` branch, after draining and before that tick's
+requests are sampled. The counting-toy test observes the reset as `[0,1,2, 0,1]` across two ticks;
+existing components (default no-op) are untouched.
+
+#### 6b — The admission feature — *(examples)*
+
+`AdmissionSampler: ComponentSampler[AdmissionState, StoreRequest, AdmissionOutcome, AdmissionConsumption]`
+between ingress and datastore: a per-tick capacity model (`onTick` resets the admitted-this-tick count),
+`AdmissionOutcome = Admitted(StoreRequest) | Throttled`, emitting an `admission.latency` observation plus
+a `throttled` marker on rejection. The runner forks admission's output (`Broadcast` + collect: admitted →
+datastore; throttled → `ErrorResult("throttled")`), then a **tick-aligned merge** (`MergeTimedEventGraph`)
+rejoins throttle responses with the datastore's before egress — which already maps `ErrorResult` →
+`ApiError`, so throttles surface as `ApiError("throttled")` with no new response types and 1:1 integrity
+preserved. Admission's consumption folds a fourth stats plane (`admission.latency`, `throttled`).
+
+**Validated by:** under a burst the gate throttles; throttle rate + p99 respond to the burst, not the
+mean rate; steady load under capacity never throttles; 1:1 integrity holds via 429s; determinism.
 
 ### 7. Monte Carlo — *(core)*
 

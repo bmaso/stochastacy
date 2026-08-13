@@ -161,4 +161,20 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
       // state threaded: response ids are 0,1,2 in arrival order
       timedOnly(resp).map(_.event) shouldBe Seq(ToyResp(0), ToyResp(1), ToyResp(2))
     }
+
+    "call onTick at each tick boundary, before that tick's requests are sampled" in {
+      // A per-tick counter: sample emits the current count and increments; onTick resets it to 0.
+      val counting = new ComponentSampler[Int, ToyReq, ToyResp, ToyCons]:
+        def initialState: Int = 0
+        def sample(in: ToyReq, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
+          Emission(state + 1, Scheduled(ToyResp(state), 0.0), Nil)
+        override def onTick(tick: Long, state: Int): Int = 0
+
+      val reqs  = Vector(req(1), req(1), req(1), req(2), req(2)) // 3 in tick 1, 2 in tick 2
+      val input = TickFraming.frame(reqs.iterator, 3).toVector
+      val (resp, _) = run(counting, input)
+
+      // Without the reset the second tick would continue 3,4; the reset restarts it at 0.
+      timedOnly(resp).map(_.event) shouldBe Seq(ToyResp(0), ToyResp(1), ToyResp(2), ToyResp(0), ToyResp(1))
+    }
   }

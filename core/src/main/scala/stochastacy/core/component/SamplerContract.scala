@@ -34,3 +34,8 @@ final case class Emission[S, Out, Cons](
 trait ComponentSampler[S, In, Out, Cons]:
   def initialState: S
   def sample(in: In, state: S, rng: UniformRandomProvider): Emission[S, Out, Cons]
+
+  /** Advance state at a tick boundary, before that tick's inputs are sampled. The default is a
+   *  no-op; load- or time-dependent components (e.g. admission with a per-tick capacity) override it
+   *  to reset or decay accumulated state. Called once per `Tick`, including empty ticks. */
+  def onTick(tick: Long, state: S): S = state

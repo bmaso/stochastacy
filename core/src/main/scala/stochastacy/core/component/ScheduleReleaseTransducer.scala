@@ -109,6 +109,7 @@ object ScheduleReleaseTransducer:
                 c match
                   case TimedControlEvent.Tick(t) =>
                     val (os, cs) = drainBelow(t.ticks)
+                    state = sampler.onTick(t.ticks, state) // advance state for the opening tick
                     emitMultiple(fwdOut, os :+ c)
                     emitMultiple(consOut, cs :+ c)
                   case TimedControlEvent.EndOfTime =>
