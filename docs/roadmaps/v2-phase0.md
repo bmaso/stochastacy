@@ -365,7 +365,7 @@ delivery increments — each independently testable, each carrying its own miles
 | 5c. Round-trip composition | **Done** | 4-stage graph runs; `TrialResult` merges all three planes; end-to-end latency; `Component`-trait decision made (deferred) |
 | 6a. Component sense of time | **Done** | `ComponentSampler.onTick` added + called by the transducer; behavior-preserving (default no-op); core test proves per-tick reset |
 | 6b. Admission / throttling | **Done** | load-aware admission gate (fork + tick-aligned rejoin); throttle rate is burst-sensitive (mean-under-capacity still throttles); 1:1 preserved via 429s; exact via a drain pad |
-| 7. Monte Carlo | Planned | N-trial aggregate statistics stable; deterministic under a fixed master seed |
+| 7. Monte Carlo | **Done** | N-trial executor (order-preserving `mapAsync`) + seed utility in thin core; store owns reduce-to-scalar; pooled (a) + across-trial (b) aggregation; deterministic + parallelism-independent |
 | 8. Workload, emergent behavior, reporting | Planned | both emergent behaviors + throttling visibly exhibited; results exported |
 
 ### 1. Core machinery foundation — *(core)*
@@ -606,6 +606,23 @@ aggregation (p50/p99/stddev *across* trials + whole-run summaries) + the RNG-see
 
 **Validated by:** N trials produce stable aggregate statistics with sensible cross-trial variance;
 determinism under a fixed master seed.
+
+**Delivered** (core 484 +8; examples 222 +7). **D-A: both aggregation flavors, (b) the headline.**
+The two answer different questions — pooled (a) characterizes a random *request* from a random run
+(the per-event distribution); across-trials (b) characterizes a random *run* (run-to-run variance /
+reliability / worst-case run), the summary a simulator produces cheaply from i.i.d. seeds but repeated
+real-world runs practically cannot (reality gives one non-repeatable, drifting draw at a time). Because
+one workload seed drives a whole run, our trials are internally correlated, so (a) and (b) genuinely
+diverge here. **D-B: core stays thin** — no new stats machinery was needed. `core.run.SeedSequence.derive`
+(master → N KISS-split seeds, prefix-stable) + `core.run.MonteCarlo.run[R](trialCount, masterSeed,
+parallelism)(seed => Future[R])` (order-preserving `mapAsync`, so results are identical for any
+parallelism given seed-deterministic trials). Aggregation is store-owned: `StoreMonteCarloResult(trialCount,
+perTrial: Vector[Statistics[StoreStatKey]])` with `pooled` (existing associative `Statistics.combine`)
+and `acrossTrials(key, scalar: Statistic => Double): Statistic` — the reduce-to-scalar step, built
+entirely from the existing `Statistic` (feed N per-trial scalars into a fresh `Statistic`; its
+mean/stddev/p50/p99 *are* the across-trial distribution). `StoreMonteCarloRunner` projects each trial to
+its `.stats` immediately (D-7.2), so the ensemble never retains full trial results. The generic core
+aggregator / fluent graph DSL is deferred to later phases per D-B (a "target of opportunity", not now).
 
 ### 8. Workload, emergent behavior, reporting — *(examples + light core export)*
 
