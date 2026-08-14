@@ -11,7 +11,7 @@ import stochastacy.core.component.{ScheduleReleaseTransducer, Timed}
 import stochastacy.core.stats.Statistics
 import stochastacy.core.stream.TickFraming
 import stochastacy.sim.stream.MergeTimedEventGraph
-import stochastacy.sim.{TimedControlEvent, TimedElement, TimedEvent}
+import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, TimedEvent, ticks}
 
 /** Runs one trial of the full store pipeline — `api-workload → ingress → admission → datastore →
  *  egress` — and folds every stage's consumption into per-(use-case, metric) statistics, keeping the
@@ -39,9 +39,14 @@ object StoreTrialRunner:
     seed:            Long,
     simulationTicks: Long,
     admissionCfg:    AdmissionConfig = AdmissionConfig(),
-    requestTicks:    Long            = -1L
+    requestTicks:    Long            = -1L,
+    windowTicks:     Long            = Long.MaxValue
   )(using system: ActorSystem): Future[StoreTrialResult] =
     val reqTicks    = if requestTicks < 0L then simulationTicks else requestTicks
+    // Coarse time bucket for an observation, from its envelope eventTime (Slice 8). The default
+    // windowTicks collapses every observation to window 0, so unwindowed callers are unaffected.
+    def windowOf(et: SimTime): Int =
+      if windowTicks <= 0L then 0 else ((et.ticks - 1L) / windowTicks).toInt
     val master      = RandomSource.KISS.create(seed)
     val workloadRng = RandomSource.KISS.create(master.nextLong())
     val ingressRng  = RandomSource.KISS.create(master.nextLong())
@@ -84,19 +89,21 @@ object StoreTrialRunner:
     def serviceLatFlow(metric: String): Flow[TimedElement[Timed[ServiceConsumption]], (StoreStatKey, Double), NotUsed] =
       Flow[TimedElement[Timed[ServiceConsumption]]].mapConcat {
         case t: Timed[ServiceConsumption] @unchecked =>
-          t.event match { case ServiceLatency(v) => List((StoreStatKey(t.usecase.toString, metric), v)) }
+          t.event match { case ServiceLatency(v) => List((StoreStatKey(t.usecase.toString, metric, windowOf(t.eventTime)), v)) }
         case _: TimedControlEvent => Nil
       }
     val admissionObsFlow: Flow[TimedElement[Timed[AdmissionConsumption]], (StoreStatKey, Double), NotUsed] =
       Flow[TimedElement[Timed[AdmissionConsumption]]].mapConcat {
         case t: Timed[AdmissionConsumption] @unchecked =>
-          StoreStats.admissionObservations(t.event).map { case (m, v) => (StoreStatKey(t.usecase.toString, m), v) }
+          val w = windowOf(t.eventTime)
+          StoreStats.admissionObservations(t.event).map { case (m, v) => (StoreStatKey(t.usecase.toString, m, w), v) }
         case _: TimedControlEvent => Nil
       }
     val storeObsFlow: Flow[TimedElement[Timed[Consumption]], (StoreStatKey, Double), NotUsed] =
       Flow[TimedElement[Timed[Consumption]]].mapConcat {
         case t: Timed[Consumption] @unchecked =>
-          StoreStats.observations(t.event).map { case (metric, v) => (StoreStatKey(t.usecase.toString, metric), v) }
+          val w = windowOf(t.eventTime)
+          StoreStats.observations(t.event).map { case (metric, v) => (StoreStatKey(t.usecase.toString, metric, w), v) }
         case _: TimedControlEvent => Nil
       }
     val payloadFlow: Flow[TimedElement[Timed[ApiResponse]], ApiResponse, NotUsed] =

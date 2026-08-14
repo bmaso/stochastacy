@@ -23,8 +23,7 @@ class StoreTrialRunnerSpec extends AnyWordSpec with should.Matchers with BeforeA
     Await.result(StoreTrialRunner.run(api, sc, svc, seed, ticks, adm, reqTicks), 10.seconds)
 
   /** A single-use-case workload: only `get`s, at the given per-tick mean rate. */
-  private def getOnly(rate: Double): ApiWorkloadConfig =
-    ApiWorkloadConfig(getPerTick = rate, createPerTick = 0.0, updatePerTick = 0.0, deletePerTick = 0.0, listPerTick = 0.0, reportPerTick = 0.0)
+  private def getOnly(rate: Double): ApiWorkloadConfig = ApiWorkloadConfig.getOnly(rate)
 
   /** Total observation count for a metric across every use-case. */
   private def countOf(r: StoreTrialResult, metric: String): Long =
@@ -52,7 +51,7 @@ class StoreTrialRunnerSpec extends AnyWordSpec with should.Matchers with BeforeA
     }
 
     "grow entity count under create-only writes with no deletes" in {
-      val api = ApiWorkloadConfig(getPerTick = 0.0, updatePerTick = 0.0, deletePerTick = 0.0, listPerTick = 0.0, reportPerTick = 0.0, createPerTick = 5.0)
+      val api = ApiWorkloadConfig(Vector(RequestStream("create", 5.0, CreateEntity(1_024L))))
       val sc  = StoreConfig(createRate = 1.0)
       run(api, sc, seed = 1L, ticks = 50L).finalState.entityCount should be > sc.initialEntities
     }

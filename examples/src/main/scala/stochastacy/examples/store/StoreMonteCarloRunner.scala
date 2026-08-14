@@ -24,11 +24,12 @@ object StoreMonteCarloRunner:
     trialCount:      Int,
     admissionCfg:    AdmissionConfig = AdmissionConfig(),
     parallelism:     Int             = 4,
-    requestTicks:    Long            = -1L
+    requestTicks:    Long            = -1L,
+    windowTicks:     Long            = Long.MaxValue
   )(using system: ActorSystem): Future[StoreMonteCarloResult] =
     given ExecutionContext = system.dispatcher
     MonteCarlo.run(trialCount, masterSeed, parallelism) { seed =>
       StoreTrialRunner
-        .run(apiCfg, storeCfg, serviceCfg, seed, simulationTicks, admissionCfg, requestTicks)
+        .run(apiCfg, storeCfg, serviceCfg, seed, simulationTicks, admissionCfg, requestTicks, windowTicks)
         .map(_.stats)
     }.map(StoreMonteCarloResult(trialCount, _))

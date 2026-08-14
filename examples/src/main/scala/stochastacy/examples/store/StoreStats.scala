@@ -1,7 +1,10 @@
 package stochastacy.examples.store
 
-/** Key for a store statistic: a request use-case paired with a metric name. */
-final case class StoreStatKey(usecase: String, metric: String)
+/** Key for a store statistic: a request use-case, a metric name, and a coarse time `window` (Slice 8).
+ *  `window` defaults to `0`, so 2-arg keys address the single-window (whole-run) case; the runner tags
+ *  observations with a real window index only when configured with a finite `windowTicks`. Windowing
+ *  is what makes the cardinality-driven cost rise *over a run* observable — early vs late windows. */
+final case class StoreStatKey(usecase: String, metric: String, window: Int = 0)
 
 /** Store-specific interpretation of consumption facts as `(metric, value)` observations — the
  *  domain knowledge that turns structured `Consumption` into numbers the store runner folds into

@@ -16,8 +16,7 @@ class StoreMonteCarloRunnerSpec extends AnyWordSpec with should.Matchers with Be
   private val svc = ServiceConfig(ingressLatencyTicks = 0.05, egressLatencyTicks = 0.05)
 
   /** A throttling-prone single-use-case workload: gets at a mean rate that Poisson-bursts over cap. */
-  private def getOnly(rate: Double): ApiWorkloadConfig =
-    ApiWorkloadConfig(getPerTick = rate, createPerTick = 0.0, updatePerTick = 0.0, deletePerTick = 0.0, listPerTick = 0.0, reportPerTick = 0.0)
+  private def getOnly(rate: Double): ApiWorkloadConfig = ApiWorkloadConfig.getOnly(rate)
 
   private def runMC(
     api: ApiWorkloadConfig, adm: AdmissionConfig, master: Long, ticks: Long, trials: Int, parallelism: Int = 4

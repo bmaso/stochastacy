@@ -366,7 +366,7 @@ delivery increments — each independently testable, each carrying its own miles
 | 6a. Component sense of time | **Done** | `ComponentSampler.onTick` added + called by the transducer; behavior-preserving (default no-op); core test proves per-tick reset |
 | 6b. Admission / throttling | **Done** | load-aware admission gate (fork + tick-aligned rejoin); throttle rate is burst-sensitive (mean-under-capacity still throttles); 1:1 preserved via 429s; exact via a drain pad |
 | 7. Monte Carlo | **Done** | N-trial executor (order-preserving `mapAsync`) + seed utility in thin core; store owns reduce-to-scalar; pooled (a) + across-trial (b) aggregation; deterministic + parallelism-independent |
-| 8. Workload, emergent behavior, reporting | Planned | both emergent behaviors + throttling visibly exhibited; results exported |
+| 8. Workload, emergent behavior, reporting | **Done** | labeled request-stream workload; capstone MC *visibly* shows cardinality rise (+58%), deep-offset cliff, throttling (~23%); JSONL + summary export; core untouched. **Phase 0 complete.** |
 
 ### 1. Core machinery foundation — *(core)*
 
@@ -634,6 +634,22 @@ Declares the store simulator complete.
 **Validated by:** the simulation *visibly* exhibits both emergent behaviors and throttling;
 exported output is inspectable. (Full Grafana pipeline is optional/deferred — JSONL + summary
 report is enough to call phase 0 done.)
+
+**Delivered** (core 484 unchanged — this slice is examples-only; examples 231 +9). **D-A: windowed stat
+key** — `StoreStatKey` gains `window: Int = 0` (2-arg keys still address the single-window case); the
+runner tags each observation with `window = (eventTime.ticks-1)/windowTicks` from its envelope, so the
+cost rise is visible *over a run* with no new core machinery (default `windowTicks = Long.MaxValue`
+collapses to window 0, leaving every prior test untouched). **D-B: labeled request streams** —
+`RequestStream(usecase, ratePerTick, template: ApiRequest)` and `ApiWorkloadConfig(streams: Vector[...])`
+replace the scalar-rate config; each stream's label rides the `Timed` envelope, so two streams of the
+same shape (`list.keyset` vs `list.offset`) separate in the stats — expressive without a generic DSL.
+**D-C: Monte Carlo** — the capstone runs as an MC ensemble, so the export carries across-trial variance.
+`StoreReport` writes JSONL (`pooled` + `acrossTrials` records via json4s) and a text summary; `@main
+StoreDemo` is the bridge. The demo *visibly* shows all three: report latency **+58.6%** window-0→3
+(cardinality rise), `list.offset` p99 **1.6×** `list.keyset` in latency (**>3×** on `work.items`, the
+truer cost signal — the deep-offset cliff), and **~23%** throttling. Full Grafana/Postgres pipeline
+stays deferred. **Phase 0 is complete** — a domain-agnostic `stochastacy.core` proven by a REST-store
+example built entirely on it.
 
 ### Ordering notes
 
