@@ -50,7 +50,7 @@ component is **shape-preserving** (same `Req → Resp` interface as what it wrap
 | # | slice | status | proof |
 |---|---|---|---|
 | 1 | Interface machinery + flat-throttle gate + minimal V2 edge | **Done** | new V2 pipeline throttles; exact 1:1 incl. rejections; original demo untouched (core 491, examples 235) |
-| 2 | Latency gate + two-gate stack | Planned | admit-all decorator works; `latency → throttle` stacks; latency accumulates |
+| 2 | Latency gate + two-gate stack | **Done** | admit-all decorator; `latency → throttle` stacks; latency accumulates (core 499, examples 237) |
 | 3 | Burst (token-bucket) gate + headline experiment | Planned | equal-mean bucket throttles less than a flat cap under bursts |
 | 4 | Chaos gate + orthogonality + full-stack integrity | Planned | 429 rate scales with load, 503 rate ≈ constant; one terminal outcome per request |
 | 5 | Store Demo V2 capstone: reporting + docs | Planned | full-stack MC run; per-gate reject rates reported; specs + root README |
@@ -98,6 +98,8 @@ edge to a two-gate stack, `latency → throttle → datastore` (the throttle gat
 
 **Validated by:** the admit-all path works; two gates compose; edge latency accumulates across the stack;
 1:1 integrity still holds.
+
+**Delivered** (core 499 +8, examples 237 +2; all prior tests pass). `stochastacy.core.component.gate.LatencyGate[Req,Resp](latency: StatelessSampler[Double])` — admits every request, adds a per-request latency **drawn from a distribution** (not constant; `LatencyGate.constant(ticks)` is a named special case, and `LogNormalSampler.constant(mu, sigma)` is the realistic form). It threads the current tick into its state via `onTick` (second real use of the hook) so a sampler whose params vary with tick gives **time-varying** latency; draws clamped to `>= 0`. **D1:** latency is proven at the core level by response timing (a single request through `wrap(echo(0.1), LatencyGate.constant(0.5))` lands at conceptual time 2.6; two stacked gates → 2.8 — accumulation), gates emitting no metric plane. **D3:** gate order `latency → throttle → datastore` (latency outermost). V2 edge is now `Interface.wrap(Interface.wrap(datastore, throttle), latency)` with `edgeLatency: StatelessSampler[Double] = ConstantSampler(0.0)` (default preserves Slice-1 behavior); the seed split keeps `workloadRng` first. Tests: `LatencyGateSpec` (constant, distributional draw, tick-threading, negative-clamp), `InterfaceSpec` stack group (accumulation + 1:1/throttle-with-latency-in-front), V2 spec (log-normal latency composed in front of throttle keeps throttling + exact 1:1; deterministic).
 
 ### Slice 3 — Burst-capacity (token-bucket) gate + the headline experiment
 

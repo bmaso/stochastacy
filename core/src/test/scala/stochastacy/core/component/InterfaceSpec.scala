@@ -11,7 +11,7 @@ import org.apache.pekko.stream.scaladsl.{GraphDSL, Keep, RunnableGraph, Sink, So
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.core.component.gate.FlatThrottleGate
+import stochastacy.core.component.gate.{FlatThrottleGate, LatencyGate}
 import stochastacy.core.stream.TickFraming
 import stochastacy.sim.*
 import stochastacy.sim.TimedControlEvent.EndOfTime
@@ -26,13 +26,38 @@ class InterfaceSpec extends AnyWordSpec with should.Matchers with BeforeAndAfter
   private final case class ToyResp(id: Int)
   private final case class ToyCons(kind: String)
 
-  /** Downstream: echoes the request id back as a response and records one consumption fact. */
-  private final class EchoSampler extends ComponentSampler[Unit, ToyReq, ToyResp, ToyCons]:
+  /** Downstream: echoes the request id back as a response (at `latency`) and records one consumption
+   *  fact. `latency` defaults to 0 for the framing/throttle tests; the latency-accumulation tests give
+   *  it a known non-zero value. */
+  private final class EchoSampler(latency: Double = 0.0) extends ComponentSampler[Unit, ToyReq, ToyResp, ToyCons]:
     def initialState: Unit = ()
     def sample(in: ToyReq, state: Unit, rng: UniformRandomProvider): Emission[Unit, ToyResp, ToyCons] =
-      Emission((), Scheduled(ToyResp(in.id), 0.0), List(Scheduled(ToyCons("work"), 0.0)))
+      Emission((), Scheduled(ToyResp(in.id), latency), List(Scheduled(ToyCons("work"), 0.0)))
 
   private def req(tick: Long, id: Int): Timed[ToyReq] = Timed(ToyReq(id), SimTime.of(tick), 0.0, "uc")
+
+  private type ToyComponent = org.apache.pekko.stream.Graph[
+    org.apache.pekko.stream.FanOutShape2[TimedElement[Timed[ToyReq]], TimedElement[Timed[ToyResp]], TimedElement[Timed[ToyCons]]],
+    ?
+  ]
+
+  /** Run an arbitrary Req→Resp component, returning just its responses. */
+  private def responsesOf(component: ToyComponent, input: Vector[TimedElement[Timed[ToyReq]]]): Seq[Timed[ToyResp]] =
+    val graph = RunnableGraph.fromGraph(
+      GraphDSL.createGraph(Sink.seq[TimedElement[Timed[ToyResp]]]) { implicit b => respSink =>
+        import GraphDSL.Implicits.*
+        val src = b.add(Source(input))
+        val c   = b.add(component)
+        src ~> c.in
+        c.out0 ~> respSink.in
+        c.out1 ~> b.add(Sink.ignore)
+        ClosedShape
+      }
+    )
+    timedOnly(Await.result(graph.run(), 5.seconds))
+
+  private def echo(latency: Double): ToyComponent =
+    ScheduleReleaseTransducer.componentOf(new EchoSampler(latency), RandomSource.KISS.create(2L))
 
   private def run(
     cap:   Int,
@@ -91,5 +116,38 @@ class InterfaceSpec extends AnyWordSpec with should.Matchers with BeforeAndAfter
 
     "be deterministic" in {
       run(cap = 2, input) shouldBe run(cap = 2, input)
+    }
+  }
+
+  // One request at tick 2, intraTick 0; conceptual response time = 2 + (sum of latencies it passed).
+  private val one = TickFraming.frame(Vector(req(2, 0)).iterator, 5).toVector
+  private def conceptualTime(rs: Seq[Timed[ToyResp]]): Double =
+    rs.head.eventTime.ticks.toDouble + rs.head.intraTick
+
+  "A stack of interface gates" should {
+
+    "accumulate a latency gate's delay on top of the downstream's latency" in {
+      val edge = Interface.wrap(echo(0.1), LatencyGate.constant[ToyReq, ToyResp](0.5), RandomSource.KISS.create(3L))
+      conceptualTime(responsesOf(edge, one)) shouldBe (2.6 +- 1e-9)   // 2 + 0.5 (gate) + 0.1 (downstream)
+    }
+
+    "sum the latencies of stacked gates" in {
+      val edge = Interface.wrap(
+        Interface.wrap(echo(0.1), LatencyGate.constant[ToyReq, ToyResp](0.5), RandomSource.KISS.create(3L)),
+        LatencyGate.constant[ToyReq, ToyResp](0.2),
+        RandomSource.KISS.create(4L)
+      )
+      conceptualTime(responsesOf(edge, one)) shouldBe (2.8 +- 1e-9)   // 2 + 0.2 + 0.5 + 0.1
+    }
+
+    "preserve 1:1 and throttle behavior with a latency gate stacked in front of a throttle" in {
+      val edge = Interface.wrap(
+        Interface.wrap(echo(0.0), new FlatThrottleGate[ToyReq, ToyResp](2, ToyResp(-1)), RandomSource.KISS.create(3L)),
+        LatencyGate.constant[ToyReq, ToyResp](0.3),
+        RandomSource.KISS.create(4L)
+      )
+      val events = responsesOf(edge, input).map(_.event)
+      events should have size 7                                       // still one response per request
+      events.count(_ == ToyResp(-1)) shouldBe 3                       // the throttle still rejects; latency admits all
     }
   }

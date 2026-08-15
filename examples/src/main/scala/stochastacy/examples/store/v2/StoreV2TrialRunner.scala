@@ -6,16 +6,18 @@ import org.apache.commons.rng.simple.RandomSource
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.ClosedShape
 import org.apache.pekko.stream.scaladsl.{Flow, GraphDSL, RunnableGraph, Sink}
-import stochastacy.core.component.gate.FlatThrottleGate
+import stochastacy.core.component.gate.{FlatThrottleGate, LatencyGate}
 import stochastacy.core.component.{Interface, ScheduleReleaseTransducer, Timed}
+import stochastacy.core.sampler.{ConstantSampler, StatelessSampler}
 import stochastacy.core.stream.TickFraming
 import stochastacy.sim.TimedElement
 import stochastacy.examples.store.*
 
-/** Store Demo V2, minimal edge (Slice 1): the store **datastore** wrapped by a `FlatThrottleGate`
- *  interface, driven by the store's own workload. Throttling is no longer a bespoke pipeline stage —
- *  it is a generic gate the interface component composes onto the datastore, and a throttled request
- *  surfaces in-band as `ErrorResult("throttled")` (later mapped to a client 429). All new code: the
+/** Store Demo V2 edge: the store **datastore** behind a stack of interface gates — `latency → throttle
+ *  → datastore` (Slice 2) — driven by the store's own workload. Neither throttling nor edge latency is
+ *  a bespoke pipeline stage: each is a generic gate the interface component composes onto the datastore,
+ *  and a throttled request surfaces in-band as `ErrorResult("throttled")` (later mapped to a client
+ *  429). `edgeLatency` is a per-request latency distribution (constant by default). All new code: the
  *  original store demo is untouched; this reuses its datastore, protocol, and workload by import.
  *
  *  Deterministic given `seed`. Requests are generated over `[1, requestTicks]` and framed over
@@ -29,21 +31,26 @@ object StoreV2TrialRunner:
     throttleCapacity: Int,
     seed:             Long,
     simulationTicks:  Long,
-    requestTicks:     Long = -1L
+    requestTicks:     Long                    = -1L,
+    edgeLatency:      StatelessSampler[Double] = ConstantSampler(0.0)
   )(using system: ActorSystem): Future[StoreV2TrialResult] =
     val reqTicks    = if requestTicks < 0L then simulationTicks else requestTicks
     val master      = RandomSource.KISS.create(seed)
     val workloadRng = RandomSource.KISS.create(master.nextLong())
-    val gateRng     = RandomSource.KISS.create(master.nextLong())
+    val latencyRng  = RandomSource.KISS.create(master.nextLong())
+    val throttleRng = RandomSource.KISS.create(master.nextLong())
     val storeRng    = RandomSource.KISS.create(master.nextLong())
 
     val storeReqs = ApiWorkload.requests(apiCfg, workloadRng, reqTicks)
       .map(t => Timed(toStoreRequest(t.event), t.eventTime, t.intraTick, t.usecase))
     val source = TickFraming.frameSource(storeReqs.iterator, simulationTicks)
 
+    // The edge as a gate stack: latency → throttle → datastore (a request pays edge latency, then is
+    // rate-gated, then served). Each `wrap` preserves the datastore's shape and materialized value.
     val datastore = ScheduleReleaseTransducer.componentOf(new StoreSampler(storeCfg), storeRng)
-    val gate      = new FlatThrottleGate[StoreRequest, StoreResponse](throttleCapacity, ErrorResult("throttled"))
-    val edge      = Interface.wrap(datastore, gate, gateRng)
+    val throttle  = new FlatThrottleGate[StoreRequest, StoreResponse](throttleCapacity, ErrorResult("throttled"))
+    val latency   = new LatencyGate[StoreRequest, StoreResponse](edgeLatency)
+    val edge      = Interface.wrap(Interface.wrap(datastore, throttle, throttleRng), latency, latencyRng)
 
     val payloadFlow = Flow[TimedElement[Timed[StoreResponse]]].collect { case t: Timed[StoreResponse] @unchecked => t.event }
     val respSink    = Sink.seq[StoreResponse]
