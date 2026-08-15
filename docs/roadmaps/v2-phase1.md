@@ -52,7 +52,7 @@ component is **shape-preserving** (same `Req → Resp` interface as what it wrap
 | 1 | Interface machinery + flat-throttle gate + minimal V2 edge | **Done** | new V2 pipeline throttles; exact 1:1 incl. rejections; original demo untouched (core 491, examples 235) |
 | 2 | Latency gate + two-gate stack | **Done** | admit-all decorator; `latency → throttle` stacks; latency accumulates (core 499, examples 237) |
 | 3 | Burst (token-bucket) gate + headline experiment | **Done** | bucket absorbs a burst a flat cap rejects (0 vs 13); bounded advantage under overload (core 505) |
-| 4 | Chaos gate + orthogonality + full-stack integrity | Planned | 429 rate scales with load, 503 rate ≈ constant; one terminal outcome per request |
+| 4 | Chaos gate + orthogonality + full-stack integrity | **Done** | 429 rate climbs with load while 503 ≈ constant (~0.1); full stack gives one terminal outcome each (core 511) |
 | 5 | Store Demo V2 capstone: reporting + docs | Planned | full-stack MC run; per-gate reject rates reported; specs + root README |
 | 6 | Component catalog / engineer's guide | Planned | a guide cataloguing the reusable components, their properties, use-cases, and example demos |
 | — | Circuit-breaker gate (stretch) | Deferred | response-feedback path; likely a later phase |
@@ -121,6 +121,8 @@ response.
 **Validated by:** sweeping offered load, the `429` (throttle) rate scales with load while the `503`
 (chaos) rate holds ≈ its configured probability — the two mechanisms are orthogonal; the full stack
 composes; every request ends in exactly one terminal outcome (served / 429 / 503).
+
+**Delivered** (core 511 +6; examples unchanged — core-only per D-scope). `stochastacy.core.component.gate.ChaosGate[Req,Resp](fail: StatelessSampler[Boolean], rejectResponse, latencyTicks)` — an independent per-request Bernoulli draw (DQ1: sampler-driven, reusing `BernoulliSampler`; `ChaosGate.constant(p, resp)` convenience; tick threaded via `onTick` for time-varying failure rates), load-independent by construction. The orthogonality experiment (`ChaosGateSpec`) is a deterministic pure-sampler simulation of a **chaos-outermost** `chaos → throttle` stack (DQ-order — so 503 faces a load-independent population): sweeping constant load `{3, 8, 20}`/tick over 200 ticks at `p=0.1`, cap 5, the 503 rate stays ≈ 0.1 (spread < 0.03 across a 6.7× load increase) while the 429 rate climbs strictly (~0 → ~0.65, swing > 0.4), and `served + 503 + 429 == total` at every load. `InterfaceSpec` gains a three-gate full-stack test (`latency → chaos → throttle` over echo): exactly one terminal outcome per request (served / -429 / -503), all classified, deterministic. **D-scope:** wiring the gates into the store edge + the V2/Monte-Carlo demo experiments are Slice 5.
 
 ### Slice 5 — Store Demo V2 capstone: reporting + docs
 

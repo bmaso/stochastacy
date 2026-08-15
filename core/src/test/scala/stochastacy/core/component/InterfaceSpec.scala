@@ -11,7 +11,7 @@ import org.apache.pekko.stream.scaladsl.{GraphDSL, Keep, RunnableGraph, Sink, So
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.core.component.gate.{FlatThrottleGate, LatencyGate, TokenBucketGate}
+import stochastacy.core.component.gate.{ChaosGate, FlatThrottleGate, LatencyGate, TokenBucketGate}
 import stochastacy.core.stream.TickFraming
 import stochastacy.sim.*
 import stochastacy.sim.TimedControlEvent.EndOfTime
@@ -158,5 +158,23 @@ class InterfaceSpec extends AnyWordSpec with should.Matchers with BeforeAndAfter
       val events = responsesOf(edge, input).map(_.event)
       events should have size 7
       events.count(_ == ToyResp(-1)) shouldBe 3
+    }
+
+    "compose a full stack (latency → chaos → throttle), giving each request exactly one terminal outcome" in {
+      // Distinct rejections: throttle → -429, chaos → -503; served echoes carry a non-negative id.
+      def build = Interface.wrap(
+        Interface.wrap(
+          Interface.wrap(echo(0.0), new FlatThrottleGate[ToyReq, ToyResp](2, ToyResp(-429)), RandomSource.KISS.create(3L)),
+          ChaosGate.constant[ToyReq, ToyResp](0.5, ToyResp(-503)), RandomSource.KISS.create(4L)
+        ),
+        LatencyGate.constant[ToyReq, ToyResp](0.0), RandomSource.KISS.create(5L)
+      )
+      val events = responsesOf(build, input).map(_.event)
+      events should have size 7                                        // one terminal outcome per request
+      val served   = events.count(_.id >= 0)
+      val throttled = events.count(_ == ToyResp(-429))
+      val failed   = events.count(_ == ToyResp(-503))
+      served + throttled + failed shouldBe 7                           // every response classified
+      responsesOf(build, input) shouldBe responsesOf(build, input)     // deterministic
     }
   }
