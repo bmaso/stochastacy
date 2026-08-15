@@ -54,6 +54,7 @@ component is **shape-preserving** (same `Req → Resp` interface as what it wrap
 | 3 | Burst (token-bucket) gate + headline experiment | Planned | equal-mean bucket throttles less than a flat cap under bursts |
 | 4 | Chaos gate + orthogonality + full-stack integrity | Planned | 429 rate scales with load, 503 rate ≈ constant; one terminal outcome per request |
 | 5 | Store Demo V2 capstone: reporting + docs | Planned | full-stack MC run; per-gate reject rates reported; specs + root README |
+| 6 | Component catalog / engineer's guide | Planned | a guide cataloguing the reusable components, their properties, use-cases, and example demos |
 | — | Circuit-breaker gate (stretch) | Deferred | response-feedback path; likely a later phase |
 
 ## Slices
@@ -124,10 +125,23 @@ composes; every request ends in exactly one terminal outcome (served / 429 / 503
 Wire the full edge stack over the capstone workload as a Monte Carlo ensemble; add V2 reporting that
 breaks out per-gate reject rates alongside the datastore metrics; land the burst-vs-flat and
 orthogonality experiments as capstone assertions; write `specs/README.store-demo-v2.md` and add a Store
-Demo V2 paragraph to the root README. Declares the phase complete.
+Demo V2 paragraph to the root README. Delivers the runnable Store Demo V2 capstone.
 
 **Validated by:** the demo *visibly* exhibits latency accrual, load-driven throttling, burst tolerance,
 and load-independent chaos failures; exported output is inspectable.
+
+### Slice 6 — Component catalog / engineer's guide
+
+An engineer's guide to the reusable components built in `core` — the interface component and its gates
+(and, as it makes sense, the broader component/sampler/stats/run machinery they build on). A catalog
+entry per component covering: what it is and the shape it presents; its **logical properties**
+(shape-preserving, in-band rejection / 1:1 integrity, stateless vs. stateful, `onTick` semantics,
+determinism); intended **use-cases** (when to reach for it, and how gates compose/stack); and **which
+demos use it** as a worked example (linking `store.v2` and the phase-0 store demo). Scoped as
+documentation only — no new component code. Declares the phase complete.
+
+**Validated by:** a reviewer can, from the guide alone, pick the right gate for a gating problem, know
+its properties and how to compose it, and jump to a demo that exercises it.
 
 ### Stretch — Circuit-breaker gate
 
