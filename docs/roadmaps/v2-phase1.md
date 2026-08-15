@@ -1,5 +1,8 @@
 # v2/phase1 — Interface components: composable admission/rejection gating
 
+**Status: COMPLETE** — all six slices delivered (Slice 1–4 gates + machinery, Slice 5a/5b the Store Demo
+V2 capstone, Slice 6 the component catalog). Core 511, examples 244; the original store demo untouched.
+
 Started on branch `v2/phase1`, following the conclusion of `v2/phase0` (domain-agnostic core proven by
 the Store demo). This phase adds a reusable **interface component** to `stochastacy.core` — a
 transparent, stackable decorator that sits on a request/response edge and makes an admit-or-reject
@@ -55,7 +58,7 @@ component is **shape-preserving** (same `Req → Resp` interface as what it wrap
 | 4 | Chaos gate + orthogonality + full-stack integrity | **Done** | 429 rate climbs with load while 503 ≈ constant (~0.1); full stack gives one terminal outcome each (core 511) |
 | 5a | V2 edge assembly + MC + reporting + bridge | **Done** | configurable gate stack; per-gate outcome rates via MC; `@main` bridge (core 511, examples 242) |
 | 5b | Burst-vs-flat + orthogonality experiments + docs | **Done** | in-edge: bucket 0% vs flat 52% throttled; 503 flat ~10% while 429 climbs 4→66%; V2 guide + README (examples 244) |
-| 6 | Component catalog / engineer's guide | Planned | a guide cataloguing the reusable components, their properties, use-cases, and example demos |
+| 6 | Component catalog / engineer's guide | **Done** | `specs/component-catalog.md` — interface + 4 gates + foundations, per-entry template, demo cross-links |
 | — | Circuit-breaker gate (stretch) | Deferred | response-feedback path; likely a later phase |
 
 ## Slices
@@ -176,6 +179,16 @@ documentation only — no new component code. Declares the phase complete.
 
 **Validated by:** a reviewer can, from the guide alone, pick the right gate for a gating problem, know
 its properties and how to compose it, and jump to a demo that exercises it.
+
+**Delivered** (doc-only; no build impact). `specs/component-catalog.md` — an engineer's catalog of the
+reusable `core` building blocks: a primary entry per component on a uniform template (purpose / signature
+/ properties / when to use / composition / exercised-by), covering `Interface.wrap` (+ `InterfaceSampler`
+/ `InterfaceOutcome`) and the four gates (`FlatThrottleGate`, `LatencyGate`, `TokenBucketGate`,
+`ChaosGate`), then a concise foundations section (ComponentSampler/transducer, the timed-event protocol,
+Sampler + distribution samplers, Statistic/Statistics/Histogram, MonteCarlo/SeedSequence, TickFraming), a
+gate-selection quick-reference, and cross-links to both demo guides. Every entry grounded in source. The
+`store-demo-v2.md` footer now links to it, and the root README points to it. Scope: domain-agnostic core
+only (AWS/`ips` out). **Phase v2/phase1 complete.**
 
 ### Stretch — Circuit-breaker gate
 

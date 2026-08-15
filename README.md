@@ -129,6 +129,10 @@ Export the result to JSONL and hand it to your analytics/visualization stack.
 The engine (`stochastacy.core`) is **domain-agnostic** — it imposes no vocabulary of requests,
 resources, or costs. A simulator supplies its own protocol, component behaviors, workload, and reporting.
 
+The reusable building blocks — the interface component and its gates (latency, throttling, burst, chaos),
+and the foundations they rest on — are catalogued in
+[`specs/component-catalog.md`](specs/component-catalog.md).
+
 ---
 
 ## Demos

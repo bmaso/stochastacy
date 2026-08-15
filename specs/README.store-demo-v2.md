@@ -167,4 +167,4 @@ so a metric's mean is its rate and its count is the request total. `StoreV2Repor
 | the gates (reusable core) | `core/component/Interface.scala`, `core/component/gate/*` |
 
 *The gates are reusable `stochastacy.core` components; for their contracts and properties as building
-blocks (independent of this demo), see the component catalog.*
+blocks (independent of this demo), see the [component catalog](component-catalog.md).*
