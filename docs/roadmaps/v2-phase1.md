@@ -54,7 +54,7 @@ component is **shape-preserving** (same `Req → Resp` interface as what it wrap
 | 3 | Burst (token-bucket) gate + headline experiment | **Done** | bucket absorbs a burst a flat cap rejects (0 vs 13); bounded advantage under overload (core 505) |
 | 4 | Chaos gate + orthogonality + full-stack integrity | **Done** | 429 rate climbs with load while 503 ≈ constant (~0.1); full stack gives one terminal outcome each (core 511) |
 | 5a | V2 edge assembly + MC + reporting + bridge | **Done** | configurable gate stack; per-gate outcome rates via MC; `@main` bridge (core 511, examples 242) |
-| 5b | Burst-vs-flat + orthogonality experiments + docs | Planned | demo-scale experiment assertions; specs/README.store-demo-v2.md + root README |
+| 5b | Burst-vs-flat + orthogonality experiments + docs | **Done** | in-edge: bucket 0% vs flat 52% throttled; 503 flat ~10% while 429 climbs 4→66%; V2 guide + README (examples 244) |
 | 6 | Component catalog / engineer's guide | Planned | a guide cataloguing the reusable components, their properties, use-cases, and example demos |
 | — | Circuit-breaker gate (stretch) | Deferred | response-feedback path; likely a later phase |
 
@@ -134,6 +134,20 @@ Demo V2 paragraph to the root README. Delivers the runnable Store Demo V2 capsto
 
 **Validated by:** the demo *visibly* exhibits latency accrual, load-driven throttling, burst tolerance,
 and load-independent chaos failures; exported output is inspectable.
+
+**Delivered — 5a** (core 511 unchanged, examples 242 +5): configurable edge — `EdgeConfig` (latency
+sampler, `RateLimiter.FlatThrottle`/`TokenBucket`, chaos prob) → gate stack; `StoreV2TrialRunner`
+gains `run(EdgeConfig)` + raw `runGates(Seq[gate])`, folding gates over the datastore via `Interface.wrap`
+and folding two planes into windowed `StoreStatKey` stats — datastore consumption plus the **terminal
+outcome** of every request (`outcome.served`/`throttled`/`chaos`, 0/1, classified from the in-band
+response since gates have no metric plane, DD-1). `StoreV2MonteCarloRunner` reuses `MonteCarlo` +
+`StoreMonteCarloResult`; `StoreV2Report` summarizes per-gate rates; `StoreV2Demo` `@main` runs end to end.
+**Delivered — 5b** (examples 244 +2): `SpikeWorkload` (deterministic per-tick spike arrivals) +
+`StoreV2TrialRunner.runArrivals` (byte-identical traffic injection, via extracted `runOn`); the two
+experiments in `StoreV2ExperimentsSpec` — burst-vs-flat on the same spikes (`TokenBucket` 0% vs
+`FlatThrottle` 52.1% throttled) and chaos-outermost orthogonality swept over load (503 ≈ 10% flat while
+429 climbs 3.9%→32.3%→65.5%); `specs/README.store-demo-v2.md` + a root-README Store Demo V2 paragraph.
+All new code reusing the frozen original demo by import.
 
 **Split into 5a (edge assembly + MC + reporting + bridge) and 5b (experiments + docs).**
 

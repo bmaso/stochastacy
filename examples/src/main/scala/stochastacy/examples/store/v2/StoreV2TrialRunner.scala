@@ -46,7 +46,8 @@ object StoreV2TrialRunner:
   )(using system: ActorSystem): Future[StoreV2TrialResult] =
     runGates(apiCfg, storeCfg, EdgeConfig.gates(edge), seed, simulationTicks, requestTicks, windowTicks)
 
-  /** Raw entry point (experiments): wrap an explicit gate stack, outermost-first. */
+  /** Raw entry point (experiments): wrap an explicit gate stack, outermost-first, over the store
+   *  workload. */
   def runGates(
     apiCfg:          ApiWorkloadConfig,
     storeCfg:        StoreConfig,
@@ -61,10 +62,35 @@ object StoreV2TrialRunner:
     val workloadRng = RandomSource.KISS.create(master.nextLong())
     val storeRng    = RandomSource.KISS.create(master.nextLong())
     val gateRngs    = gates.map(_ => RandomSource.KISS.create(master.nextLong()))
-
-    val storeReqs = ApiWorkload.requests(apiCfg, workloadRng, reqTicks)
+    val arrivals = ApiWorkload.requests(apiCfg, workloadRng, reqTicks)
       .map(t => Timed(toStoreRequest(t.event), t.eventTime, t.intraTick, t.usecase))
-    val source = TickFraming.frameSource(storeReqs.iterator, simulationTicks)
+    runOn(storeCfg, gates, arrivals, storeRng, gateRngs, simulationTicks, windowTicks)
+
+  /** Arrivals-injection entry point (experiments): drive the gate stack with a **pre-built** arrival
+   *  sequence — e.g. [[SpikeWorkload]] — so two runs can be fed byte-identical traffic. */
+  def runArrivals(
+    storeCfg:        StoreConfig,
+    gates:           Seq[InterfaceSampler[?, StoreRequest, StoreResponse]],
+    arrivals:        Vector[Timed[StoreRequest]],
+    seed:            Long,
+    simulationTicks: Long,
+    windowTicks:     Long = Long.MaxValue
+  )(using system: ActorSystem): Future[StoreV2TrialResult] =
+    val master   = RandomSource.KISS.create(seed)
+    val storeRng = RandomSource.KISS.create(master.nextLong())
+    val gateRngs = gates.map(_ => RandomSource.KISS.create(master.nextLong()))
+    runOn(storeCfg, gates, arrivals, storeRng, gateRngs, simulationTicks, windowTicks)
+
+  private def runOn(
+    storeCfg:        StoreConfig,
+    gates:           Seq[InterfaceSampler[?, StoreRequest, StoreResponse]],
+    arrivals:        Vector[Timed[StoreRequest]],
+    storeRng:        UniformRandomProvider,
+    gateRngs:        Seq[UniformRandomProvider],
+    simulationTicks: Long,
+    windowTicks:     Long
+  )(using system: ActorSystem): Future[StoreV2TrialResult] =
+    val source = TickFraming.frameSource(arrivals.iterator, simulationTicks)
 
     // Wrap the gates over the datastore, outermost-first (each wrap preserves shape + Mat).
     val datastore = ScheduleReleaseTransducer.componentOf(new StoreSampler(storeCfg), storeRng)

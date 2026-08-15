@@ -145,6 +145,17 @@ magnitude more work than keyset pagination for the identical page of results, an
 even when the *mean* rate sits under capacity. See the detailed engineer's guide in
 [`specs/README.store-demo.md`](specs/README.store-demo.md).
 
+### The Store simulator V2 — the gated edge
+
+The same fictional store, but this demo is about the **edge in front of the datastore**: a composable
+stack of admission/rejection *interface components* — latency injection, rate limiting, and random
+failure — each a reusable `core` gate wrapped onto the datastore, with rejections surfaced in-band so
+every request still yields exactly one terminal outcome (served / 429 / 503). Its experiments show how
+gating *policy* shapes behavior: a token bucket absorbs a burst that a same-capacity flat cap rejects
+(0% vs. 52% throttled on identical traffic), and a random-failure gate stays flat at its configured rate
+as offered load climbs while the throttle rate rises with it — the two mechanisms are orthogonal. See
+the engineer's guide in [`specs/README.store-demo-v2.md`](specs/README.store-demo-v2.md).
+
 _More demos — including the AWS DynamoDB cost model — will be documented here._
 
 ---
