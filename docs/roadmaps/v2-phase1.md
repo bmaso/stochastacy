@@ -53,7 +53,8 @@ component is **shape-preserving** (same `Req → Resp` interface as what it wrap
 | 2 | Latency gate + two-gate stack | **Done** | admit-all decorator; `latency → throttle` stacks; latency accumulates (core 499, examples 237) |
 | 3 | Burst (token-bucket) gate + headline experiment | **Done** | bucket absorbs a burst a flat cap rejects (0 vs 13); bounded advantage under overload (core 505) |
 | 4 | Chaos gate + orthogonality + full-stack integrity | **Done** | 429 rate climbs with load while 503 ≈ constant (~0.1); full stack gives one terminal outcome each (core 511) |
-| 5 | Store Demo V2 capstone: reporting + docs | Planned | full-stack MC run; per-gate reject rates reported; specs + root README |
+| 5a | V2 edge assembly + MC + reporting + bridge | **Done** | configurable gate stack; per-gate outcome rates via MC; `@main` bridge (core 511, examples 242) |
+| 5b | Burst-vs-flat + orthogonality experiments + docs | Planned | demo-scale experiment assertions; specs/README.store-demo-v2.md + root README |
 | 6 | Component catalog / engineer's guide | Planned | a guide cataloguing the reusable components, their properties, use-cases, and example demos |
 | — | Circuit-breaker gate (stretch) | Deferred | response-feedback path; likely a later phase |
 
@@ -133,6 +134,21 @@ Demo V2 paragraph to the root README. Delivers the runnable Store Demo V2 capsto
 
 **Validated by:** the demo *visibly* exhibits latency accrual, load-driven throttling, burst tolerance,
 and load-independent chaos failures; exported output is inspectable.
+
+**Split into 5a (edge assembly + MC + reporting + bridge) and 5b (experiments + docs).**
+
+**5a Delivered** (examples 242 +5; core unchanged; phase-0 demo untouched). New `stochastacy.examples.store.v2`
+code: `EdgeConfig` (structured — `latency` sampler, `RateLimiter.FlatThrottle | TokenBucket`, `chaosProbability`)
+with `EdgeConfig.gates` building the outermost-first stack `latency → rate-limiter → chaos`;
+`StoreV2TrialRunner` gains a structured `run(edge)` and a raw `runGates(Seq[InterfaceSampler[?, …]])`
+(folds gates over the datastore via `Interface.wrap`, existential state), folding **two planes** into
+windowed `Statistics[StoreStatKey]` — the datastore's `Consumption` (via `StoreStats.observations`) and,
+since gates emit no metric plane, each request's terminal outcome classified from the response stream
+into 0/1 `outcome.served`/`outcome.throttled`/`outcome.chaos` (mean = rate). `StoreV2MonteCarloRunner`
+reuses `MonteCarlo` + `StoreMonteCarloResult`; `StoreV2Report.summary` reports per-gate/per-use-case
+outcome rates (JSONL reuses the frozen `StoreReport.jsonl`); `StoreV2Demo` `@main` bridge runs green
+(served 75.9% / throttled 22.6% / chaos 1.5% at cap 18, p=0.02). Reuse-by-import throughout; original
+demo frozen.
 
 ### Slice 6 — Component catalog / engineer's guide
 
