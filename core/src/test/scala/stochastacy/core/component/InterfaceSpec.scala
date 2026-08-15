@@ -11,7 +11,7 @@ import org.apache.pekko.stream.scaladsl.{GraphDSL, Keep, RunnableGraph, Sink, So
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
-import stochastacy.core.component.gate.{FlatThrottleGate, LatencyGate}
+import stochastacy.core.component.gate.{FlatThrottleGate, LatencyGate, TokenBucketGate}
 import stochastacy.core.stream.TickFraming
 import stochastacy.sim.*
 import stochastacy.sim.TimedControlEvent.EndOfTime
@@ -149,5 +149,14 @@ class InterfaceSpec extends AnyWordSpec with should.Matchers with BeforeAndAfter
       val events = responsesOf(edge, input).map(_.event)
       events should have size 7                                       // still one response per request
       events.count(_ == ToyResp(-1)) shouldBe 3                       // the throttle still rejects; latency admits all
+    }
+
+    "compose a token-bucket gate through the wrap, preserving 1:1" in {
+      // Full-3 bucket, refill 1/tick: tick 1 (4 arrivals) admits 3 + rejects 1; tick 2 refills to 1,
+      // (3 arrivals) admits 1 + rejects 2.
+      val edge = Interface.wrap(echo(0.0), new TokenBucketGate[ToyReq, ToyResp](3, 1, ToyResp(-1)), RandomSource.KISS.create(3L))
+      val events = responsesOf(edge, input).map(_.event)
+      events should have size 7
+      events.count(_ == ToyResp(-1)) shouldBe 3
     }
   }

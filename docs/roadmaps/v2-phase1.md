@@ -51,7 +51,7 @@ component is **shape-preserving** (same `Req → Resp` interface as what it wrap
 |---|---|---|---|
 | 1 | Interface machinery + flat-throttle gate + minimal V2 edge | **Done** | new V2 pipeline throttles; exact 1:1 incl. rejections; original demo untouched (core 491, examples 235) |
 | 2 | Latency gate + two-gate stack | **Done** | admit-all decorator; `latency → throttle` stacks; latency accumulates (core 499, examples 237) |
-| 3 | Burst (token-bucket) gate + headline experiment | Planned | equal-mean bucket throttles less than a flat cap under bursts |
+| 3 | Burst (token-bucket) gate + headline experiment | **Done** | bucket absorbs a burst a flat cap rejects (0 vs 13); bounded advantage under overload (core 505) |
 | 4 | Chaos gate + orthogonality + full-stack integrity | Planned | 429 rate scales with load, 503 rate ≈ constant; one terminal outcome per request |
 | 5 | Store Demo V2 capstone: reporting + docs | Planned | full-stack MC run; per-gate reject rates reported; specs + root README |
 | 6 | Component catalog / engineer's guide | Planned | a guide cataloguing the reusable components, their properties, use-cases, and example demos |
@@ -110,6 +110,8 @@ size, rejects (429) when empty.
 **Validated by:** the headline experiment — the *same bursty workload* through a flat cap vs. a token
 bucket of *equal average rate*: the bucket throttles far less during bursts yet matches on the mean.
 Policy, not just capacity, governs throttling under bursty load. (The "keyset vs. offset" of this demo.)
+
+**Delivered** (core 505 +6; examples unchanged — core-only per D-scope). `stochastacy.core.component.gate.TokenBucketGate[Req,Resp](capacity, refillPerTick, rejectResponse, latencyTicks)` — **fractional tokens** (DQ1); one token per admit; `onTick` refills capped at `capacity` (third use of the hook); **starts full** (D-init). The experiment is a deterministic pure-sampler simulation (DQ2) comparing it to `FlatThrottleGate` at equal average rate `R=5`: (Goal 2) arrivals `[2,2,2,18,2,2]` (mean < R) → flat `(15,13)` vs bucket `(28,0)` — the bucket absorbs the spike the flat cap rejects; (Goal 3) sustained `fill(20)(10)` → flat rejects 100, bucket rejects 85 with `flatRejected − bucketRejected ≤ capacity` (bounded advantage — the bucket is refill-limited long-term, no cheating). `TokenBucketGateSpec` also covers start-full, fractional-refill accumulation, and refill-cap; `InterfaceSpec` gains a token-bucket-through-`wrap` 1:1 composition test. **D-scope:** token-bucket integration into `StoreV2TrialRunner` and the burst-workload demo are deferred to Slice 5.
 
 ### Slice 4 — Chaos-failure gate + orthogonality + full-stack integrity
 
