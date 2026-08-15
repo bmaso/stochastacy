@@ -1,12 +1,12 @@
 # Store Simulator V2 (the gated edge) — Engineer's Guide
 
-A second demo built on the same fictional store, but this one is about the **edge in front of the
-datastore**. Where the [original store demo](README.store-demo.md) modeled request cost inside the
-datastore, Store Demo V2 puts the datastore behind a **composable stack of admission/rejection gates**
-— latency, rate limiting, and random failure — each a reusable `stochastacy.core` *interface component*,
-and shows how those gates behave and compose.
+A second demo built on the same fictional store as [the original Store Demo](README.store-demo.md),
+but this one is about the **edge in front of the datastore**. Where the original store demo modeled
+request cost inside the datastore, Store Demo V2 puts the datastore behind a **composable stack
+of admission/rejection gates** — latency, rate limiting, and random failure — each a reusable
+`stochastacy.core` *interface component*, and shows how those gates behave and compose.
 
-The example lives in `examples/src/main/scala/stochastacy/examples/store/v2/`. It is all new code: it
+The example lives in `examples/src/main/scala/stochastacy/examples/store/v2/`. It
 reuses the original store demo's datastore, protocol, and workload **by import only** — the original
 files are untouched.
 
