@@ -49,7 +49,7 @@ component is **shape-preserving** (same `Req → Resp` interface as what it wrap
 
 | # | slice | status | proof |
 |---|---|---|---|
-| 1 | Interface machinery + flat-throttle gate + minimal V2 edge | Planned | new V2 pipeline throttles correctly; 1:1 integrity; original demo untouched |
+| 1 | Interface machinery + flat-throttle gate + minimal V2 edge | **Done** | new V2 pipeline throttles; exact 1:1 incl. rejections; original demo untouched (core 491, examples 235) |
 | 2 | Latency gate + two-gate stack | Planned | admit-all decorator works; `latency → throttle` stacks; latency accumulates |
 | 3 | Burst (token-bucket) gate + headline experiment | Planned | equal-mean bucket throttles less than a flat cap under bursts |
 | 4 | Chaos gate + orthogonality + full-stack integrity | Planned | 429 rate scales with load, 503 rate ≈ constant; one terminal outcome per request |
@@ -73,6 +73,23 @@ Resolves **DD-1** and **DD-2**.
 response (served or rejected); determinism under a fixed seed; the original store demo's files and tests
 are untouched. *May split into 1a (core machinery + gate, unit-tested in isolation) / 1b (minimal V2
 pipeline) at plan time.*
+
+**Delivered** (core 491 +7, examples 235 +4; every phase-0 store test unchanged). **DD-1 resolved:**
+gates carry consumption type `Nothing` — no metric plane; a rejection *is* a `Resp`, so throttle rate is
+read from the response stream and `wrap` passes the downstream's consumption through untouched. **DD-2
+resolved:** `wrap` returns the *same shape and Mat type* as its downstream, so wraps nest (Slice 2
+stacks with no new mechanism). Core (`stochastacy.core.component`): `InterfaceOutcome (Admit | Reject)`,
+`trait InterfaceSampler[S,Req,Resp] extends ComponentSampler[S,Req,InterfaceOutcome[Req,Resp],Nothing]`,
+and `Interface.wrap[S,Req,Resp,Cons,Mat](downstream, gate, rng)` — encapsulating the `Broadcast` +
+tick-aligned `MergeTimedEventGraph` rejoin (with the three generic collect/cast flows generalized from
+the store runner) as a `GraphDSL.createGraph` returning a `FanOutShape2` with the downstream's Mat. First
+gate `stochastacy.core.component.gate.FlatThrottleGate` (per-tick cap; `onTick` reset; caller-supplied
+reject response) — the generic form of the frozen `AdmissionSampler`. Examples (new package
+`stochastacy.examples.store.v2`, reusing `store.*` by import only): `StoreV2TrialRunner` wraps the
+datastore with `FlatThrottleGate(ErrorResult("throttled"))`, driven by `ApiWorkload` translated to
+`StoreRequest`; `StoreV2TrialResult`. Scope: minimal — no stats/reporting/MC (later slices). Core unit
+tests: `FlatThrottleGateSpec`, `InterfaceSpec` (toy echo downstream: admit forwards, reject
+short-circuits, 1:1, control events preserved, downstream consumption passes through, deterministic).
 
 ### Slice 2 — Latency gate + two-gate stack
 
