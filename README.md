@@ -1,159 +1,166 @@
 # stochastacy
 
-A stochastic data generator, utilizing the Pekko Streaming API.
+**Build Monte Carlo simulators of distributed software systems — and answer performance, scaling, and
+cost questions before you build, load-test, or pay for the real thing.**
 
-## Concepts
-
-### Streams of TimedEvent
-
-- Each AWS component is modeled as a single Pekko graph stage
-  - resource state is maintained internally to the graph component
-  - each component is a state machine driven by a totally-ordered series of events
-
-- The _input_ to a graph component is a stream of elements representing individual atomic interactions with the component
-  - eg for an AWS DDB table component, the component has an input port for receiving DDB table requests
-
-- Input is segmented sequentially into time windows
-  - each request event has a timestamp
-  - all events sent within the same time window will appear sequentially in the stream, and they will
-    _not_ be interleaved with any events associated with a different time window
-  - the _first_ event each time window is a `Tick` event, which "announces" the termination of the previous
-    window, and the consummation of a new time window
-
-- Time window size is configured in the consuming component during component creation
-  - the component will dynamically verify consecutive `Tick` events occur exactly 1 time period apart
-
-- Each component also has one output port, to which interaction responses are sent
-  - each request will have a single response
-    - throttling and failure responses, as well as success responses, will be intermixed in the stream
-  - like the input stream, the response stream is a stream of events with timestamps, partitioned
-    sequentially by time window, where each time window is proceeded by a `Tick` instance
-
-- Note that a request and the associated response may _not_ occur within equivalent time windows
-
-- Each component also has a second output port, to which resource consumption messages are sent
-  - these elements represent the resources consumed when generating a response for a request
-  - resources consumed includes RCUs/WCUs, burst units, records read/written/deleted from persistent storage,
-    bytes read/written/deleted from persistent storage
-
-### TimedEvent use-cases
-
-- In stochastacy's domain, it is assumed we can partition request events into a relatively small, finite set of
-  "use-cases" 
-- Each use-case is a stochastic behavioral contract, defining stochastically the probability density function
-  defining the number/magnitude of resources consumed by requests
-- For example, imagine a DynamoDB table used four different ways
-  - The four ways:
-    - for user access verification with each client request (a GetItem query consuming a fe read units,
-      a small number that increases slowly with table record count because of indexes on the table)
-    - for a list of user resources that meet some criteria (a Scan query consuming a much more variable number
-      of read units per request, dependent on the number of records in the table)
-    - to write new user records, which consumes a few write units, and increases the number of records in the
-      table with each request
-    - there is also a TTL for table records, so there is a background TTL process that consumes read units
-      in proportion to the number of records in the table, and consumes a relatively consistent number of write units
-      per request
-  - Each request is associated with a use-case, which determines the request latency (wall clock time) and other
-    resources consumed by the request
-
-## Running the Example Simulations
-
-Each simulation follows a three-step workflow: **generate** (run Monte Carlo trials, write JSONL), **stage** (load JSONL into Postgres), **view** (print a Grafana URL to open in a browser). Docker must be running (`docker compose up -d`) before staging, and Grafana must be reachable for the view URL to work.
+stochastacy is a Scala 3 / [Apache Pekko](https://pekko.apache.org/) Streams library for modeling a
+distributed system as a graph of stochastic components, driving it with a declarative workload, and
+running it thousands of times to see not just the *average* outcome but the *distribution* of outcomes —
+latency tails, throttle rates, resource consumption, and cloud spend — with their run-to-run variance
+made explicit.
 
 ---
 
-### 1. Order-Tracking Demo
+## Why simulate?
 
-A simple e-commerce order-tracking table with `GetItem`, `PutItem`, and `Scan` use-cases. Demonstrates the baseline DynamoDB on-demand cost model: per-tick RCU/WCU consumption, storage growth, and cumulative cost trajectory across 100 Monte Carlo trials over a 20 minute window.
+A real system gives you one run of the world at a time, and a load test is expensive to build and
+rarely repeatable under identical conditions. A simulator changes the economics:
 
-```bash
-sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge generate --batch-id order-tracking-001 --output /tmp/order-tracking-001.jsonl --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+- **Experiment freely.** Ask "what happens at 5× load?", "what if this table is 10× bigger?", or "what
+  if we switch pagination strategy?" without provisioning anything or writing a load harness.
+- **Estimate cloud cost up front.** Components emit *resource-consumption* facts (capacity units, bytes
+  read/written, storage, cross-region transfer). Run those through a pricing model and you get an
+  estimated bill for a workload that doesn't exist yet. (The repo includes a detailed AWS DynamoDB cost
+  model as a worked application of exactly this.)
+- **See the tail, not just the mean.** Because each trial is one i.i.d. draw of a stochastic world,
+  running N of them yields the *distribution* of a metric across runs — p99 latency, worst-case throttle
+  rate, SLO-attainment probability. This is precisely the run-to-run variance that reality can't hand
+  you cheaply: production gives one non-repeatable, drifting sample at a time.
+- **Reproducible and fast.** Every run is deterministic given a master seed, and a whole Monte Carlo
+  ensemble runs in seconds on a laptop.
 
-sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge stage --input /tmp/order-tracking-001.jsonl --batch-id order-tracking-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
-
-sbt 'examples/runMain stochastacy.examples.ordertracking.OrderTrackingPhase2Bridge view --batch-id order-tracking-001'
-```
-
----
-
-### 2. Thermostat Fleet — Single Region
-
-An IoT thermostat fleet writing telemetry, serving customer-support queries via GSI, and running periodic fleet-dashboard scans. Demonstrates on-demand throttling under load spikes (morning and evening peaks, random alert storms), hot-partition enforcement, burst capacity rescue, GSI write amplification, LSI item-collection size limits, and dynamic partition topology evolution.
-
-```bash
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-sr-001 --output /tmp/thermostat-sr-001.jsonl --mode single-region --trial-count 100 --parallelism 8 --simulation-ticks 1200'
-
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-sr-001.jsonl --batch-id thermostat-sr-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
-
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-sr-001 --mode single-region'
-```
+The output is plain data (JSONL), ready for downstream analytics and visualization engines
+(e.g. Postgres + Grafana).
 
 ---
 
-### 3. Thermostat Fleet — Multi-Region (Global Table)
+## How it works — a 20,000ft view
 
-The same thermostat fleet workload spread across three AWS regions (us-east-1, eu-west-1, ap-southeast-1) as a DynamoDB Global Table. Demonstrates stochastic cross-region replication lag, replicated write capacity unit (rWCU) billing, per-region capacity and cost breakdown, and cross-region data transfer costs.
+A simulation is a Pekko Streams graph: a **workload** source feeds a chain of **components**, which emit
+responses and consumption facts that get folded into **statistics**. You describe four things.
 
-```bash
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-mr-001 --output /tmp/thermostat-mr-001.jsonl --mode multi-region --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+### 1. Describe the workload
 
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-mr-001.jsonl --batch-id thermostat-mr-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
+First you say what traffic the system sees — what kinds of requests arrive, and how often. A workload is
+just a mix of request streams: "about five reads a second," "a steady trickle of writes," "the odd
+expensive report," blended together to look like your real traffic. Each stream gets a label, so when
+the same operation shows up in two different guises — say, the same query paginated two different ways —
+you can still tell them apart when you read the results later. The engine takes all of this and produces
+a stream of requests arriving over simulated time.
 
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-mr-001 --mode multi-region'
+### 2. Describe component behaviors
+
+Next you describe how each piece of the system behaves — what the datastore does with a read, how an
+admission gate decides whether to accept or reject a request, how long each takes and what it costs. You
+write that once per component, as a plain function: given a request and what the component currently
+knows about itself, decide what happens next. The behavior rolls dice, so a read might hit or miss and a
+scan might touch more or fewer rows from one run to the next. And a component never memorizes every key
+it has ever seen — it keeps only a compact summary — so simulating a billion-row table costs no more than
+a thousand-row one.
+
+More precisely, each component is a `ComponentSampler` — a small, testable production function:
+
+```scala
+trait ComponentSampler[S, In, Out, Cons]:
+  def initialState: S
+  def sample(in: In, state: S, rng: UniformRandomProvider): Emission[S, Out, Cons]   // per input: new state, one forward output, N consumption facts
+  def onTick(tick: Long, state: S): S = state                 // per tick boundary (e.g. reset a per-tick capacity)
 ```
+
+Given an input and its current state, a sampler produces an **emission**: the updated state, one forward
+output (a response, or a downstream request it issues), and zero-or-more consumption facts — each
+*scheduled* with a latency. A generic *schedule-and-release transducer* turns each sampler into a running
+graph stage, handling all timing, buffering, and ordering, so components chain together with no glue.
+
+### 3. Run simulations
+
+Then you run it — not once, but many times over. A single run tells you what happened in one possible
+version of events; running hundreds, each seeded a little differently, tells you the whole range of what
+could happen. And because everything traces back to one master seed, that seed reproduces the exact same
+set of runs — so results are repeatable and safe to compare.
+
+In code, that's a single call. Wire the components into a graph — `source → components → sinks` — and run
+one trial, or a whole ensemble:
+
+```scala
+MonteCarlo.run(trialCount, masterSeed, parallelism) { seed => runOneTrial(seed) }
+```
+
+The Monte Carlo executor fans one master seed into N reproducible trial seeds and runs them with bounded
+parallelism; results are identical regardless of parallelism.
+
+### 4. Collect and aggregate data
+
+Finally you gather the numbers. Every run throws off a pile of measurements — latencies, bytes consumed,
+dollars — and stochastacy rolls them into summaries you can actually read: averages, medians, tail
+percentiles. From the same data it can answer two quite different questions: what a *typical request*
+looks like across all your runs, and how much the outcome *swings from one run to the next* — the
+difference between "usually fine" and "usually fine, but one run in ten is a disaster." The results come
+out as plain data, ready to drop into whatever you use to chart and explore.
+
+Under the hood, consumption facts fold into mergeable `Statistic`s — additive moments plus a mergeable
+histogram for quantiles — keyed however a simulator chooses (e.g. use-case × metric × time-window).
+"Mergeable" is the property that makes those two questions cheap and exact to answer —
+
+- **Pooled** — every observation across all trials in one population ("what does a random request look
+  like?").
+- **Across-trials** — reduce each trial to a scalar, then summarize those N scalars ("how does this
+  metric vary run-to-run?").
+
+Export the result to JSONL and hand it to your analytics/visualization stack.
 
 ---
 
-### 4. Thermostat Fleet — Mixed Billing Mode
+## Techniques and design principles
 
-The thermostat fleet in a single region, running first in on-demand mode then switching to provisioned capacity mid-simulation. Demonstrates the **right-sizing trap**: the table is provisioned at 110% of the observed on-demand mean, which is below the morning-spike peak. Throttles spike immediately after the mode switch, then disappear after the provisioned capacity is scaled up at the two-thirds mark. Grafana panels show billing mode timeline, throttle rate, provisioned vs. consumed capacity utilization, and cost composition (consumption-driven on-demand cost vs. reservation-driven provisioned cost).
+- **Stochastic-summary state, not key-accurate.** Components model outcomes with samplers over a bounded
+  summary; there are no per-key maps, so cost is near-constant in request volume and key-space size.
+- **Fine-grained, materialized interactions.** Every request, response, and consumption fact is a
+  concrete timed event on the wire — stochasticity lives in the *workload* and the *observations*, not
+  in a hand-waved "stochastic wire."
+- **A timed-event protocol.** Streams are partitioned into time windows by `Tick` events and terminated
+  by an `EndOfTime` sentinel; the protocol's ordering invariants hold across every stage boundary,
+  including an intra-tick arrival model for sub-tick timing.
+- **Mergeable statistics.** Associative `combine` on histograms makes per-tick, cross-window, and
+  cross-trial aggregation a simple fold — the prerequisite for tractable Monte Carlo quantiles.
+- **Deterministic and reproducible.** Seeded RNGs throughout; a master seed reproduces an entire
+  ensemble byte-for-byte.
 
-```bash
- # Generate                                                                                                                                                            
-  sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-fleet-mm-001 --output                                 
-  /tmp/thermostat-fleet-mm-001.jsonl --mode mixed-mode --trial-count 100 --parallelism 8 --simulation-ticks 1200'                                                       
-                                                                                                                                                                        
-  # Stage                                                                                                                                                               
-  sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-fleet-mm-001.jsonl --batch-id thermostat-fleet-mm-001  
-  --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200' 
-   
-  # View                                                                                                                                                                
-  sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-fleet-mm-001 --mode mixed-mode'
-```
-
----
-
-### 5. Thermostat Fleet — Multi-Table
-
-Two independent DynamoDB tables simulated in a single Pekko graph: a low-write `device-registry` table (customer-support reads dominate) and a high-write `device-telemetry` table (continuous IoT ingest). Demonstrates the multi-table simulation framework — N `DynamoDbTable` components wired in parallel, each emitting per-table namespaced metrics (`Table:<name>:ReadCapacityUnits`, etc.) so cost and capacity can be compared side-by-side across tables in one dashboard.
-
-```bash
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-mt-001 --output /tmp/thermostat-mt-001.jsonl --mode multi-table --trial-count 100 --parallelism 8 --simulation-ticks 1200'
-
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-mt-001.jsonl --batch-id thermostat-mt-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1200'
-
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-mt-001 --mode multi-table'
-```
-
-### 6. Thermostat Fleet — Capstone Demo
-
-Four-table DynamoDB workload: `device-registry` (on-demand, eventual), `device-telemetry` (provisioned + auto-scaling + TTL, polar-vortex 5× write burst at ticks 600–700), `device-commands` (on-demand, strong consistency), and `device-alerts` (on-demand, 3× polar-vortex spike). Exercises all Phase 6 features — TTL storage attenuation, reactive auto-scaling lag, per-table throttle counts, and the provisioned-vs-on-demand breakeven question in a single simulation run.
-
-```bash
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge generate --batch-id thermostat-cap-001 --output /tmp/thermostat-cap-001.jsonl --mode capstone --trial-count 100 --parallelism 8 --simulation-ticks 1440'
-
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge stage --input /tmp/thermostat-cap-001.jsonl --batch-id thermostat-cap-001 --db-url jdbc:postgresql://localhost:5432/stochastacy_demo --db-user stochastacy --db-password stochastacy --trial-count 100 --parallelism 8 --simulation-ticks 1440'
-
-sbt 'examples/runMain stochastacy.examples.thermostatfleet.ThermostatFleetBridge view --batch-id thermostat-cap-001 --mode capstone'
-```
+The engine (`stochastacy.core`) is **domain-agnostic** — it imposes no vocabulary of requests,
+resources, or costs. A simulator supplies its own protocol, component behaviors, workload, and reporting.
 
 ---
 
-## DynamoDB Table simulator development curriculum
+## Demos
 
-1. Phase 1 - Table data plane with usecases consisting of `GetItem` and `PutItem` operations
-2. Phase 2 - Table data plane with usecases consisting of _all_ possible table query and write operations
-3. Phase 3 - Table data plane as Phase 2, with RCU, WCU, and other resources consumable by the data plane; throttling, hot partitions, burst capacity, adaptive capacity, dynamic topology, GSI back-pressure, projection-aware reads, Global Tables / cross-region replication
-4. Phase 4 - Provisioned billing mode, rWCU admission, billing mode switch events, reconfiguration schedule DSL, utilization metrics, mixed-mode "right-sizing trap" demo
-5. Phase 5 - rWCU billing, tiered transfer pricing, GSI/LSI in replicated tables, ReturnedItemCount metric, table class (Standard/Standard-IA), per-GSI provisioned pricing, reserved capacity, regional pricing via PricingSchedule, multi-region demo update
-6. Phase 6 - Read consistency RCU accounting, sampler-driven TTL expiry (write cohorts expire after a configurable retention period, cascading to GSI/LSI storage), reactive auto-scaling (DynamoDbAutoScaler), multi-table simulation framework, DynamoDB capstone demo (four-table ThermoFleet workload with TTL, auto-scaling, and polar vortex burst)
+### The Store simulator
+
+A fictional **product-catalog service** — a REST API in front of a datastore, supporting point
+operations, category-filtered list queries (under both keyset and offset pagination), and full-scan
+aggregate report queries. The simulator was built to explore how *dataset growth* and *pagination
+strategy* drive query cost, and how a system behaves as offered load crosses an admission gate's
+capacity. Its Monte Carlo experiments **prove the assertions it was designed to explore**: report-query
+cost rises measurably as the catalog grows over a run, deep offset-pagination evaluates an order of
+magnitude more work than keyset pagination for the identical page of results, and bursty load throttles
+even when the *mean* rate sits under capacity. See the detailed engineer's guide in
+[`specs/README.store-demo.md`](specs/README.store-demo.md).
+
+_More demos — including the AWS DynamoDB cost model — will be documented here._
+
+---
+
+## Building
+
+Scala 3.3 · sbt · Apache Pekko Streams · Apache Commons Statistics/RNG.
+
+```bash
+sbt test          # run all tests
+sbt core/test     # engine tests only
+sbt compile       # compile
+```
+
+The engine is published to the local Maven repository for use by standalone downstream projects:
+
+```bash
+sbt core/publishM2
+```
