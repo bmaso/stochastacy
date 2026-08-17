@@ -66,6 +66,20 @@ lazy val examples = (project in file("examples"))
     )
   )
 
+lazy val aws = (project in file("aws"))
+  .dependsOn(core)
+  .settings(
+    name := "stochastacy-aws",
+    version := "0.0.1",
+
+    // the AWS line's v2 components + example code; inherits the v2 engine + commons-rng via core
+    libraryDependencies ++= Seq(
+      "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion,
+      "org.apache.pekko" %% "pekko-stream-testkit" % Versions.pekkoStreamVersion % "test",
+      "org.scalatest" %% "scalatest" % Versions.scalatestVersion % "test"
+    )
+  )
+
 lazy val visualizer = (project in file("visualizer"))
   .dependsOn(core)
   .settings(
@@ -81,7 +95,7 @@ lazy val visualizer = (project in file("visualizer"))
   )
 
 lazy val root = (project in file("."))
-  .aggregate(core, examples, visualizer)
+  .aggregate(core, examples, visualizer, aws)
   .settings(
     publish / skip := true
   )
