@@ -90,7 +90,7 @@ multi-region, global tables) is the eventual north star; Phase-1 → capstone mi
 | 1 | Immutable table state + per-op kernels (new `aws` module) | **Done** | `aws` 20 tests: RCU/WCU chunking, state evolution, per-op resolution vs hand-computed values |
 | 2 | `DynamoDbTable` ComponentSampler + transducer | **Done** | single request → timed response (latency) + execution-time consumption; state threads to final Mat; 5 tests |
 | 3 | Order-Tracking behavior (v2) + reusable config | **Done** | behavior-draw tests: hit ≈0.85, update ≈0.9, delete ≈0.75, byte band, empty-table; 9 tests |
-| 4 | v2 workload driver (4 Poisson flows) | Planned | per-tick counts ≈ Poisson; seeded-deterministic; tick-framed |
+| 4 | v2 workload driver (4 Poisson flows) | **Done** | per-flow per-tick means ≈ λ; bytes in range; time-ordered; seed-deterministic; 6 tests |
 | 5 | v2 single-trial runner | Planned | one deterministic trial's usage/cost totals |
 | 6 | v2 Monte Carlo + reporting + JSONL + `@main` | Planned | ensemble aggregation; JSONL record shape matches legacy |
 | 7 | Behavior-equivalence gate | Planned | legacy vs v2 aggregate metrics agree within tolerance band |
@@ -182,6 +182,16 @@ samplers.
 
 **Validated by:** per-tick request counts follow the configured Poisson means; item-byte draws fall in
 range; the stream is correctly tick-framed and seed-deterministic.
+
+**Delivered.** `OrderTrackingConfig` extended with the flow parameters (DQ-rates → in config):
+`put/get/update/deleteRatePerTick` and `put/updateItemBytes: ByteRange`, set in `phase1Default` (0.8 /
+2.5 / 1.2 / 0.4; 672–1120 / 768–1280). New `OrderTrackingWorkload.arrivals(config, rng)`: per tick draws
+a Poisson count per flow (core `PoissonSampler`), sizes put/update items from `UniformSampler` (rounded,
+≥1), assigns each request a uniform-random intra-tick position (DQ-φ), sorts within the tick, and stamps
+`Timed[DynamoDbRequest]` tagged with `scenarioId` (DQ-usecase). `OrderTrackingWorkloadSpec` (6 tests):
+per-flow means ≈ λ over 4000 ticks, put/update bytes in range, events in `[0, ticks)` with `intraTick ∈
+[0,1)`, non-decreasing conceptual time, scenario-id tag, determinism. `aws` 40 tests green; whole build
+compiles; no legacy file touched.
 
 ### Slice 5 — v2 single-trial runner
 

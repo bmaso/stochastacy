@@ -1,0 +1,55 @@
+package stochastacy.aws.examples.ordertracking
+
+import scala.collection.mutable
+
+import org.apache.commons.rng.UniformRandomProvider
+
+import stochastacy.aws.dynamodb.{DeleteItemRequest, DynamoDbRequest, GetItemRequest, PutItemRequest, UpdateItemRequest}
+import stochastacy.core.component.Timed
+import stochastacy.core.sampler.{PoissonSampler, UniformSampler}
+import stochastacy.sim.SimTime
+
+/**
+ * The Phase-1 arrivals generator — a thin, purpose-built workload (no ips `WorkloadDsl`). Each tick, it
+ * draws a Poisson count for each of the four flows and emits that many requests, stamped at the tick with
+ * a uniform-random intra-tick arrival position; put / update items are sized from their uniform byte
+ * ranges. The result is a time-ordered `Timed[DynamoDbRequest]` stream (the runner adds `Tick` /
+ * `EndOfTime` via `TickFraming`).
+ */
+object OrderTrackingWorkload:
+
+  /** Generate the full run's arrivals, in conceptual-time order, tagged with the scenario id. */
+  def arrivals(config: OrderTrackingConfig, rng: UniformRandomProvider): Vector[Timed[DynamoDbRequest]] =
+    val putRate    = PoissonSampler.constant(config.putRatePerTick)
+    val getRate    = PoissonSampler.constant(config.getRatePerTick)
+    val updateRate = PoissonSampler.constant(config.updateRatePerTick)
+    val deleteRate = PoissonSampler.constant(config.deleteRatePerTick)
+    val putBytes    = UniformSampler.constant(config.putItemBytes.minBytes.toDouble,    config.putItemBytes.maxBytes.toDouble)
+    val updateBytes = UniformSampler.constant(config.updateItemBytes.minBytes.toDouble, config.updateItemBytes.maxBytes.toDouble)
+
+    def bytesFrom(sampler: UniformSampler, tick: Long): Long =
+      math.max(1L, math.round(sampler.sample(tick, rng, ())._1))
+
+    val out = Vector.newBuilder[Timed[DynamoDbRequest]]
+    var tick = 0L
+    while tick < config.simulationTicks do
+      val perTick = mutable.ArrayBuffer.empty[(Double, DynamoDbRequest)]
+
+      def emit(count: Int, mk: () => DynamoDbRequest): Unit =
+        var i = 0
+        while i < count do
+          val payload = mk()          // draws item bytes (put/update) before the position
+          val phi     = rng.nextDouble()
+          perTick += ((phi, payload))
+          i += 1
+
+      emit(putRate.sample(tick, rng, ())._1,    () => PutItemRequest(bytesFrom(putBytes, tick)))
+      emit(getRate.sample(tick, rng, ())._1,    () => GetItemRequest)
+      emit(updateRate.sample(tick, rng, ())._1, () => UpdateItemRequest(bytesFrom(updateBytes, tick)))
+      emit(deleteRate.sample(tick, rng, ())._1, () => DeleteItemRequest)
+
+      perTick.sortInPlaceBy(_._1)
+      perTick.foreach { case (phi, payload) => out += Timed(payload, SimTime.of(tick), phi, config.scenarioId) }
+      tick += 1
+
+    out.result()
