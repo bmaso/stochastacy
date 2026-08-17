@@ -89,7 +89,7 @@ multi-region, global tables) is the eventual north star; Phase-1 → capstone mi
 | — | Roadmap | **Done** | this document + project memory |
 | 1 | Immutable table state + per-op kernels (new `aws` module) | **Done** | `aws` 20 tests: RCU/WCU chunking, state evolution, per-op resolution vs hand-computed values |
 | 2 | `DynamoDbTable` ComponentSampler + transducer | **Done** | single request → timed response (latency) + execution-time consumption; state threads to final Mat; 5 tests |
-| 3 | Order-Tracking behavior (v2) | Planned | behavior-draw tests (get-hit, item-bytes, update/delete-existing) |
+| 3 | Order-Tracking behavior (v2) + reusable config | **Done** | behavior-draw tests: hit ≈0.85, update ≈0.9, delete ≈0.75, byte band, empty-table; 9 tests |
 | 4 | v2 workload driver (4 Poisson flows) | Planned | per-tick counts ≈ Poisson; seeded-deterministic; tick-framed |
 | 5 | v2 single-trial runner | Planned | one deterministic trial's usage/cost totals |
 | 6 | v2 Monte Carlo + reporting + JSONL + `@main` | Planned | ensemble aggregation; JSONL record shape matches legacy |
@@ -160,6 +160,18 @@ delete-existing 0.75. The order-tracking *domain* knowledge, injected into the g
 
 **Validated by:** behavior-draw unit tests (hit/miss rates, byte ranges, existing-item probabilities)
 over a fixed seed.
+
+**Delivered.** New package `stochastacy.aws.examples.ordertracking` (confirming **DC-demopkg** — demo code
+lives in the `aws` module): `OrderTrackingConfig` (the reusable v2 scenario — `scenarioId`, `tableName`,
+`simulationTicks`, `trialCount`, `parallelism`, `initialItemCount`, `initialAverageItemBytes`, the three
+probabilities, `readConsistency`; `phase1Default`; `initialTableState` helper) and
+`OrderTrackingBehavior extends TableBehavior` — a faithful port of the legacy `UseCaseSampler` matching on
+the four Phase-1 request types (get miss on empty-or-failed-coin else `±25%`-jittered bytes; put always
+new; update/delete target an existing item at their probabilities), dropping the irrelevant
+`LogicalPartitionAccess`. `OrderTrackingBehaviorSpec` (9 tests): request→outcome mapping, populated-table
+draw rates (hit ≈0.85, update-existing ≈0.9, delete-existing ≈0.75 over 200k draws ±0.01), get-hit byte
+band `[576, 960]`, and empty-table degenerate cases (always miss / upsert / no-op). Per the user, the
+reusable `OrderTrackingConfig` was introduced now (vs a behavior-local config). `aws` 34 tests green.
 
 ### Slice 4 — v2 workload driver (4 Poisson flows)
 
