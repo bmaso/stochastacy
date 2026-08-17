@@ -88,7 +88,7 @@ multi-region, global tables) is the eventual north star; Phase-1 → capstone mi
 |---|---|---|---|
 | — | Roadmap | **Done** | this document + project memory |
 | 1 | Immutable table state + per-op kernels (new `aws` module) | **Done** | `aws` 20 tests: RCU/WCU chunking, state evolution, per-op resolution vs hand-computed values |
-| 2 | `DynamoDbTable` ComponentSampler + transducer | Planned | single request → correct timed response + consumption; multi-request state threading |
+| 2 | `DynamoDbTable` ComponentSampler + transducer | **Done** | single request → timed response (latency) + execution-time consumption; state threads to final Mat; 5 tests |
 | 3 | Order-Tracking behavior (v2) | Planned | behavior-draw tests (get-hit, item-bytes, update/delete-existing) |
 | 4 | v2 workload driver (4 Poisson flows) | Planned | per-tick counts ≈ Poisson; seeded-deterministic; tick-framed |
 | 5 | v2 single-trial runner | Planned | one deterministic trial's usage/cost totals |
@@ -137,6 +137,20 @@ stage.
 **Validated by:** a single request driven through the running stage yields the correct timed response and
 consumption facts at the expected conceptual time (latency applied); a multi-request sequence threads
 state correctly (storage grows, averages track). Determinism under a fixed seed.
+
+**Delivered.** In `stochastacy.aws.dynamodb`: `TableBehavior` (the injected `request + state + rng →
+OperationOutcome` seam — v2 counterpart to the legacy `UseCaseSampler`) and `object DynamoDbTable` with
+`Config(initialState, behavior, latency: StatelessSampler[Double], readConsistency)`, the
+`DynamoDbTableSampler extends ComponentSampler[TableSummaryState, DynamoDbRequest, DynamoDbResponse,
+DynamoDbConsumption]`, and a `componentOf(config, rng)` factory materializing it through
+`ScheduleReleaseTransducer` (Mat `Future[ComponentResult[TableSummaryState]]`). `sample` draws the
+outcome, resolves via `TableMechanics`, and emits the response after the drawn per-op latency
+(`Scheduled(resp, latency)`) with the consumption facts at execution time (`delay 0`) — DQ-b; state stays
+pure `TableSummaryState` with latency sampled at a fixed tick — DQ-c; `onTick` is the inherited no-op.
+`DynamoDbTableSpec` (5 tests, modeled on `ScheduleReleaseTransducerSpec` with a scripted deterministic
+behavior): get response at `tick+0.5` with RCU at execution time, put WCU + storage delta, three-op state
+threading to the final Mat (`TableSummaryState(10, 7844)`, zero residue), `EndOfTime` on both planes,
+determinism. `aws` 25 tests green; whole build compiles; no legacy file touched.
 
 ### Slice 3 — Order-Tracking behavior (v2)
 
