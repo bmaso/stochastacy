@@ -93,7 +93,7 @@ multi-region, global tables) is the eventual north star; Phase-1 → capstone mi
 | 4 | v2 workload driver (4 Poisson flows) | **Done** | per-flow per-tick means ≈ λ; bytes in range; time-ordered; seed-deterministic; 6 tests |
 | 5 | v2 single-trial runner | **Done** | one deterministic trial; summary/series reconcile; initial storage billed; 8 tests |
 | 6 | v2 Monte Carlo + reporting + JSONL + `@main` | **Done** | reproducible + parallelism-independent ensemble; legacy JSONL shape; `@main` runs; 8 tests |
-| 7 | Behavior-equivalence gate | Planned | legacy vs v2 aggregate metrics agree within tolerance band |
+| 7 | Behavior-equivalence gate | **Done** | v2 vs captured legacy baseline: RCU 2.4% / WCU 1.8% / cost 1.2% (band ±5%); storage correction 0.9% (band ±10%) |
 | 8 | Docs + component catalog + close-out | Planned | `specs/README.ordertracking-v2.md`; catalog entry; roadmap/memory |
 
 ## Slices
@@ -249,6 +249,18 @@ independent RNG streams, DD-workload — so the gate asserts closeness of ensemb
 
 **Validated by:** the comparison spec passes at the chosen tolerance; any metric outside band is a real
 behavioral discrepancy to investigate.
+
+**Delivered.** Captured the legacy Phase-1 baseline (100 trials × 30 ticks, base seed 20260418, git
+6cf6fe0) by running `OrderTrackingPhase1Bridge generate` and reading its `aggregate-summary` means:
+RCU 74.04, WCU 95.25, `FinalStorageBytes` 19816.75, cost 1.3757e-4 — pinned as documented constants in
+`OrderTrackingEquivalenceSpec` (regeneration recipe in the doc comment; forced by the package shadowing —
+the `aws` module can't co-run legacy). The gate runs the v2 ensemble at `phase1Default` (seed 20260418)
+and asserts, on across-trial means: RCU / WCU / cost within **±5%**, and `FinalStorageBytes` within
+**±10%** of `legacy + initial storage (7680)`; `TotalStorageByteTicks` deliberately not compared
+(DQ-storage-assertion). **Measured gaps: RCU 2.36%, WCU 1.81%, cost 1.24%, storage 0.87%** — all
+comfortably inside band (≈ the predicted 1–2% combined sampling error), so no tolerance widening. The
+storage correction lands as designed: v2 − legacy ≈ 7440 ≈ the 7680 initial-storage term. `aws` 60 tests
+green; whole build compiles; legacy only *run* to capture numbers, never edited.
 
 ### Slice 8 — Docs + component catalog + close-out
 
