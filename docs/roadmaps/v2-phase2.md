@@ -92,7 +92,7 @@ multi-region, global tables) is the eventual north star; Phase-1 → capstone mi
 | 3 | Order-Tracking behavior (v2) + reusable config | **Done** | behavior-draw tests: hit ≈0.85, update ≈0.9, delete ≈0.75, byte band, empty-table; 9 tests |
 | 4 | v2 workload driver (4 Poisson flows) | **Done** | per-flow per-tick means ≈ λ; bytes in range; time-ordered; seed-deterministic; 6 tests |
 | 5 | v2 single-trial runner | **Done** | one deterministic trial; summary/series reconcile; initial storage billed; 8 tests |
-| 6 | v2 Monte Carlo + reporting + JSONL + `@main` | Planned | ensemble aggregation; JSONL record shape matches legacy |
+| 6 | v2 Monte Carlo + reporting + JSONL + `@main` | **Done** | reproducible + parallelism-independent ensemble; legacy JSONL shape; `@main` runs; 8 tests |
 | 7 | Behavior-equivalence gate | Planned | legacy vs v2 aggregate metrics agree within tolerance band |
 | 8 | Docs + component catalog + close-out | Planned | `specs/README.ordertracking-v2.md`; catalog entry; roadmap/memory |
 
@@ -225,6 +225,19 @@ stage/view bridge is optional and can be reused from the legacy CLI if wanted).
 
 **Validated by:** the ensemble aggregates across trials; the JSONL records match the legacy schema
 (pooled / per-trial as applicable); the `@main` runs end to end.
+
+**Delivered.** `MonteCarloResult` (`AggregateStatistic {Mean, StdDev}` — the legacy set — + aggregate
+point/summary types + `OrderTrackingMonteCarloResult`); `MonteCarloAggregation` (pure; the metric-name →
+extractor lists are the single source of truth for both per-trial and aggregate records; mean +
+population stddev ÷N, matching legacy Welford); `OrderTrackingMonteCarloRunner` (drives core
+`MonteCarlo.run`, order-stable ⇒ index = trial id, then aggregates); `JsonlExport` (demo-local records in
+the legacy shape — `trial-time-series` / `trial-summary` / `aggregate-time-series` / `aggregate-summary`,
+same field + metric + statistic names, json4s one-object-per-line); `OrderTrackingDemo` `@main`
+(generate + console summary; `--output/--seed/--trials/--ticks/--parallelism`; **no** Postgres/Grafana —
+DQ-scope-main). Tests (8): `MonteCarloAggregationSpec` (mean/stddev), `OrderTrackingMonteCarloRunnerSpec`
+(reproducible, parallelism-independent, trial-id assignment, record counts, well-formed JSONL). `@main`
+smoke: 8 trials × 30 ticks → 1250 records (960/40/240/10). `aws` 56 tests green; whole build compiles; no
+legacy file touched.
 
 ### Slice 7 — Behavior-equivalence gate
 
