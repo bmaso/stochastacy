@@ -31,8 +31,10 @@ object OrderTrackingWorkload:
       math.max(1L, math.round(sampler.sample(tick, rng, ())._1))
 
     val out = Vector.newBuilder[Timed[DynamoDbRequest]]
-    var tick = 0L
-    while tick < config.simulationTicks do
+    // Events must land in [1, simulationTicks] to match TickFraming's window contract (a tick-0 event
+    // would be dropped by framing, and tick N+1 is the flush window).
+    var tick = 1L
+    while tick <= config.simulationTicks do
       val perTick = mutable.ArrayBuffer.empty[(Double, DynamoDbRequest)]
 
       def emit(count: Int, mk: () => DynamoDbRequest): Unit =

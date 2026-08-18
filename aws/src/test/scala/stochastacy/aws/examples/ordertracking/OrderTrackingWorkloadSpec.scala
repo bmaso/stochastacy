@@ -42,11 +42,11 @@ class OrderTrackingWorkloadSpec extends AnyWordSpec with should.Matchers:
       all(updBytes) should (be >= 768L and be <= 1280L)
     }
 
-    "land every event within [0, simulationTicks) with an intra-tick position in [0, 1)" in {
+    "land every event within [1, simulationTicks] with an intra-tick position in [0, 1)" in {
       val config   = OrderTrackingConfig.phase1Default.copy(simulationTicks = 50L)
       val arrivals = run(config, seed = 3L)
       arrivals should not be empty
-      all(arrivals.map(_.eventTime.ticks)) should (be >= 0L and be < 50L)
+      all(arrivals.map(_.eventTime.ticks)) should (be >= 1L and be <= 50L)
       all(arrivals.map(_.intraTick))       should (be >= 0.0 and be < 1.0)
     }
 

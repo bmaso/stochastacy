@@ -91,7 +91,7 @@ multi-region, global tables) is the eventual north star; Phase-1 → capstone mi
 | 2 | `DynamoDbTable` ComponentSampler + transducer | **Done** | single request → timed response (latency) + execution-time consumption; state threads to final Mat; 5 tests |
 | 3 | Order-Tracking behavior (v2) + reusable config | **Done** | behavior-draw tests: hit ≈0.85, update ≈0.9, delete ≈0.75, byte band, empty-table; 9 tests |
 | 4 | v2 workload driver (4 Poisson flows) | **Done** | per-flow per-tick means ≈ λ; bytes in range; time-ordered; seed-deterministic; 6 tests |
-| 5 | v2 single-trial runner | Planned | one deterministic trial's usage/cost totals |
+| 5 | v2 single-trial runner | **Done** | one deterministic trial; summary/series reconcile; initial storage billed; 8 tests |
 | 6 | v2 Monte Carlo + reporting + JSONL + `@main` | Planned | ensemble aggregation; JSONL record shape matches legacy |
 | 7 | Behavior-equivalence gate | Planned | legacy vs v2 aggregate metrics agree within tolerance band |
 | 8 | Docs + component catalog + close-out | Planned | `specs/README.ordertracking-v2.md`; catalog entry; roadmap/memory |
@@ -202,6 +202,20 @@ cumulative cost) and the summary totals — in the **legacy output shape** (DD-o
 
 **Validated by:** a single deterministic trial produces the expected usage and cost totals for a fixed
 seed and config.
+
+**Delivered** (demo-local in `stochastacy.aws.examples.ordertracking`). `OnDemandPricing` (`Rates` +
+`phase1Default` copying the legacy on-demand constants + `cost`); `TrialResult` types
+(`OrderTrackingTrialResult` / `TrialSummary` / `TrialTimeSeriesPoint`, legacy record shape);
+`TrialAccounting.account` — a single-pass fold of the consumption plane into summary + per-tick series
+that reconcile, with **`currentBytes` seeded at the table's initial storage (R-storage — the initial
+items are billed, correcting the legacy zero-start bug)**; `OrderTrackingTrialRunner.runTrial` wiring
+workload → table → consumption drain → accounting, using two `SeedSequence`-derived rngs (workload / table
+— v2 generates arrivals eagerly). Tests: `TrialAccountingSpec` (5 — seeded byte-ticks, delta adjustment,
+no-accrual-before-first-tick, capacity sums + summary/series reconciliation, pricing) and
+`OrderTrackingTrialRunnerSpec` (4 — one point per tick 1..N, reconciliation, positivity, determinism).
+**Also fixed a Slice-4 off-by-one** surfaced here: the workload emitted ticks `[0, N)` but `TickFraming`
+frames `[1, N]`, so the tick-0 batch would have been dropped — corrected to emit `[1, N]` (spec updated).
+`aws` 48 tests green; whole build compiles; no legacy file touched.
 
 ### Slice 6 — v2 Monte Carlo + reporting + JSONL + `@main`
 
