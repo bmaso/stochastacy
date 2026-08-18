@@ -1,7 +1,9 @@
 # v2/phase2 — AWS components on the v2 core: the Order-Tracking demo, re-implemented
 
-**Status: PLANNED** — eight slices scoped below (plus this roadmap commit). First AWS-specific work on
-the domain-agnostic v2 engine.
+**Status: COMPLETE** — all eight slices delivered. The AWS DynamoDB line begins on the domain-agnostic v2
+engine: the legacy Order-Tracking Phase-1 demo re-implemented as a `ComponentSampler`-based table in a new
+`aws` module, proven equivalent to the legacy demo (RCU/WCU/cost within ~2%). `aws` 60 tests; the legacy
+code untouched (only run once to capture the equivalence baseline).
 
 Started on branch `v2/phase2`, following the conclusion of `v2/phase1` (the reusable interface / gating
 components, proven by Store Demo V2). This phase begins re-implementing the AWS DynamoDB simulator on the
@@ -94,7 +96,7 @@ multi-region, global tables) is the eventual north star; Phase-1 → capstone mi
 | 5 | v2 single-trial runner | **Done** | one deterministic trial; summary/series reconcile; initial storage billed; 8 tests |
 | 6 | v2 Monte Carlo + reporting + JSONL + `@main` | **Done** | reproducible + parallelism-independent ensemble; legacy JSONL shape; `@main` runs; 8 tests |
 | 7 | Behavior-equivalence gate | **Done** | v2 vs captured legacy baseline: RCU 2.4% / WCU 1.8% / cost 1.2% (band ±5%); storage correction 0.9% (band ±10%) |
-| 8 | Docs + component catalog + close-out | Planned | `specs/README.ordertracking-v2.md`; catalog entry; roadmap/memory |
+| 8 | Docs + component catalog + close-out | **Done** | ordertracking-v2 guide + new AWS component catalog + root README + phase close-out |
 
 ## Slices
 
@@ -271,6 +273,16 @@ update. Declares the phase complete.
 
 **Validated by:** a reviewer can, from the guide alone, understand the v2 table component and run the v2
 Order-Tracking demo.
+
+**Delivered** (doc-only; no build impact). `specs/README.ordertracking-v2.md` — the demo's engineer's
+guide (fictional domain, the workload→table→consumption→cost chain, the storage-correction note + the
+equivalence-gate numbers, how to run, source map). `specs/aws-component-catalog.md` — a **new** AWS
+component catalog, sibling to the core `component-catalog.md` and structured the same way (DQ-catalog-
+location); first entry is the reusable `DynamoDbTable` `ComponentSampler` (+ supporting types
+`TableBehavior` / `TableMechanics` / `TableSummaryState` / the protocol), with a foundations pointer back
+to the core catalog rather than duplicating it. Root `README.md` gains an Order-Tracking demo paragraph
+(DQ-root-readme). Cross-links throughout. **Phase v2/phase2 complete** — `aws` 60 tests; original
+store/core demos and the legacy AWS code untouched.
 
 ## Design principles and reuse
 

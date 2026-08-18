@@ -160,7 +160,18 @@ gating *policy* shapes behavior: a token bucket absorbs a burst that a same-capa
 as offered load climbs while the throttle rate rises with it — the two mechanisms are orthogonal. See
 the engineer's guide in [`specs/README.store-demo-v2.md`](specs/README.store-demo-v2.md).
 
-_More demos — including the AWS DynamoDB cost model — will be documented here._
+### Order-Tracking — AWS DynamoDB on the v2 core
+
+The first AWS resource modeled on the v2 core: a **single on-demand DynamoDB table** — an order-tracking
+service (`PutItem` / `GetItem` / `UpdateItem` / `DeleteItem`) — whose read/write capacity, storage growth,
+and on-demand cost are estimated across a Monte Carlo ensemble. The table is a reusable `ComponentSampler`
+(generic mechanics, domain injected as a behavior); the demo re-implements the legacy Phase-1 DynamoDB
+demo and is proven, by an equivalence gate, to reproduce its aggregate behavior within a few percent —
+while *fixing* a legacy bug that never billed a table's pre-loaded storage. See the engineer's guide in
+[`specs/README.ordertracking-v2.md`](specs/README.ordertracking-v2.md), and the reusable table component
+in [`specs/aws-component-catalog.md`](specs/aws-component-catalog.md).
+
+_More AWS demos — multi-table, multi-region — will be documented here as the AWS line grows._
 
 ---
 
