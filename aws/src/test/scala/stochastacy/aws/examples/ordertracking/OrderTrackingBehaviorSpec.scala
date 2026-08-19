@@ -42,7 +42,7 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
   "OrderTrackingBehavior — draw rates on a populated table" should {
     "hit gets at ~getHitProbability" in {
       fractionWhere(populated, GetItemRequest) {
-        case OperationOutcome.Get(Some(_)) => true; case _ => false
+        case OperationOutcome.Get(Some(_), _) => true; case _ => false
       } shouldBe config.getHitProbability +- tol
     }
     "find an existing item to update at ~updateExistingProbability" in {
@@ -60,8 +60,8 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
       val hitBytes =
         (0 until N).flatMap { _ =>
           behavior.outcomeFor(GetItemRequest, populated, rng) match
-            case OperationOutcome.Get(Some(b)) => Some(b)
-            case _                             => None
+            case OperationOutcome.Get(Some(b), _) => Some(b)
+            case _                                => None
         }
       hitBytes should not be empty
       all(hitBytes) should (be >= 576L and be <= 960L) // 768 × [0.75, 1.25]
@@ -71,7 +71,7 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
   "OrderTrackingBehavior — on an empty table" should {
     "always miss a get (and draw no randomness for it)" in {
       fractionWhere(emptyTable, GetItemRequest) {
-        case OperationOutcome.Get(None) => true; case _ => false
+        case OperationOutcome.Get(None, _) => true; case _ => false
       } shouldBe 1.0
     }
     "treat every update as an upsert (no previous item)" in {

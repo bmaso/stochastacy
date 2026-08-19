@@ -3,7 +3,7 @@ package stochastacy.aws.examples.ordertracking
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
-import stochastacy.aws.dynamodb.{DynamoDbConsumption, ReadCapacityConsumed, ReadConsistency, StorageBytesDelta, WriteCapacityConsumed}
+import stochastacy.aws.dynamodb.{DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, ReadConsistency, StorageBytesDelta, WriteCapacityConsumed}
 import stochastacy.core.component.Timed
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement}
 
@@ -11,6 +11,7 @@ class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
 
   private val rates  = OnDemandPricing.phase1Default
   private val strong = ReadConsistency.StronglyConsistent
+  private val Table  = DynamoDbTarget.Table
 
   private def tick(t: Long): TimedElement[Timed[DynamoDbConsumption]]            = TimedControlEvent.Tick(SimTime.of(t))
   private val eot: TimedElement[Timed[DynamoDbConsumption]]                      = TimedControlEvent.EndOfTime
@@ -31,7 +32,7 @@ class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
     "move absolute storage by deltas, with no accrual before the first tick" in {
       // initial 1000; +100 in window 1; N = 2.
       val (summary, series) = TrialAccounting.account(
-        Vector(tick(1), cons(1, StorageBytesDelta(100L)), tick(2), tick(3), eot),
+        Vector(tick(1), cons(1, StorageBytesDelta(100L, Table)), tick(2), tick(3), eot),
         initialStorageBytes = 1000L, rates
       )
       summary.finalStorageBytes     shouldBe 1100L
@@ -42,13 +43,13 @@ class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
     "sum capacity units and reconcile the summary with the time series" in {
       val stream = Vector(
         tick(1),
-        cons(1, ReadCapacityConsumed(BigDecimal(2), strong)),
-        cons(1, StorageBytesDelta(500L)),
+        cons(1, ReadCapacityConsumed(BigDecimal(2), strong, Table)),
+        cons(1, StorageBytesDelta(500L, Table)),
         tick(2),
-        cons(2, WriteCapacityConsumed(BigDecimal(3))),
+        cons(2, WriteCapacityConsumed(BigDecimal(3), Table)),
         tick(3),
-        cons(3, ReadCapacityConsumed(BigDecimal(1), strong)),
-        cons(3, StorageBytesDelta(-200L)),
+        cons(3, ReadCapacityConsumed(BigDecimal(1), strong, Table)),
+        cons(3, StorageBytesDelta(-200L, Table)),
         tick(4),
         eot
       )
@@ -70,7 +71,7 @@ class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
 
     "price totals with the on-demand rate model" in {
       val (summary, _) = TrialAccounting.account(
-        Vector(tick(1), cons(1, ReadCapacityConsumed(BigDecimal(10), strong)), tick(2), tick(3), eot),
+        Vector(tick(1), cons(1, ReadCapacityConsumed(BigDecimal(10), strong, Table)), tick(2), tick(3), eot),
         initialStorageBytes = 0L, rates
       )
       summary.totalEstimatedCost shouldBe OnDemandPricing.cost(BigDecimal(10), BigDecimal(0), summary.totalStorageByteTicks, rates)

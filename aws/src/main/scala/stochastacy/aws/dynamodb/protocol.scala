@@ -6,12 +6,20 @@ package stochastacy.aws.dynamodb
  * the legacy `stochastacy.aws.dynamodb` protocol, not a reuse: the legacy events embed their own timing
  * and are slated for removal once the v2 line reaches parity.
  *
- * Phase-1 covers the four single-item operations (get / put / update / delete). Query / Scan and the
- * transactional operations arrive when Order-Tracking Phase-2 does.
+ * Covers the four single-item operations (get / put / update / delete) and the two multi-item read
+ * operations (query / scan). The transactional operations arrive with a later demo.
  */
 sealed trait DynamoDbRequest
 
-/** Read a single item by key. Read consistency is a table-level setting, not a per-request field. */
+/** Which table or secondary index an operation acts on — the read target of a query/scan and the
+ *  dimension every consumption fact is tagged with. A single table means no table name is needed. */
+enum DynamoDbTarget:
+  case Table
+  case Gsi(indexName: String)
+  case Lsi(indexName: String)
+
+/** Read a single item by key. Read consistency is a table-level setting the behavior supplies, not a
+ *  per-request field. */
 case object GetItemRequest extends DynamoDbRequest
 
 /** Write a single item of `itemBytes` bytes (create-or-replace). */
@@ -24,6 +32,12 @@ final case class UpdateItemRequest(itemBytes: Long) extends DynamoDbRequest:
 
 /** Delete a single item by key. */
 case object DeleteItemRequest extends DynamoDbRequest
+
+/** Query a partition of `target` at the given consistency (a GSI query is always eventually consistent). */
+final case class QueryRequest(target: DynamoDbTarget, consistency: ReadConsistency) extends DynamoDbRequest
+
+/** Scan `target` at the given consistency. */
+final case class ScanRequest(target: DynamoDbTarget, consistency: ReadConsistency) extends DynamoDbRequest
 
 sealed trait DynamoDbResponse
 
@@ -46,3 +60,20 @@ final case class UpdateItemResponse(
 
 /** The non-error response to a DeleteItem. `deletedItemBytes` is empty when no item was present. */
 final case class DeleteItemResponse(deletedItemBytes: Option[Long]) extends DynamoDbResponse
+
+/** The non-error response to a Query: the read shape — how many items/bytes were **evaluated** (what the
+ *  read is charged for) vs. **returned** (what the caller received). */
+final case class QueryResponse(
+  evaluatedItemCount: Long,
+  evaluatedBytes:     Long,
+  returnedItemCount:  Long,
+  returnedBytes:      Long
+) extends DynamoDbResponse
+
+/** The non-error response to a Scan — same read-shape fields as a Query. */
+final case class ScanResponse(
+  evaluatedItemCount: Long,
+  evaluatedBytes:     Long,
+  returnedItemCount:  Long,
+  returnedBytes:      Long
+) extends DynamoDbResponse

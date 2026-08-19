@@ -25,7 +25,7 @@ final class OrderTrackingBehavior(config: OrderTrackingConfig) extends TableBeha
         val bytes =
           if state.itemCount <= 0L || rng.nextDouble() > config.getHitProbability then None
           else Some(sampleBytes(state.averageItemBytes.getOrElse(config.initialAverageItemBytes), rng))
-        OperationOutcome.Get(bytes)
+        OperationOutcome.Get(bytes, config.readConsistency)
 
       case PutItemRequest(itemBytes) =>
         OperationOutcome.Put(writtenItemBytes = itemBytes, previousItemBytes = None)
@@ -41,6 +41,10 @@ final class OrderTrackingBehavior(config: OrderTrackingConfig) extends TableBeha
           if state.itemCount > 0L && rng.nextDouble() <= config.deleteExistingProbability then state.averageItemBytes
           else None
         OperationOutcome.Delete(deletedItemBytes = deleted)
+
+      case _: QueryRequest | _: ScanRequest =>
+        // Query/Scan read-shape behavior arrives in Slice 4; the current workload emits none.
+        throw new IllegalArgumentException(s"OrderTrackingBehavior does not yet handle $request (Slice 4)")
 
   /** Jitter an item size uniformly by ±25% around `mean` (at least one byte) — the legacy `sampleBytes`. */
   private def sampleBytes(mean: Long, rng: UniformRandomProvider): Long =

@@ -63,10 +63,11 @@ object TrialAccounting:
         () // discard the unclosed flush-window bucket
 
       case timed: Timed[DynamoDbConsumption] @unchecked =>
+        // Slice 1 sums across all targets (base only today); per-target breakout arrives in Slice 5.
         timed.event match
-          case ReadCapacityConsumed(u, _) => bucketRcu += u; totalRcu += u
-          case WriteCapacityConsumed(u)   => bucketWcu += u; totalWcu += u
-          case StorageBytesDelta(d)       => currentBytes += d
+          case ReadCapacityConsumed(u, _, _) => bucketRcu += u; totalRcu += u
+          case WriteCapacityConsumed(u, _)   => bucketWcu += u; totalWcu += u
+          case StorageBytesDelta(d, _)       => currentBytes += d
     }
 
     val summary = TrialSummary(

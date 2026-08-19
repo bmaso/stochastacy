@@ -11,16 +11,31 @@ package stochastacy.aws.dynamodb
  */
 object TableMechanics:
 
-  /** What a domain behavior decided an operation did — the rng-free input to [[resolve]]. */
+  /** A read's footprint: how many items/bytes were **evaluated** (what the read is charged for) vs.
+   *  **returned** (what the caller received). */
+  final case class ReadShape(
+    evaluatedItemCount: Long,
+    evaluatedBytes:     Long,
+    returnedItemCount:  Long,
+    returnedBytes:      Long
+  )
+
+  /** What a domain behavior decided an operation did — the rng-free input to [[resolve]]. Every outcome
+   *  carries whatever `resolve` needs, so `resolve` takes only the outcome and the state; reads carry
+   *  their own consistency and (for query/scan) their target. */
   enum OperationOutcome:
-    /** A read that returned an item of the given size, or missed (`None`). */
-    case Get(itemBytes: Option[Long])
+    /** A get that returned an item of the given size, or missed (`None`), at `consistency`. */
+    case Get(itemBytes: Option[Long], consistency: ReadConsistency)
     /** A put storing `writtenItemBytes`; `previousItemBytes` set when it overwrote an existing item. */
     case Put(writtenItemBytes: Long, previousItemBytes: Option[Long])
     /** An update storing `writtenItemBytes`; `previousItemBytes` empty on an upsert that hit nothing. */
     case Update(writtenItemBytes: Long, previousItemBytes: Option[Long])
     /** A delete of an item of `deletedItemBytes`, or of an absent item (`None`). */
     case Delete(deletedItemBytes: Option[Long])
+    /** A query against `target` at `consistency` with the given read shape. */
+    case Query(target: DynamoDbTarget, consistency: ReadConsistency, shape: ReadShape)
+    /** A scan against `target` at `consistency` with the given read shape. */
+    case Scan(target: DynamoDbTarget, consistency: ReadConsistency, shape: ReadShape)
 
   /** The result of resolving one operation against the table state. */
   final case class Resolution(
@@ -29,20 +44,13 @@ object TableMechanics:
     state:       TableSummaryState
   )
 
-  /**
-   * Resolve one operation. `consistency` is the table-level read consistency, applied to reads (writes
-   * ignore it).
-   */
-  def resolve(
-    outcome:     OperationOutcome,
-    consistency: ReadConsistency,
-    state:       TableSummaryState
-  ): Resolution =
+  /** Resolve one operation into its response, consumption facts, and next state. */
+  def resolve(outcome: OperationOutcome, state: TableSummaryState): Resolution =
     outcome match
-      case OperationOutcome.Get(itemBytes) =>
+      case OperationOutcome.Get(itemBytes, consistency) =>
         Resolution(
           response    = GetItemResponse(itemFound = itemBytes.isDefined, itemBytes = itemBytes),
-          consumption = List(ReadCapacityConsumed(ThroughputMath.readCapacityUnits(itemBytes, consistency), consistency)),
+          consumption = List(ReadCapacityConsumed(ThroughputMath.readCapacityUnits(itemBytes, consistency), consistency, DynamoDbTarget.Table)),
           state       = state // reads do not change storage
         )
 
@@ -50,7 +58,7 @@ object TableMechanics:
         val next = state.applyWrite(writtenItemBytes, previousItemBytes)
         Resolution(
           response    = PutItemResponse(writtenItemBytes, createdNewItem = previousItemBytes.isEmpty, previousItemBytes),
-          consumption = WriteCapacityConsumed(ThroughputMath.writeCapacityUnits(writtenItemBytes)) ::
+          consumption = WriteCapacityConsumed(ThroughputMath.writeCapacityUnits(writtenItemBytes), DynamoDbTarget.Table) ::
                           storageDelta(state, next),
           state       = next
         )
@@ -59,7 +67,7 @@ object TableMechanics:
         val next = state.applyWrite(writtenItemBytes, previousItemBytes)
         Resolution(
           response    = UpdateItemResponse(writtenItemBytes, createdNewItem = previousItemBytes.isEmpty, previousItemBytes),
-          consumption = WriteCapacityConsumed(ThroughputMath.writeCapacityUnits(writtenItemBytes)) ::
+          consumption = WriteCapacityConsumed(ThroughputMath.writeCapacityUnits(writtenItemBytes), DynamoDbTarget.Table) ::
                           storageDelta(state, next),
           state       = next
         )
@@ -68,12 +76,26 @@ object TableMechanics:
         val next = state.applyDelete(deletedItemBytes)
         Resolution(
           response    = DeleteItemResponse(deletedItemBytes),
-          consumption = WriteCapacityConsumed(ThroughputMath.writeCapacityUnits(deletedItemBytes.getOrElse(0L))) ::
+          consumption = WriteCapacityConsumed(ThroughputMath.writeCapacityUnits(deletedItemBytes.getOrElse(0L)), DynamoDbTarget.Table) ::
                           storageDelta(state, next),
           state       = next
         )
 
-  /** Emit a `StorageBytesDelta` only when the write/delete actually moved the byte total. */
+      case OperationOutcome.Query(target, consistency, shape) =>
+        Resolution(
+          response    = QueryResponse(shape.evaluatedItemCount, shape.evaluatedBytes, shape.returnedItemCount, shape.returnedBytes),
+          consumption = List(ReadCapacityConsumed(ThroughputMath.readCapacityUnits(Some(shape.evaluatedBytes), consistency), consistency, target)),
+          state       = state // reads do not change storage
+        )
+
+      case OperationOutcome.Scan(target, consistency, shape) =>
+        Resolution(
+          response    = ScanResponse(shape.evaluatedItemCount, shape.evaluatedBytes, shape.returnedItemCount, shape.returnedBytes),
+          consumption = List(ReadCapacityConsumed(ThroughputMath.readCapacityUnits(Some(shape.evaluatedBytes), consistency), consistency, target)),
+          state       = state
+        )
+
+  /** Emit a `StorageBytesDelta` (on the base table) only when the write/delete actually moved the byte total. */
   private def storageDelta(before: TableSummaryState, after: TableSummaryState): List[DynamoDbConsumption] =
     val delta = after.totalItemBytes - before.totalItemBytes
-    if delta != 0L then List(StorageBytesDelta(delta)) else Nil
+    if delta != 0L then List(StorageBytesDelta(delta, DynamoDbTarget.Table)) else Nil

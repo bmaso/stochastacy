@@ -72,7 +72,7 @@ storage per the phase-2 initial-storage correction).
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | Query/Scan + read-shapes on the base table | Planned | read RCU vs hand-computed; phase-1 gate still green |
+| 1 | Query/Scan + read-shapes on the base table | **Done** | read RCU from evaluated bytes vs hand-computed; `target` dimension; phase-1 gate green; 64 tests |
 | 2 | `SecondaryIndexMechanics` + index config + write-side maintenance | Planned | base write emits correct per-index maintenance; index states evolve |
 | 3 | Query/Scan routing to a GSI | Planned | GSI-targeted query consumes GSI RCU from the GSI state; routing correct |
 | 4 | Indexed behavior + workload + demo config | Planned | per-target flow means ≈ λ; read-shape draws in range; end-to-end indexed trial |
@@ -92,6 +92,21 @@ change). The table serves query/scan on the base; existing get/put/update/delete
 
 **Validated by:** Query/Scan RCU vs. hand-computed values; response shapes; the existing non-indexed demo
 and its equivalence gate stay green (the regression guard, every slice).
+
+**Delivered.** Protocol (`protocol.scala`): `DynamoDbTarget` (`Table` | `Gsi(name)` | `Lsi(name)`),
+`QueryRequest`/`ScanRequest` (target + consistency), `QueryResponse`/`ScanResponse` (evaluated/returned
+counts + bytes). `DynamoDbConsumption` gains a `target` field on all three facts. `TableMechanics`
+(DQ-resolve-signature resolved): a `ReadShape`, new `OperationOutcome.Query`/`Scan` (target + consistency
++ shape) and `Get` now carrying its consistency; `resolve(outcome, state)` is uniform (dropped the
+consistency parameter) — reads compute RCU from *evaluated* bytes and tag the `target`, writes tag
+`Table`. `DynamoDbTable.Config` dropped `readConsistency` (now behavior-owned). Ripple: `OrderTrackingBehavior`
+sets `Get`'s consistency from its config and throws on query/scan (a "Slice 4" placeholder — the phase-1
+workload emits none); `OrderTrackingTrialRunner` builds the slimmer config; `TrialAccounting` sums across
+targets (base only today). Tests: `TableMechanicsSpec` + `DynamoDbTableSpec` extended with Query/Scan
+(e.g. 20×768 B strong → 4 RCU; eventual halves it; GSI-tagged); `TrialAccountingSpec` /
+`OrderTrackingBehaviorSpec` updated for the new signatures. `aws` 64 tests green; whole build compiles;
+**phase-1 equivalence gate still green** (get/put/update/delete RCU/WCU unchanged, `Get` still strong); no
+legacy file touched.
 
 ### Slice 2 — `SecondaryIndexMechanics` + index config + write-side maintenance
 

@@ -21,12 +21,12 @@ import stochastacy.sim.TimedElement
  */
 object DynamoDbTable:
 
-  /** The table's configuration. */
+  /** The table's configuration. Read consistency is a domain decision the behavior bakes into each read
+   *  outcome, so the generic table config does not carry it. */
   final case class Config(
-    initialState:    TableSummaryState,
-    behavior:        TableBehavior,
-    latency:         StatelessSampler[Double], // per-op service latency, in fractional ticks
-    readConsistency: ReadConsistency
+    initialState: TableSummaryState,
+    behavior:     TableBehavior,
+    latency:      StatelessSampler[Double] // per-op service latency, in fractional ticks
   )
 
   /**
@@ -46,7 +46,7 @@ object DynamoDbTable:
       rng:   UniformRandomProvider
     ): Emission[TableSummaryState, DynamoDbResponse, DynamoDbConsumption] =
       val outcome    = config.behavior.outcomeFor(in, state, rng)
-      val resolution = TableMechanics.resolve(outcome, config.readConsistency, state)
+      val resolution = TableMechanics.resolve(outcome, state)
       val (latency, _) = config.latency.sample(0L, rng, ())
       Emission(
         newState    = resolution.state,
