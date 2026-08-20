@@ -1,0 +1,129 @@
+# v2/phase4 — Thermostat single-table demo (single-region)
+
+**Status: PLANNED** — five slices scoped below. The thermostat-fleet family begins on the v2 core, and the
+thermostat *domain* (behavior + workload) it introduces is reused by every later phase (multi-table,
+capstone, multi-region).
+
+Started on branch `v2/phase4`, following `v2/phase3` (Indexed Order-Tracking). This phase ports the
+single-region `ThermostatFleetScenarioConfig` — **one on-demand `device-telemetry` table + 3 GSIs + 1 LSI
++ a thermostat telemetry behavior/workload** — onto the *existing* indexed table. It is the first
+thermostat scenario, and it leads the remaining program because the legacy multi-table and capstone demos
+are all thermostat scenarios (so their clean reconcile needs this domain first).
+
+## Goal
+
+Reproduce the behavior of the legacy single-region thermostat demo on the v2 core — a fleet of IoT
+thermostats writing telemetry to one on-demand table, queried by customer and scanned for fleet alerts,
+across a Monte Carlo ensemble — with **no engine changes**: it is a new demo *domain* on the phase-3
+table (Query/Scan + secondary indexes). The table's **mixed index projections** (KeysOnly / Include / All)
+exercise projection-sized maintenance that order-tracking (All-only) did not.
+
+## Confirmed decisions
+
+- **D-domain-leads — the thermostat domain leads the program.** Porting the single-table thermostat demo
+  first (no engine changes) gives the multi-table (phase 5) and capstone (phase 8) phases a legacy
+  scenario to reconcile against, because those legacy demos compose thermostat tables.
+- **D-shared-harness (DQ-shared-infra) — extract a shared single-table demo harness.** The
+  accounting / pricing / result-types / aggregation / JSONL / Monte-Carlo machinery in `ordertracking` is
+  generic single-table-demo infrastructure; move it to a neutral package `stochastacy.aws.examples.demo`
+  behind a small `SingleTableScenario` trait, and refactor `ordertracking` onto it. So thermostat reuses
+  it without depending on ordertracking, and phases 5/8 reuse it too. (Alternative — duplicate or
+  cross-import — rejected.)
+- **D-faithful-reads (DQ-read-model) — faithful legacy thermostat read shapes.** The legacy thermostat
+  query/scan are already reasonable limited/paginated models (query ~2–10 items, scan ~50–250), so the
+  behavior reproduces them rather than applying the phase-3 "whole target" scan improvement; a clean
+  reconcile is the goal here.
+- **Carried over.** Re-create the protocol cleanly (already done — thermostat reuses the phase-3 protocol);
+  demo-local reporting (now the shared harness); the legacy stays frozen, run only to capture the baseline.
+
+## Open design decisions (resolved at each slice's plan)
+
+- **DD-system-error (Slice 2/5)** — the legacy `systemErrorRate = 0.001`; **defer** (model all-success —
+  0.1% is inside reconcile tolerance), noting the negligible gap. A `ChaosGate` wrap is the natural home
+  if ever wanted (the throttling/failure phase).
+- **DD-initial-state (Slice 2)** — the table's initial item count / bytes and the all-targets storage seed
+  for the thermostat table (pinned from the legacy runner when implementing).
+- **DD-temporal-slicing (Slice 4)** — build constant-per-device first, then layer the temporal shapes, so
+  a no-spike slice reconciles a no-spike config and the temporal slice reconciles the real default.
+
+## Slice status
+
+| # | slice | status | proof (target) |
+|---|---|---|---|
+| 1 | Shared single-table demo harness (refactor) | Planned | all ordertracking tests + both gates unchanged |
+| 2 | Thermostat behavior + config | Planned | insert/update ratio tracks fleet saturation; read-shape ranges |
+| 3 | Thermostat workload + demo end-to-end | Planned | end-to-end trial: base + 3 GSI + 1 LSI maintenance + per-GSI reporting |
+| 4 | Temporal shapes (spikes / vortex / bursts) | Planned | rate profile over ticks; determinism |
+| 5 | Reconciliation gate + docs + close-out | Planned | v2 vs captured legacy baseline within tolerance; phase COMPLETE |
+
+## Slices
+
+### Slice 1 — Shared single-table demo harness (refactor)
+
+Extract the generic infra from `ordertracking` into `stochastacy.aws.examples.demo`: `TrialAccounting`,
+`OnDemandPricing`, `TrialResult` / `TrialSummary` / `TrialTimeSeriesPoint`, `MonteCarloResult`
+(+ `AggregateStatistic` / aggregate types), `MonteCarloAggregation`, `JsonlExport`, and a generic
+`SingleTableTrialRunner` + `SingleTableMonteCarloRunner` behind a `SingleTableScenario` trait (scenario id,
+ticks / trials / parallelism, initial table state + all-targets storage seed, behavior, latency, GSIs /
+LSIs, `arrivals(rng)`). Refactor `ordertracking` onto it — its config implements `SingleTableScenario`;
+its behavior / workload / `@main` stay.
+
+**Validated by:** every `ordertracking` test and both gates (equivalence + reconciliation) stay green — a
+pure refactor with no behavior change.
+
+### Slice 2 — Thermostat behavior + config
+
+`ThermostatConfig` implementing `SingleTableScenario` — the fleet (initial device count, growth per tick,
+telemetry mean bytes + variance), the 3 GSIs + 1 LSI with their projections (`customer-devices` KeysOnly,
+`fleet-alerts` Include(64), `device-status` All, `reading-type-history` LSI All), and the query / scan
+rates; *no temporal params yet*. `ThermostatFleetBehavior` — telemetry **insert-or-update by fleet
+saturation** `(fleetSize − itemCount)/fleetSize`, a query on `customer-devices` (~2–10 items) and a scan on
+`fleet-alerts` (~50–250 items), faithful to the legacy read shapes.
+
+**Validated by:** behavior unit tests — insert/update ratio tracks saturation, read-shape ranges, item
+bytes within ±variance. Resolves **DD-system-error**, **DD-initial-state**.
+
+### Slice 3 — Thermostat workload (fleet-scaled, constant per-device) + demo end-to-end
+
+Workload: telemetry `PutItem` at `telemetryReportsPerDevicePerTick × fleetSize(tick)` (fleet-growth-scaled,
+no spikes), a GSI query (`customer-devices`), a GSI scan (`fleet-alerts`); wired through the shared harness;
+a `ThermostatFleetDemo` `@main`.
+
+**Validated by:** an end-to-end trial runs — base + 3-GSI + 1-LSI maintenance and per-GSI reporting; per-flow
+means ≈ configured; determinism.
+
+### Slice 4 — Temporal shapes
+
+Re-create the temporal machinery in the v2 workload: triangular morning / evening spikes, a polar-vortex
+window multiplier, and random alert-storm bursts (a `RandomBurstSampler` equivalent). Config gains the
+temporal params; apply them to the telemetry rate.
+
+**Validated by:** rate-profile tests — spikes peak in their tick windows, the vortex window multiplier
+applies, bursts fire at ~their probability; determinism. Resolves **DD-temporal-slicing**.
+
+### Slice 5 — Reconciliation gate + docs + close-out
+
+Capture the legacy `singleRegionDefault` baseline (100 trials × 1200 ticks) and reconcile v2 (overall +
+per-GSI RCU / WCU / cost within tolerance — the read model is faithful, so ≈ phase-1's ~2%; storage per the
+initial-storage correction). Docs: a thermostat demo guide (`specs/README.thermostat-v2.md`) + a catalog
+note that the table is now exercised with mixed projections. Roadmap + memory close-out.
+
+**Validated by:** the reconciliation passes with measured gaps reported; a reviewer can understand and run
+the thermostat demo; phase COMPLETE. **Note:** 1200 ticks × 100 trials is heavier than order-tracking's
+30 × 100 — the baseline capture and reconcile run take a few minutes; if too slow for CI, reconcile at a
+reduced but representative scale and say so.
+
+## Design principles and reuse
+
+- **No engine changes** — thermostat is a new demo domain on the phase-3 table; it exercises the existing
+  Query/Scan + secondary-index machinery (now with mixed projections).
+- **Shared harness** — the generic single-table demo infrastructure lives once, behind `SingleTableScenario`,
+  reused by ordertracking, thermostat, and later phases.
+- **Reconcile against legacy** — equivalence on the faithful path (the thermostat reads are faithful, so
+  this is closer to phase-1's clean equivalence than phase-3's reconciliation), storage as the documented
+  initial-storage correction.
+
+## Scope boundary
+
+Single region, on-demand, no throttling. No transactions, provisioned / auto-scaling, TTL, multi-table, or
+multi-region — those are phases 5–9. `systemErrorRate` deferred.
