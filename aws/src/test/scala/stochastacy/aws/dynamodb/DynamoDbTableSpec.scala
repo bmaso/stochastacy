@@ -76,7 +76,7 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
     cfg:   DynamoDbTable.Config,
     input: Vector[Timed[DynamoDbRequest]],
     ticks: Long
-  ): ComponentResult[TableSummaryState] =
+  ): ComponentResult[TableState] =
     val graph = RunnableGraph.fromGraph(
       GraphDSL.createGraph(DynamoDbTable.componentOf(cfg, RandomSource.KISS.create(1L))) { implicit b => td =>
         import GraphDSL.Implicits.*
@@ -136,8 +136,29 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
         ticks = 5L
       )
       // 7680 +800 +132 -768 = 7844 bytes; 10 +1 -1 = 10 items
-      result.finalState    shouldBe TableSummaryState(10L, 7844L)
-      result.residue.total shouldBe 0L
+      result.finalState.base shouldBe TableSummaryState(10L, 7844L)
+      result.residue.total   shouldBe 0L
+    }
+
+    "maintain a GSI and an LSI on a base write (per-index facts, tagged and delayed; index state evolves)" in {
+      // a fresh config per materialization — the scripted behavior's iterator is single-use
+      def cfg = config(ScriptedBehavior(Seq(OperationOutcome.Put(writtenItemBytes = 800L, previousItemBytes = None))))
+        .withGlobalSecondaryIndex(GlobalSecondaryIndex("customerId-status")) // All projection; async delay 0 (default)
+        .withLocalSecondaryIndex(LocalSecondaryIndex("createdAt-priority"))  // All projection; synchronous
+
+      val (_, cons) = runPlanes(cfg, Vector(req(1L, PutItemRequest(800L))), ticks = 3L)
+      // base put + one insert per index (All projection: entry = 800 bytes -> 1 WCU, +800 storage), tagged by target
+      consumptions(cons).map(_.event) should contain theSameElementsAs Seq(
+        WriteCapacityConsumed(BigDecimal(1), Table), StorageBytesDelta(800L, Table),
+        WriteCapacityConsumed(BigDecimal(1), DynamoDbTarget.Gsi("customerId-status")), StorageBytesDelta(800L, DynamoDbTarget.Gsi("customerId-status")),
+        WriteCapacityConsumed(BigDecimal(1), DynamoDbTarget.Lsi("createdAt-priority")), StorageBytesDelta(800L, DynamoDbTarget.Lsi("createdAt-priority"))
+      )
+
+      // final state: base 11 items / 8480 bytes; each index seeded from 10 base items (All -> 7680) + this insert
+      val result = runResult(cfg, Vector(req(1L, PutItemRequest(800L))), ticks = 3L)
+      result.finalState.base                       shouldBe TableSummaryState(11L, 8480L)
+      result.finalState.index("customerId-status") shouldBe TableSummaryState(11L, 8480L)
+      result.finalState.index("createdAt-priority") shouldBe TableSummaryState(11L, 8480L)
     }
 
     "preserve control events, ending both planes with EndOfTime" in {

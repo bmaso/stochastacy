@@ -40,3 +40,26 @@ object TableSummaryState:
   /** A table pre-loaded with `itemCount` items each averaging `averageItemBytes` bytes. */
   def initial(itemCount: Long, averageItemBytes: Long): TableSummaryState =
     TableSummaryState(itemCount, itemCount * averageItemBytes)
+
+/**
+ * The whole table's threaded state: the base table's summary plus one summary per secondary index (keyed
+ * by index name). This is the `DynamoDbTable` sampler's state and its materialized value; a table with no
+ * indexes carries an empty `indexes` map and behaves exactly as the base summary alone.
+ */
+final case class TableState(base: TableSummaryState, indexes: Map[String, TableSummaryState]):
+  /** The summary of the index named `indexName` (empty if unknown). */
+  def index(indexName: String): TableSummaryState = indexes.getOrElse(indexName, TableSummaryState.empty)
+
+object TableState:
+  /**
+   * The initial whole-table state: the given base summary, with each secondary index seeded from the
+   * base's pre-loaded items projected through the index — the entries a freshly-created index over an
+   * existing table already holds.
+   */
+  def initial(base: TableSummaryState, indexes: Vector[SecondaryIndex]): TableState =
+    val avgBytes = base.averageItemBytes.getOrElse(0L)
+    val seeded = indexes.map { idx =>
+      val perEntry = SecondaryIndexMechanics.projectedEntryBytes(Some(avgBytes), idx.projection).getOrElse(0L)
+      idx.indexName -> TableSummaryState(base.itemCount, base.itemCount * perEntry)
+    }.toMap
+    TableState(base, seeded)

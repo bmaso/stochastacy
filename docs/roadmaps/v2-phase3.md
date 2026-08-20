@@ -73,7 +73,7 @@ storage per the phase-2 initial-storage correction).
 | # | slice | status | proof (target) |
 |---|---|---|---|
 | 1 | Query/Scan + read-shapes on the base table | **Done** | read RCU from evaluated bytes vs hand-computed; `target` dimension; phase-1 gate green; 64 tests |
-| 2 | `SecondaryIndexMechanics` + index config + write-side maintenance | Planned | base write emits correct per-index maintenance; index states evolve |
+| 2 | `SecondaryIndexMechanics` + index config + write-side maintenance | **Done** | base write emits target-tagged per-index maintenance (GSI/LSI); composite state evolves; 72 tests |
 | 3 | Query/Scan routing to a GSI | Planned | GSI-targeted query consumes GSI RCU from the GSI state; routing correct |
 | 4 | Indexed behavior + workload + demo config | Planned | per-target flow means ≈ λ; read-shape draws in range; end-to-end indexed trial |
 | 5 | Per-index reporting + MC + JSONL + `@main` | Planned | per-index records w/ legacy names + counts; reproducible + parallelism-independent |
@@ -122,6 +122,26 @@ capacity/storage model.
 **Validated by:** a base put/update/delete emits the correct per-index maintenance facts (target-tagged,
 GSI delayed); per-index state evolves; a table with no indexes behaves exactly as before. Resolves
 **DD-internal-structure**, **DD-lsi-capacity**, **DD-projection**, **DD-gsi-async-delay**.
+
+**Delivered.** Read the legacy `IndexMaintenanceMath` to fix the model. `SecondaryIndex.scala`:
+`IndexProjection` (`All` | `KeysOnly` | `Include(n)`) + `GlobalSecondaryIndex(name, projection = All,
+propagationDelayTicks = 0.0)` / `LocalSecondaryIndex(name, projection = All)` descriptors (a
+`SecondaryIndex` trait with `target` + `maintenanceDelay`). `SecondaryIndexMechanics.scala` (rng-free,
+sibling of `TableMechanics`): `projectedEntryBytes` (key floor = 128 B) and `maintain(index, newBase,
+prevBase, indexState)` → insert/replace/delete/no-op → WCU on the written/deleted entry +
+target-tagged storage delta + next index state. `TableState` (base summary + `Map[name, TableSummaryState]`;
+`TableState.initial` seeds each index from the base's pre-loaded items, projected). `DynamoDbTable.Config`
+gains `globalSecondaryIndexes`/`localSecondaryIndexes` + `withGlobalSecondaryIndex`/`withLocalSecondaryIndex`
+builders; the sampler now threads `TableState` and, for a base write, folds per-index maintenance into the
+`Emission` (base + LSI at delay 0, GSI at its propagation delay). Tests: `SecondaryIndexMechanicsSpec`
+(projections; insert/replace/delete/no-op incl. a projection-collapses-to-no-op case);
+`DynamoDbTableSpec` gains a GSI+LSI maintenance test + composite `finalState`. **Resolved decisions:**
+DD-internal-structure = one multi-target sampler + composite state; DD-projection = all three modeled
+(demo uses `All`); DD-lsi-capacity = LSI maintenance identical math to GSI, tagged `Lsi(name)`, no
+separate capacity pool (irrelevant on-demand); DD-gsi-async-delay = `propagationDelayTicks` default 0
+(async hook off for legacy fidelity; doesn't affect gated per-GSI WCU); **+ new: indexes seed initial
+state from the base's items (projected).** `aws` 72 tests green; whole build compiles; phase-1 gate green;
+no legacy file touched.
 
 ### Slice 3 — Query/Scan routing to a GSI
 
