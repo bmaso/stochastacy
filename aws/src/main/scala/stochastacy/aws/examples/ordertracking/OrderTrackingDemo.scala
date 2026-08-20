@@ -8,6 +8,8 @@ import scala.concurrent.{Await, ExecutionContext}
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
 
+import stochastacy.aws.examples.demo.*
+
 /**
  * Runnable Order-Tracking Phase-1 demo: run the Monte Carlo ensemble and write the results as JSONL,
  * plus a short console summary. No external services — the Postgres `stage` / Grafana `view` pipeline is
@@ -32,7 +34,7 @@ import org.apache.pekko.stream.Materializer
   given Materializer            = Materializer.matFromSystem
   given ExecutionContext        = system.dispatcher
   try
-    val result = Await.result(new OrderTrackingMonteCarloRunner().run(config, seed), 10.minutes)
+    val result = Await.result(new SingleTableMonteCarloRunner().run(config, seed), 10.minutes)
     JsonlExport.write(output, result)
     println(summaryText(config, output, result))
   finally
@@ -41,7 +43,7 @@ import org.apache.pekko.stream.Materializer
 private def parseFlags(args: Seq[String]): Map[String, String] =
   args.grouped(2).collect { case Seq(k, v) if k.startsWith("--") => k.drop(2) -> v }.toMap
 
-private def summaryText(config: OrderTrackingConfig, output: Path, result: OrderTrackingMonteCarloResult): String =
+private def summaryText(config: OrderTrackingConfig, output: Path, result: MonteCarloResult): String =
   def mean(metric: String): BigDecimal =
     result.aggregateSummary
       .collectFirst { case AggregateSummaryValue(`metric`, AggregateStatistic.Mean, v) => v }

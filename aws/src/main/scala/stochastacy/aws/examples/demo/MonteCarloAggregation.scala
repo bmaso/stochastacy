@@ -1,4 +1,4 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.demo
 
 /**
  * Across-trial aggregation for the Order-Tracking ensemble. For each `(tick, metric)` time-series point
@@ -24,7 +24,7 @@ object MonteCarloAggregation:
   )
 
   /** The GSI names present in the ensemble (sorted), for the per-GSI metric breakout. */
-  def gsiNames(trials: Vector[OrderTrackingTrialResult]): Vector[String] =
+  def gsiNames(trials: Vector[TrialResult]): Vector[String] =
     trials.flatMap(_.summary.gsiTotalReadCapacityUnits.keys).distinct.sorted
 
   /** The per-tick metrics — base plus a per-GSI RCU/WCU pair — as the single source of truth for both the
@@ -45,7 +45,7 @@ object MonteCarloAggregation:
       )
     }
 
-  def timeSeries(trials: Vector[OrderTrackingTrialResult]): Vector[AggregateTimeSeriesPoint] =
+  def timeSeries(trials: Vector[TrialResult]): Vector[AggregateTimeSeriesPoint] =
     if trials.isEmpty then Vector.empty
     else
       val metrics      = timeSeriesMetrics(gsiNames(trials))
@@ -62,7 +62,7 @@ object MonteCarloAggregation:
         }
       }
 
-  def summary(trials: Vector[OrderTrackingTrialResult]): Vector[AggregateSummaryValue] =
+  def summary(trials: Vector[TrialResult]): Vector[AggregateSummaryValue] =
     summaryMetrics(gsiNames(trials)).flatMap { (name, extract) =>
       val (mean, sd) = meanAndStdDev(trials.map(t => extract(t.summary)))
       Vector(

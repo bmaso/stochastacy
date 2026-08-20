@@ -50,7 +50,7 @@ exercise projection-sized maintenance that order-tracking (All-only) did not.
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | Shared single-table demo harness (refactor) | Planned | all ordertracking tests + both gates unchanged |
+| 1 | Shared single-table demo harness (refactor) | **Done** | all 88 tests + both gates unchanged; generic harness in `demo` pkg |
 | 2 | Thermostat behavior + config | Planned | insert/update ratio tracks fleet saturation; read-shape ranges |
 | 3 | Thermostat workload + demo end-to-end | Planned | end-to-end trial: base + 3 GSI + 1 LSI maintenance + per-GSI reporting |
 | 4 | Temporal shapes (spikes / vortex / bursts) | Planned | rate profile over ticks; determinism |
@@ -70,6 +70,17 @@ its behavior / workload / `@main` stay.
 
 **Validated by:** every `ordertracking` test and both gates (equivalence + reconciliation) stay green — a
 pure refactor with no behavior change.
+
+**Delivered.** New package `stochastacy.aws.examples.demo`: `SingleTableScenario` trait (scenario id,
+ensemble size, `initialTableState`, `behavior`, GSIs/LSIs, `initialStorageBytesAllTargets`, `arrivals`,
+defaulted `latency`/`rates`); the generic `SingleTableTrialRunner` + `SingleTableMonteCarloRunner` (from
+the order-tracking runners, now driven by a scenario); and the moved generic infra — `OnDemandPricing`,
+`TrialResult`/`TrialSummary`/`TrialTimeSeriesPoint` (renamed from `OrderTracking*`), `TrialAccounting`,
+`MonteCarloResult` (renamed), `MonteCarloAggregation`, `JsonlExport`. `OrderTrackingConfig` now
+`extends SingleTableScenario` (adds `behavior`/`arrivals`); the two `@main`s use the generic runner; the
+`TrialAccountingSpec`/`MonteCarloAggregationSpec` moved to the `demo` test package, the order-tracking
+runner/gate specs kept and re-imported. `aws` 88 tests green (same count), both gates pass at their pinned
+tolerances (numbers identical), JSONL shape unchanged; whole build compiles; no legacy file touched.
 
 ### Slice 2 — Thermostat behavior + config
 

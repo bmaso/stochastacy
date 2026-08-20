@@ -1,4 +1,4 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.demo
 
 /** The across-trial statistics emitted for each metric — matching the legacy demo's set. */
 enum AggregateStatistic:
@@ -25,10 +25,10 @@ final case class AggregateSummaryValue(
 )
 
 /** The result of a Monte Carlo ensemble: the per-trial results plus their across-trial aggregates. */
-final case class OrderTrackingMonteCarloResult(
+final case class MonteCarloResult(
   scenarioId:          String,
   trialCount:          Int,
-  trials:              Vector[OrderTrackingTrialResult],
+  trials:              Vector[TrialResult],
   aggregateTimeSeries: Vector[AggregateTimeSeriesPoint],
   aggregateSummary:    Vector[AggregateSummaryValue]
 )

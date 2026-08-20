@@ -1,12 +1,12 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.demo
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
 class MonteCarloAggregationSpec extends AnyWordSpec with should.Matchers:
 
-  private def trial(id: Int, rcuPerTick: BigDecimal, totalRcu: BigDecimal): OrderTrackingTrialResult =
-    OrderTrackingTrialResult(
+  private def trial(id: Int, rcuPerTick: BigDecimal, totalRcu: BigDecimal): TrialResult =
+    TrialResult(
       trialId = id,
       timeSeries = Vector(
         TrialTimeSeriesPoint(tick = 1L, readCapacityUnits = rcuPerTick, writeCapacityUnits = 0, storageBytes = 100L, cumulativeEstimatedCost = 0),
@@ -39,8 +39,8 @@ class MonteCarloAggregationSpec extends AnyWordSpec with should.Matchers:
   }
 
   "MonteCarloAggregation — per-GSI breakout" should {
-    def gsiTrial(id: Int, gsiRcu: BigDecimal, gsiWcu: BigDecimal): OrderTrackingTrialResult =
-      OrderTrackingTrialResult(id, Vector.empty,
+    def gsiTrial(id: Int, gsiRcu: BigDecimal, gsiWcu: BigDecimal): TrialResult =
+      TrialResult(id, Vector.empty,
         TrialSummary(0, 0, BigInt(0), 0L, 0,
           gsiTotalReadCapacityUnits  = Map("g" -> gsiRcu),
           gsiTotalWriteCapacityUnits = Map("g" -> gsiWcu)))

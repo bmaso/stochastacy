@@ -1,4 +1,4 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.demo
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
@@ -28,7 +28,7 @@ object JsonlExport:
   private given DefaultFormats = DefaultFormats
 
   /** The records for a result, in a deterministic order: per-trial first (trial order), then aggregates. */
-  def records(result: OrderTrackingMonteCarloResult): Vector[DemoRecord] =
+  def records(result: MonteCarloResult): Vector[DemoRecord] =
     val gsiNames         = MonteCarloAggregation.gsiNames(result.trials)
     val timeSeriesMetrics = MonteCarloAggregation.timeSeriesMetrics(gsiNames)
     val summaryMetrics    = MonteCarloAggregation.summaryMetrics(gsiNames)
@@ -54,9 +54,9 @@ object JsonlExport:
 
     trialRecords ++ aggregateRecords
 
-  def render(result: OrderTrackingMonteCarloResult): String =
+  def render(result: MonteCarloResult): String =
     val rs = records(result)
     rs.map(Serialization.write(_)).mkString("", "\n", if rs.nonEmpty then "\n" else "")
 
-  def write(path: Path, result: OrderTrackingMonteCarloResult): Unit =
+  def write(path: Path, result: MonteCarloResult): Unit =
     Files.writeString(path, render(result), StandardCharsets.UTF_8)

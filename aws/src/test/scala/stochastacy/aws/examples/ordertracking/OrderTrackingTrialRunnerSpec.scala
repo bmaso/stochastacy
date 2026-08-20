@@ -1,5 +1,7 @@
 package stochastacy.aws.examples.ordertracking
 
+import stochastacy.aws.examples.demo.*
+
 import scala.concurrent.Await
 import scala.concurrent.duration.*
 
@@ -17,9 +19,9 @@ class OrderTrackingTrialRunnerSpec extends AnyWordSpec with should.Matchers with
   override def afterAll(): Unit = system.terminate()
 
   private val config = OrderTrackingConfig.phase1Default
-  private def run(seed: Long) = Await.result(new OrderTrackingTrialRunner().runTrial(config, trialId = 0, seed = seed), 10.seconds)
+  private def run(seed: Long) = Await.result(new SingleTableTrialRunner().runTrial(config, trialId = 0, seed = seed), 10.seconds)
 
-  "OrderTrackingTrialRunner.runTrial" should {
+  "SingleTableTrialRunner.runTrial" should {
 
     "produce one time-series point per simulated tick, labeled 1..N" in {
       val result = run(42L)
@@ -51,7 +53,7 @@ class OrderTrackingTrialRunnerSpec extends AnyWordSpec with should.Matchers with
 
     "run the indexed scenario end-to-end (query/scan handled, indexes maintained)" in {
       val indexed = OrderTrackingConfig.indexedDefault
-      val r = Await.result(new OrderTrackingTrialRunner().runTrial(indexed, trialId = 0, seed = 5L), 10.seconds)
+      val r = Await.result(new SingleTableTrialRunner().runTrial(indexed, trialId = 0, seed = 5L), 10.seconds)
       r.timeSeries.map(_.tick)          shouldBe (1L to indexed.simulationTicks).toVector
       r.summary.totalReadCapacityUnits  should be > BigDecimal(0) // reads (query/scan) consume RCU
       r.summary.totalWriteCapacityUnits should be > BigDecimal(0) // writes + index maintenance consume WCU

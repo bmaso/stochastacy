@@ -1,5 +1,7 @@
 package stochastacy.aws.examples.ordertracking
 
+import stochastacy.aws.examples.demo.*
+
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext}
 
@@ -22,10 +24,10 @@ class OrderTrackingMonteCarloRunnerSpec extends AnyWordSpec with should.Matchers
   private val ticks  = 5L
   private val config = OrderTrackingConfig.phase1Default.copy(trialCount = trials, simulationTicks = ticks, parallelism = 4)
 
-  private def run(cfg: OrderTrackingConfig, seed: Long): OrderTrackingMonteCarloResult =
-    Await.result(new OrderTrackingMonteCarloRunner().run(cfg, seed), 60.seconds)
+  private def run(cfg: OrderTrackingConfig, seed: Long): MonteCarloResult =
+    Await.result(new SingleTableMonteCarloRunner().run(cfg, seed), 60.seconds)
 
-  "OrderTrackingMonteCarloRunner" should {
+  "SingleTableMonteCarloRunner" should {
 
     "be reproducible under a fixed master seed" in {
       run(config, seed = 42L) shouldBe run(config, seed = 42L)

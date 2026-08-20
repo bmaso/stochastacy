@@ -8,6 +8,8 @@ import scala.concurrent.{Await, ExecutionContext}
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
 
+import stochastacy.aws.examples.demo.*
+
 /**
  * Runnable Indexed Order-Tracking demo: the `indexedDefault` scenario (Query/Scan over two GSIs + one LSI)
  * as a Monte Carlo ensemble, written as JSONL (per-GSI metrics included) plus a console summary. No
@@ -34,7 +36,7 @@ import org.apache.pekko.stream.Materializer
   given Materializer        = Materializer.matFromSystem
   given ExecutionContext    = system.dispatcher
   try
-    val result = Await.result(new OrderTrackingMonteCarloRunner().run(config, seed), 10.minutes)
+    val result = Await.result(new SingleTableMonteCarloRunner().run(config, seed), 10.minutes)
     JsonlExport.write(output, result)
 
     def mean(metric: String): BigDecimal =

@@ -1,6 +1,10 @@
 package stochastacy.aws.examples.ordertracking
 
-import stochastacy.aws.dynamodb.{GlobalSecondaryIndex, LocalSecondaryIndex, ReadConsistency, SecondaryIndex, SecondaryIndexMechanics, TableSummaryState}
+import org.apache.commons.rng.UniformRandomProvider
+
+import stochastacy.aws.dynamodb.{DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, ReadConsistency, SecondaryIndex, SecondaryIndexMechanics, TableBehavior, TableSummaryState}
+import stochastacy.aws.examples.demo.SingleTableScenario
+import stochastacy.core.component.Timed
 
 /**
  * The Order-Tracking demo scenario, re-created on the v2 core — a single on-demand DynamoDB table under
@@ -41,7 +45,7 @@ final case class OrderTrackingConfig(
   gsiScanRatePerTick:        Double = 0.0, // applied to each GSI
   queryEvaluatedItemsMean:   Double = 3.0, // mean "page" a query evaluates (bounded by the target's population)
   returnedFraction:          Double = 0.7  // fraction of evaluated items returned (cosmetic — RCU is on evaluated)
-):
+) extends SingleTableScenario:
   require(scenarioId.nonEmpty,                       "scenarioId must be non-empty")
   require(tableName.nonEmpty,                        "tableName must be non-empty")
   require(simulationTicks >= 1L,                     "simulationTicks must be at least 1")
@@ -77,6 +81,10 @@ final case class OrderTrackingConfig(
     base + secondaryIndexes.map { idx =>
       initialItemCount * SecondaryIndexMechanics.projectedEntryBytes(Some(initialAverageItemBytes), idx.projection).getOrElse(0L)
     }.sum
+
+  // SingleTableScenario — the domain plug-ins the shared harness drives.
+  def behavior: TableBehavior = new OrderTrackingBehavior(this)
+  def arrivals(rng: UniformRandomProvider): Vector[Timed[DynamoDbRequest]] = OrderTrackingWorkload.arrivals(this, rng)
 
   private def isProbability(value: Double): Boolean = value >= 0.0 && value <= 1.0
 
