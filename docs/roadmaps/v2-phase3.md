@@ -43,6 +43,17 @@ storage per the phase-2 initial-storage correction).
   index's own `TableSummaryState` (an index is summarized the same way as a table: item count + projected
   bytes, so no new state type). The modularity the "separate components" intuition wants is preserved;
   only the *graph-node* mechanism is rejected.
+- **D-improved-reads — model reads from the target's own state, not the legacy's base-state + magic
+  caps** (decided 2026-08-19, after comparing the models). The legacy `sampleReadShape` derives every
+  read's item count / bytes from the *base* table plus hard-coded per-target caps (4/6/5) and fractions —
+  which (a) models a scan like a query (a capped few items, so scan cost never grows with the table),
+  (b) ignores projection for read bytes, and (c) ignores the index's own population. Instead: a read
+  consults the **target's own maintained `TableSummaryState`** — a **scan evaluates the whole target**
+  (projection-correct bytes, cost that grows with data), a **query** evaluates a config-driven selectivity
+  draw bounded by the target's population, and the assumptions become explicit config rather than magic
+  constants. This is a deliberate quality improvement that **diverges from legacy** (materially on scans),
+  so the Slice-6 gate becomes a *reconciliation* (equivalence on writes/gets/maintenance; the read-model
+  change quantified as a documented correction — the same pattern as the phase-2 storage-bug fix).
 - **Carried over from phase-2.** Re-create the protocol cleanly (Query/Scan + targets are new timeless
   types in `stochastacy.aws.dynamodb`; no legacy import). Demo-local reporting. The legacy code stays
   frozen — run only once to capture the equivalence baseline.
@@ -74,10 +85,10 @@ storage per the phase-2 initial-storage correction).
 |---|---|---|---|
 | 1 | Query/Scan + read-shapes on the base table | **Done** | read RCU from evaluated bytes vs hand-computed; `target` dimension; phase-1 gate green; 64 tests |
 | 2 | `SecondaryIndexMechanics` + index config + write-side maintenance | **Done** | base write emits target-tagged per-index maintenance (GSI/LSI); composite state evolves; 72 tests |
-| 3 | Query/Scan routing to a GSI | Planned | GSI-targeted query consumes GSI RCU from the GSI state; routing correct |
-| 4 | Indexed behavior + workload + demo config | Planned | per-target flow means ≈ λ; read-shape draws in range; end-to-end indexed trial |
+| 3 | Read routing — a read consults its target's state | **Done** | GSI scan reads the index's projected state (not base); RCU tagged; 73 tests |
+| 4 | Indexed behavior (improved reads) + workload + demo config | Planned | scan = whole target; query selectivity; per-target flow means ≈ λ; end-to-end indexed trial |
 | 5 | Per-index reporting + MC + JSONL + `@main` | Planned | per-index records w/ legacy names + counts; reproducible + parallelism-independent |
-| 6 | Equivalence gate + docs + close-out | Planned | v2 vs captured legacy baseline within tolerance (incl. per-GSI); phase COMPLETE |
+| 6 | Reconciliation gate + docs + close-out | Planned | equivalence on writes/gets; read-model divergence quantified; phase COMPLETE |
 
 ## Slices
 
@@ -143,27 +154,41 @@ separate capacity pool (irrelevant on-demand); DD-gsi-async-delay = `propagation
 state from the base's items (projected).** `aws` 72 tests green; whole build compiles; phase-1 gate green;
 no legacy file touched.
 
-### Slice 3 — Query/Scan routing to a GSI
+### Slice 3 — Read routing: a read consults its target's state
 
-Serve queries/scans that target a GSI, reading the GSI's own (projected) storage and consuming GSI RCU.
-The table routes a query/scan by its `DynamoDbReadTarget` to the targeted index's `TableSummaryState`; the
-read-shape reads that index's summary; RCU is tagged to the index target. (LSI read routing is included if
-it falls out cheaply, but the demo never queries the LSI, so this slice is really about GSIs.)
+The enabling slice for the improved read model (D-improved-reads): a Query/Scan's read-shape must derive
+from the state of the target it hits, so the `DynamoDbTable` sampler routes each read to the target's
+`TableSummaryState` — an index's own summary for a GSI/LSI query/scan, the base summary for a table read
+and every write/get. The `TableBehavior` interface is unchanged (it receives "the state of the thing this
+request hits"); `resolve` is unchanged (reads ignore the state; RCU is computed from the outcome's shape
+and tagged with its target). Small, focused; the read-shape draws themselves are Slice 4.
 
-**Validated by:** a GSI-targeted query consumes GSI RCU computed from the GSI's state; base-vs-GSI routing
-is correct; determinism under seed.
+**Validated by:** with a state-reading stub behavior, a scan targeting a `KeysOnly` GSI evaluates the GSI's
+*projected* bytes (128 B/entry), not the base's 768 — proving the read consults the index's state; RCU
+tagged with the GSI; base reads still consult base; non-indexed + phase-1 behavior unchanged.
 
-### Slice 4 — Indexed Order-Tracking behavior, workload, and demo config
+**Delivered.** `DynamoDbTableSampler.sample` now passes `readTargetState(in, state)` (private helper:
+GSI/LSI query/scan → `state.index(name)`, else `state.base`) to the behavior instead of `state.base`
+unconditionally — the whole change. `DynamoDbTableSpec` gains a `StateReadingBehavior` stub + the
+`KeysOnly`-GSI routing test (base scan 7680 B → 2 RCU; GSI scan 1280 B → 1 RCU, tagged `Gsi`). `aws` 73
+tests green; phase-1 gate green; no legacy touched.
 
-Assemble the demo scenario on the now index-capable table. `OrderTrackingBehavior` extended with
-query/scan read-shape outcomes (faithful to the legacy `sampleReadShape` — evaluated / returned per
-target). `OrderTrackingConfig` gains index declarations + query/scan flow rates and an **`indexedDefault`**
-(the `order-tracking-phase2` equivalent: GSIs `customerId-status` + `sellerId-createdAt`, LSI
-`createdAt-priority`; base query λ0.8 / scan λ0.25; per-GSI query λ0.75 / scan λ0.30). `OrderTrackingWorkload`
-emits the query/scan flows targeting base + each GSI.
+### Slice 4 — Indexed Order-Tracking behavior (improved reads), workload, and demo config
 
-**Validated by:** per-target flow means ≈ λ; read-shape draws in range; one indexed trial runs end-to-end
-producing base *and* per-index consumption.
+Assemble the demo scenario on the now index-capable table, with the **improved read model**.
+`OrderTrackingBehavior` gains query/scan read-shape outcomes computed from the **target's** state (routed
+in by Slice 3): a **scan evaluates the whole target** (its item count + projected bytes → cost that grows
+with data), a **query** evaluates a config-driven selectivity draw bounded by the target's population, and
+a returned fraction filters each — the assumptions are explicit config, not the legacy's magic caps.
+`OrderTrackingConfig` gains index declarations + query/scan flow rates + selectivity/returned params and an
+**`indexedDefault`** (the `order-tracking-phase2` equivalent: GSIs `customerId-status` +
+`sellerId-createdAt`, LSI `createdAt-priority`; base query λ0.8 strong / scan λ0.25; per-GSI query λ0.75 /
+scan λ0.30, eventually consistent). `OrderTrackingWorkload` emits the query/scan flows targeting base +
+each GSI.
+
+**Validated by:** per-target flow means ≈ λ; scan evaluates the whole target while a query evaluates a
+bounded page (both ≥ returned); one indexed trial runs end-to-end producing base *and* per-index
+consumption.
 
 ### Slice 5 — Per-index reporting, aggregation, JSONL, `@main`
 
@@ -175,16 +200,19 @@ consumption into per-index metrics named as the legacy does (`GSI:<name>:ReadCap
 **Validated by:** per-index records present with the right names and counts; ensemble reproducible +
 parallelism-independent; `@main` runs end-to-end. Resolves **DD-demo-shape**.
 
-### Slice 6 — Equivalence gate + docs + close-out
+### Slice 6 — Reconciliation gate + docs + close-out
 
-Prove parity with legacy Indexed Order-Tracking; document; close the phase. Capture the legacy
-`OrderTrackingPhase2` aggregate baseline (including per-GSI RCU/WCU); an equivalence gate asserting v2
-within tolerance on RCU/WCU/cost **and** the per-GSI metrics, with storage handled by the initial-storage
-correction as in phase-2; update the demo guide (an indexed section) and add a `SecondaryIndexMechanics`
-entry to `specs/aws-component-catalog.md`; roadmap + memory close-out.
+Reconcile with legacy Indexed Order-Tracking; document; close the phase. Capture the legacy
+`OrderTrackingPhase2` aggregate baseline (including per-GSI RCU/WCU). Because the read model was
+deliberately improved (D-improved-reads), the gate is a **reconciliation, not a blind match**: assert
+equivalence on the parts kept faithful (writes / gets / index maintenance — WCU, per-GSI write metrics)
+and **quantify the read-model divergence** as a documented correction (scans now grow with the table;
+projection-correct read bytes), storage handled by the initial-storage correction as in phase-2. Update
+the demo guide (an indexed section) and add a `SecondaryIndexMechanics` entry to
+`specs/aws-component-catalog.md`; roadmap + memory close-out.
 
-**Validated by:** the gate passes with measured gaps reported; a reviewer can understand and run the
-indexed demo; phase COMPLETE.
+**Validated by:** the gate passes with measured gaps reported and the read-model divergence explained; a
+reviewer can understand and run the indexed demo; phase COMPLETE.
 
 ## Design principles and reuse
 

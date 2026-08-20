@@ -35,6 +35,17 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
     def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider): OperationOutcome =
       it.next()
 
+  /** A stateless behavior that turns whatever state it is handed into a whole-target read shape — used to
+   *  observe *which* state the sampler routes a read to. */
+  private final class StateReadingBehavior extends TableBehavior:
+    def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider): OperationOutcome =
+      request match
+        case q: QueryRequest => OperationOutcome.Query(q.target, q.consistency, shapeOf(state))
+        case s: ScanRequest  => OperationOutcome.Scan(s.target, s.consistency, shapeOf(state))
+        case _               => OperationOutcome.Get(None, ReadConsistency.StronglyConsistent)
+    private def shapeOf(s: TableSummaryState): TableMechanics.ReadShape =
+      TableMechanics.ReadShape(s.itemCount, s.totalItemBytes, s.itemCount, s.totalItemBytes)
+
   private def config(
     behavior:     TableBehavior,
     initialState: TableSummaryState = TableSummaryState.initial(10L, 768L),
@@ -184,6 +195,20 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
       c.map(_.event)         shouldBe Seq(ReadCapacityConsumed(BigDecimal(4), strong, Table)) // ceil(15360/4096)=4
       c.head.eventTime.ticks shouldBe 1L
       c.head.intraTick       shouldBe 0.0
+    }
+
+    "route a GSI read to the index's own (projected) state, not the base's" in {
+      val gsi = GlobalSecondaryIndex("g", IndexProjection.KeysOnly) // entries capped at 128 B
+      val cfg = config(new StateReadingBehavior()).withGlobalSecondaryIndex(gsi)
+      // base: 10 x 768 = 7680 B; GSI (KeysOnly): 10 x 128 = 1280 B (seeded from the base's 10 items)
+
+      val (baseResp, baseCons) = runPlanes(cfg, Vector(req(1L, ScanRequest(Table, strong))), ticks = 3L)
+      responses(baseResp).map(_.event)    shouldBe Seq(ScanResponse(10L, 7680L, 10L, 7680L))
+      consumptions(baseCons).map(_.event) shouldBe Seq(ReadCapacityConsumed(BigDecimal(2), strong, Table)) // ceil(7680/4096)=2
+
+      val (gsiResp, gsiCons) = runPlanes(cfg, Vector(req(1L, ScanRequest(DynamoDbTarget.Gsi("g"), strong))), ticks = 3L)
+      responses(gsiResp).map(_.event)    shouldBe Seq(ScanResponse(10L, 1280L, 10L, 1280L)) // GSI's projected bytes, not the base's
+      consumptions(gsiCons).map(_.event) shouldBe Seq(ReadCapacityConsumed(BigDecimal(1), strong, DynamoDbTarget.Gsi("g"))) // ceil(1280/4096)=1
     }
 
     "be deterministic under a fixed seed" in {

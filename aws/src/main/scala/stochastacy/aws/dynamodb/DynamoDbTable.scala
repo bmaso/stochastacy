@@ -61,7 +61,7 @@ object DynamoDbTable:
       state: TableState,
       rng:   UniformRandomProvider
     ): Emission[TableState, DynamoDbResponse, DynamoDbConsumption] =
-      val outcome      = config.behavior.outcomeFor(in, state.base, rng)
+      val outcome      = config.behavior.outcomeFor(in, readTargetState(in, state), rng)
       val resolution   = TableMechanics.resolve(outcome, state.base)
       val (latency, _) = config.latency.sample(0L, rng, ())
 
@@ -88,6 +88,18 @@ object DynamoDbTable:
         consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
       )
     // onTick: inherited no-op — the table keeps no per-tick state.
+
+    /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,
+     *  the base summary for a table read and for every write/get. */
+    private def readTargetState(in: DynamoDbRequest, state: TableState): TableSummaryState = in match
+      case q: QueryRequest => targetState(q.target, state)
+      case s: ScanRequest  => targetState(s.target, state)
+      case _               => state.base
+
+    private def targetState(target: DynamoDbTarget, state: TableState): TableSummaryState = target match
+      case DynamoDbTarget.Table     => state.base
+      case DynamoDbTarget.Gsi(name) => state.index(name)
+      case DynamoDbTarget.Lsi(name) => state.index(name)
 
   /** Materialize the table into a running stage: requests in, responses and consumption facts out. */
   def componentOf(config: Config, rng: UniformRandomProvider): Graph[
