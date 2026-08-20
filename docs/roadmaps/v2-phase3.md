@@ -87,7 +87,7 @@ storage per the phase-2 initial-storage correction).
 | 2 | `SecondaryIndexMechanics` + index config + write-side maintenance | **Done** | base write emits target-tagged per-index maintenance (GSI/LSI); composite state evolves; 72 tests |
 | 3 | Read routing — a read consults its target's state | **Done** | GSI scan reads the index's projected state (not base); RCU tagged; 73 tests |
 | 4 | Indexed behavior (improved reads) + workload + demo config | **Done** | scan = whole target; query selectivity; per-target flow means ≈ λ; end-to-end indexed trial; 80 tests |
-| 5 | Per-index reporting + MC + JSONL + `@main` | Planned | per-index records w/ legacy names + counts; reproducible + parallelism-independent |
+| 5 | Per-index reporting + MC + JSONL + `@main` | **Done** | per-GSI records w/ legacy `GSI:<name>:…` names; index storage seeded; `@main`; 84 tests |
 | 6 | Reconciliation gate + docs + close-out | Planned | equivalence on writes/gets; read-model divergence quantified; phase COMPLETE |
 
 ## Slices
@@ -213,6 +213,19 @@ consumption into per-index metrics named as the legacy does (`GSI:<name>:ReadCap
 
 **Validated by:** per-index records present with the right names and counts; ensemble reproducible +
 parallelism-independent; `@main` runs end-to-end. Resolves **DD-demo-shape**.
+
+**Delivered.** `TrialResult` gains defaulted per-GSI maps (`gsi[Read|Write]CapacityUnits` per tick;
+`gsiTotal[Read|Write]CapacityUnits` in the summary). `TrialAccounting` folds **by target** — overall
+totals still include every target (base + GSI + LSI), GSIs additionally broken out; LSI folds into overall
+only (DQ-report-scope). `OrderTrackingConfig.initialStorageBytesAllTargets` seeds the accounting with the
+base **plus each index's projected initial storage** (DQ-storage-seed); the runner uses it (phase-1
+unchanged, no indexes). `MonteCarloAggregation`'s metric lists became `def(gsiNames)` (base + a per-GSI
+`GSI:<name>:…` pair), with a `gsiNames(trials)` deriver; `JsonlExport` threads those names through the
+per-trial records (aggregate records already carry metric-name strings). New `IndexedOrderTrackingDemo`
+`@main` (base `indexedDefault`, per-GSI line in the console summary). Tests (+4): per-GSI accounting
+breakout, per-GSI aggregation under the legacy names, indexed-ensemble per-GSI records. `@main` smoke:
+8×30 → 2490 records incl. `GSI:customerId-status:…` / `GSI:sellerId-createdAt:…` (RCU/WCU, per-tick +
+totals). `aws` 84 tests green; whole build compiles; phase-1 demo/gate unchanged; no legacy touched.
 
 ### Slice 6 — Reconciliation gate + docs + close-out
 

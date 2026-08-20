@@ -33,8 +33,26 @@ class MonteCarloAggregationSpec extends AnyWordSpec with should.Matchers:
 
     "emit mean and stddev for every summary metric" in {
       val agg = MonteCarloAggregation.summary(Vector(trial(0, 1, 10), trial(1, 1, 20)))
-      agg.map(_.metric).distinct    should contain theSameElementsAs MonteCarloAggregation.summaryMetrics.map(_._1)
+      agg.map(_.metric).distinct    should contain theSameElementsAs MonteCarloAggregation.summaryMetrics(Vector.empty).map(_._1)
       agg.map(_.statistic).distinct should contain theSameElementsAs Seq(AggregateStatistic.Mean, AggregateStatistic.StdDev)
+    }
+  }
+
+  "MonteCarloAggregation — per-GSI breakout" should {
+    def gsiTrial(id: Int, gsiRcu: BigDecimal, gsiWcu: BigDecimal): OrderTrackingTrialResult =
+      OrderTrackingTrialResult(id, Vector.empty,
+        TrialSummary(0, 0, BigInt(0), 0L, 0,
+          gsiTotalReadCapacityUnits  = Map("g" -> gsiRcu),
+          gsiTotalWriteCapacityUnits = Map("g" -> gsiWcu)))
+
+    "derive the GSI names from the ensemble" in {
+      MonteCarloAggregation.gsiNames(Vector(gsiTrial(0, 1, 1))) shouldBe Vector("g")
+    }
+
+    "aggregate per-GSI summary metrics under the legacy names" in {
+      val agg = MonteCarloAggregation.summary(Vector(gsiTrial(0, 10, 2), gsiTrial(1, 20, 4)))
+      agg.collectFirst { case AggregateSummaryValue("GSI:g:TotalReadCapacityUnits",  AggregateStatistic.Mean, v) => v } shouldBe Some(BigDecimal(15))
+      agg.collectFirst { case AggregateSummaryValue("GSI:g:TotalWriteCapacityUnits", AggregateStatistic.Mean, v) => v } shouldBe Some(BigDecimal(3))
     }
   }
 

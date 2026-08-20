@@ -69,6 +69,29 @@ class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
       series.last.cumulativeEstimatedCost             shouldBe summary.totalEstimatedCost
     }
 
+    "break out per-GSI capacity while the overall totals still sum every target" in {
+      val gsi = DynamoDbTarget.Gsi("g")
+      val lsi = DynamoDbTarget.Lsi("l")
+      val stream = Vector(
+        tick(1),
+        cons(1, ReadCapacityConsumed(BigDecimal(2), strong, Table)), // base read
+        cons(1, WriteCapacityConsumed(BigDecimal(1), Table)),        // base write
+        cons(1, WriteCapacityConsumed(BigDecimal(3), gsi)),          // GSI maintenance
+        cons(1, ReadCapacityConsumed(BigDecimal(4), strong, gsi)),   // GSI query
+        cons(1, WriteCapacityConsumed(BigDecimal(5), lsi)),          // LSI maintenance (overall only)
+        tick(2),
+        eot
+      )
+      val (summary, series) = TrialAccounting.account(stream, initialStorageBytes = 0L, rates)
+
+      summary.totalReadCapacityUnits     shouldBe BigDecimal(6) // 2 + 4
+      summary.totalWriteCapacityUnits    shouldBe BigDecimal(9) // 1 + 3 + 5 (LSI included in overall)
+      summary.gsiTotalReadCapacityUnits  shouldBe Map("g" -> BigDecimal(4))
+      summary.gsiTotalWriteCapacityUnits shouldBe Map("g" -> BigDecimal(3)) // no "l" key — LSI is not broken out
+      series.head.gsiReadCapacityUnits   shouldBe Map("g" -> BigDecimal(4))
+      series.head.gsiWriteCapacityUnits  shouldBe Map("g" -> BigDecimal(3))
+    }
+
     "price totals with the on-demand rate model" in {
       val (summary, _) = TrialAccounting.account(
         Vector(tick(1), cons(1, ReadCapacityConsumed(BigDecimal(10), strong, Table)), tick(2), tick(3), eot),

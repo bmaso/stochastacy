@@ -1,6 +1,6 @@
 package stochastacy.aws.examples.ordertracking
 
-import stochastacy.aws.dynamodb.{GlobalSecondaryIndex, LocalSecondaryIndex, ReadConsistency, TableSummaryState}
+import stochastacy.aws.dynamodb.{GlobalSecondaryIndex, LocalSecondaryIndex, ReadConsistency, SecondaryIndex, SecondaryIndexMechanics, TableSummaryState}
 
 /**
  * The Order-Tracking demo scenario, re-created on the v2 core — a single on-demand DynamoDB table under
@@ -66,6 +66,17 @@ final case class OrderTrackingConfig(
   /** The table's starting summary state. */
   def initialTableState: TableSummaryState =
     TableSummaryState.initial(initialItemCount, initialAverageItemBytes)
+
+  /** All secondary indexes declared on the table, GSIs then LSIs. */
+  def secondaryIndexes: Vector[SecondaryIndex] = globalSecondaryIndexes ++ localSecondaryIndexes
+
+  /** The pre-loaded storage across *all* targets: the base's items plus each index's projected initial
+   *  contents — the seed the trial accounting bills from (so index storage is counted too). */
+  def initialStorageBytesAllTargets: Long =
+    val base = initialItemCount * initialAverageItemBytes
+    base + secondaryIndexes.map { idx =>
+      initialItemCount * SecondaryIndexMechanics.projectedEntryBytes(Some(initialAverageItemBytes), idx.projection).getOrElse(0L)
+    }.sum
 
   private def isProbability(value: Double): Boolean = value >= 0.0 && value <= 1.0
 

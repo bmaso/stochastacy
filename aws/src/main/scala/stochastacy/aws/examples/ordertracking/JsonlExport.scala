@@ -29,14 +29,17 @@ object JsonlExport:
 
   /** The records for a result, in a deterministic order: per-trial first (trial order), then aggregates. */
   def records(result: OrderTrackingMonteCarloResult): Vector[DemoRecord] =
+    val gsiNames         = MonteCarloAggregation.gsiNames(result.trials)
+    val timeSeriesMetrics = MonteCarloAggregation.timeSeriesMetrics(gsiNames)
+    val summaryMetrics    = MonteCarloAggregation.summaryMetrics(gsiNames)
     val trialRecords =
       result.trials.flatMap { trial =>
         val ts = trial.timeSeries.flatMap { point =>
-          MonteCarloAggregation.timeSeriesMetrics.map { (name, extract) =>
+          timeSeriesMetrics.map { (name, extract) =>
             DemoRecord.TrialTimeSeries(result.scenarioId, trial.trialId, point.tick, name, extract(point))
           }
         }
-        val summary = MonteCarloAggregation.summaryMetrics.map { (name, extract) =>
+        val summary = summaryMetrics.map { (name, extract) =>
           DemoRecord.TrialSummary(result.scenarioId, trial.trialId, name, extract(trial.summary))
         }
         ts ++ summary

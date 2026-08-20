@@ -53,7 +53,6 @@ final class OrderTrackingTrialRunner(
     )
 
     graph.run().map { consumption =>
-      val initialStorageBytes = config.initialItemCount * config.initialAverageItemBytes
-      val (summary, series)   = TrialAccounting.account(consumption, initialStorageBytes, rates)
+      val (summary, series) = TrialAccounting.account(consumption, config.initialStorageBytesAllTargets, rates)
       OrderTrackingTrialResult(trialId, series, summary)
     }
