@@ -22,7 +22,8 @@ import stochastacy.core.sampler.PoissonSampler
  */
 final class OrderTrackingBehavior(config: OrderTrackingConfig) extends TableBehavior:
 
-  def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider): OperationOutcome =
+  // `tick` is unused — order-tracking's draws are tick-independent.
+  def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider, tick: Long): OperationOutcome =
     request match
       case GetItemRequest =>
         val bytes =

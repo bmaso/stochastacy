@@ -43,10 +43,11 @@ object TableSummaryState:
 
 /**
  * The whole table's threaded state: the base table's summary plus one summary per secondary index (keyed
- * by index name). This is the `DynamoDbTable` sampler's state and its materialized value; a table with no
+ * by index name), and the current tick (advanced at each tick boundary so a time-dependent behavior can
+ * read it). This is the `DynamoDbTable` sampler's state and its materialized value; a table with no
  * indexes carries an empty `indexes` map and behaves exactly as the base summary alone.
  */
-final case class TableState(base: TableSummaryState, indexes: Map[String, TableSummaryState]):
+final case class TableState(base: TableSummaryState, indexes: Map[String, TableSummaryState], currentTick: Long = 0L):
   /** The summary of the index named `indexName` (empty if unknown). */
   def index(indexName: String): TableSummaryState = indexes.getOrElse(indexName, TableSummaryState.empty)
 
