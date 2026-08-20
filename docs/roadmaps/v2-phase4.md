@@ -56,7 +56,7 @@ exercise projection-sized maintenance that order-tracking (All-only) did not.
 |---|---|---|---|
 | 1 | Shared single-table demo harness (refactor) | **Done** | all 88 tests + both gates unchanged; generic harness in `demo` pkg |
 | 2 | Thread the current tick to `TableBehavior` | **Done** | tick threaded but unused; all 88 tests + both gates unchanged |
-| 3 | Thermostat behavior + config | Planned | insert/update ratio tracks fleet saturation; read-shape ranges |
+| 3 | Thermostat behavior + config | **Done** | fleet-saturation insert/update (grows w/ tick); query 2–10 / scan 50–250; projection-correct read bytes; 97 tests |
 | 4 | Thermostat workload + demo end-to-end | Planned | end-to-end trial: base + 3 GSI + 1 LSI maintenance + per-GSI reporting |
 | 5 | Temporal shapes (spikes / vortex / bursts) | Planned | rate profile over ticks; determinism |
 | 6 | Reconciliation gate + docs + close-out | Planned | v2 vs captured legacy baseline (writes/maintenance equivalent; GSI-read divergence quantified); phase COMPLETE |
@@ -115,6 +115,19 @@ saturation** `(fleetSize − itemCount)/fleetSize`, a query on `customer-devices
 
 **Validated by:** behavior unit tests — insert/update ratio tracks saturation, read-shape ranges, item
 bytes within ±variance. Resolves **DD-system-error**, **DD-initial-state**.
+
+**Delivered.** New package `stochastacy.aws.examples.thermostatfleet`: `ThermostatConfig` (fleet /
+telemetry / read params + a `singleRegionDefault` = 3000 devices, 0.25 growth, 300 B ±25 %, 0.033
+reports/device, 100 trials × 1200 ticks) `extends SingleTableScenario` — the 3 GSIs (`customer-devices`
+KeysOnly, `fleet-alerts` Include(64), `device-status` All) + LSI (`reading-type-history` All),
+`initialTableState = empty`, seed 0 (DD-initial-state: starts empty, fills up); `arrivals` throws until
+Slice 4. `ThermostatFleetBehavior` — telemetry write is insert/overwrite by fleet saturation
+`(fleetSize(tick) − itemCount)/fleetSize(tick)` (uses the Slice-2 tick; write bytes come from the request,
+drawn by the Slice-4 workload), a customer-devices query (2–10) and a fleet-alerts scan (50–250), read
+bytes from the **passed target** state (projection-correct). `ThermostatFleetBehaviorSpec` (9): empty →
+all inserts, saturated → all overwrites, partial ≈ pNew, inserts grow with tick; query/scan ranges;
+KeysOnly-projected read bytes; config indexes. `aws` 97 tests green; whole build compiles; no existing code
+changed (order-tracking trivially unaffected); no legacy touched.
 
 ### Slice 4 — Thermostat workload (fleet-scaled, constant per-device) + demo end-to-end
 
