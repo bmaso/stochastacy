@@ -85,3 +85,43 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
       } shouldBe 1.0
     }
   }
+
+  "OrderTrackingBehavior — reads (improved model)" should {
+    val strong   = ReadConsistency.StronglyConsistent
+    val eventual = ReadConsistency.EventuallyConsistent
+    val rng      = RandomSource.KISS.create(3L)
+
+    "make a scan evaluate the whole target it is handed (count + projected total bytes)" in {
+      behavior.outcomeFor(ScanRequest(DynamoDbTarget.Table, strong), populated, rng) match
+        case OperationOutcome.Scan(target, consistency, shape) =>
+          target      shouldBe DynamoDbTarget.Table
+          consistency shouldBe strong
+          shape.evaluatedItemCount shouldBe 100L
+          shape.evaluatedBytes     shouldBe populated.totalItemBytes // 100 x 768 = 76800
+          shape.returnedItemCount  should be <= shape.evaluatedItemCount
+        case other => fail(s"expected a Scan, got $other")
+    }
+
+    "make a query evaluate a bounded page, sized by the target's average, echoing its target/consistency" in {
+      val gsi = DynamoDbTarget.Gsi("customerId-status")
+      (0 until 1000).foreach { _ =>
+        behavior.outcomeFor(QueryRequest(gsi, eventual), populated, rng) match
+          case OperationOutcome.Query(target, consistency, shape) =>
+            target      shouldBe gsi
+            consistency shouldBe eventual
+            shape.evaluatedItemCount should (be >= 1L and be <= 100L)   // >= 1, capped at the population
+            shape.evaluatedBytes     shouldBe shape.evaluatedItemCount * 768L
+            shape.returnedItemCount  should be <= shape.evaluatedItemCount
+          case other => fail(s"expected a Query, got $other")
+      }
+    }
+
+    "yield a zero shape when the target is empty" in {
+      behavior.outcomeFor(ScanRequest(DynamoDbTarget.Table, strong), emptyTable, rng) match
+        case OperationOutcome.Scan(_, _, shape) => shape shouldBe TableMechanics.ReadShape(0L, 0L, 0L, 0L)
+        case other => fail(s"expected a Scan, got $other")
+      behavior.outcomeFor(QueryRequest(DynamoDbTarget.Table, strong), emptyTable, rng) match
+        case OperationOutcome.Query(_, _, shape) => shape shouldBe TableMechanics.ReadShape(0L, 0L, 0L, 0L)
+        case other => fail(s"expected a Query, got $other")
+    }
+  }

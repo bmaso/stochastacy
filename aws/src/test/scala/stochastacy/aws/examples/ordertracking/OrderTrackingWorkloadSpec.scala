@@ -4,7 +4,7 @@ import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
-import stochastacy.aws.dynamodb.{DeleteItemRequest, DynamoDbRequest, GetItemRequest, PutItemRequest, UpdateItemRequest}
+import stochastacy.aws.dynamodb.{DeleteItemRequest, DynamoDbRequest, DynamoDbTarget, GetItemRequest, PutItemRequest, QueryRequest, ReadConsistency, ScanRequest, UpdateItemRequest}
 import stochastacy.core.component.Timed
 import stochastacy.sim.ticks
 
@@ -14,7 +14,8 @@ class OrderTrackingWorkloadSpec extends AnyWordSpec with should.Matchers:
     OrderTrackingWorkload.arrivals(config, RandomSource.KISS.create(seed))
 
   // A long run so per-flow empirical means are stable.
-  private val longConfig = OrderTrackingConfig.phase1Default.copy(simulationTicks = 4000L)
+  private val longConfig  = OrderTrackingConfig.phase1Default.copy(simulationTicks = 4000L)
+  private val longIndexed = OrderTrackingConfig.indexedDefault.copy(simulationTicks = 4000L)
 
   "OrderTrackingWorkload.arrivals" should {
 
@@ -63,5 +64,41 @@ class OrderTrackingWorkloadSpec extends AnyWordSpec with should.Matchers:
 
     "be deterministic under a fixed seed" in {
       run(longConfig, seed = 7L) shouldBe run(longConfig, seed = 7L)
+    }
+
+    "emit no query or scan flows for the non-indexed default" in {
+      val arrivals = run(longConfig, seed = 8L)
+      arrivals.collect { case Timed(_: QueryRequest, _, _, _) => () } shouldBe empty
+      arrivals.collect { case Timed(_: ScanRequest, _, _, _) => () }  shouldBe empty
+    }
+  }
+
+  "OrderTrackingWorkload.arrivals — indexed scenario" should {
+    val gsi1 = DynamoDbTarget.Gsi("customerId-status")
+    val gsi2 = DynamoDbTarget.Gsi("sellerId-createdAt")
+
+    "emit base and per-GSI query/scan flows at the configured rates" in {
+      val arrivals = run(longIndexed, seed = 1L)
+      val ticks    = longIndexed.simulationTicks.toDouble
+      def meanPerTick(pf: DynamoDbRequest => Boolean): Double = arrivals.count(a => pf(a.event)) / ticks
+
+      meanPerTick { case QueryRequest(DynamoDbTarget.Table, _) => true; case _ => false } shouldBe (0.8 +- 0.1)
+      meanPerTick { case ScanRequest(DynamoDbTarget.Table, _)  => true; case _ => false } shouldBe (0.25 +- 0.1)
+      meanPerTick { case QueryRequest(`gsi1`, _) => true; case _ => false }               shouldBe (0.75 +- 0.1)
+      meanPerTick { case QueryRequest(`gsi2`, _) => true; case _ => false }               shouldBe (0.75 +- 0.1)
+      meanPerTick { case ScanRequest(`gsi1`, _)  => true; case _ => false }               shouldBe (0.30 +- 0.1)
+      meanPerTick { case ScanRequest(`gsi2`, _)  => true; case _ => false }               shouldBe (0.30 +- 0.1)
+    }
+
+    "read the base strongly and GSIs eventually, and never target the LSI" in {
+      val arrivals = run(longIndexed, seed = 2L)
+      val reads = arrivals.collect {
+        case Timed(q: QueryRequest, _, _, _) => (q.target, q.consistency)
+        case Timed(s: ScanRequest, _, _, _)  => (s.target, s.consistency)
+      }
+      reads should not be empty
+      all(reads.collect { case (DynamoDbTarget.Table, c) => c })    shouldBe ReadConsistency.StronglyConsistent
+      all(reads.collect { case (_: DynamoDbTarget.Gsi, c) => c })   shouldBe ReadConsistency.EventuallyConsistent
+      reads.collect { case (_: DynamoDbTarget.Lsi, _) => () }       shouldBe empty
     }
   }

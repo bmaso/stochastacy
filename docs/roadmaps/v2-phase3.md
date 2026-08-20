@@ -86,7 +86,7 @@ storage per the phase-2 initial-storage correction).
 | 1 | Query/Scan + read-shapes on the base table | **Done** | read RCU from evaluated bytes vs hand-computed; `target` dimension; phase-1 gate green; 64 tests |
 | 2 | `SecondaryIndexMechanics` + index config + write-side maintenance | **Done** | base write emits target-tagged per-index maintenance (GSI/LSI); composite state evolves; 72 tests |
 | 3 | Read routing — a read consults its target's state | **Done** | GSI scan reads the index's projected state (not base); RCU tagged; 73 tests |
-| 4 | Indexed behavior (improved reads) + workload + demo config | Planned | scan = whole target; query selectivity; per-target flow means ≈ λ; end-to-end indexed trial |
+| 4 | Indexed behavior (improved reads) + workload + demo config | **Done** | scan = whole target; query selectivity; per-target flow means ≈ λ; end-to-end indexed trial; 80 tests |
 | 5 | Per-index reporting + MC + JSONL + `@main` | Planned | per-index records w/ legacy names + counts; reproducible + parallelism-independent |
 | 6 | Reconciliation gate + docs + close-out | Planned | equivalence on writes/gets; read-model divergence quantified; phase COMPLETE |
 
@@ -189,6 +189,20 @@ each GSI.
 **Validated by:** per-target flow means ≈ λ; scan evaluates the whole target while a query evaluates a
 bounded page (both ≥ returned); one indexed trial runs end-to-end producing base *and* per-index
 consumption.
+
+**Delivered.** `OrderTrackingConfig` gains `globalSecondaryIndexes`/`localSecondaryIndexes`, the four read
+rates, `queryEvaluatedItemsMean` (3.0) + `returnedFraction` (0.7) — all **defaulted so `phase1Default` is
+untouched** — and an `indexedDefault` (scenario `order-tracking-indexed`: GSIs `customerId-status` +
+`sellerId-createdAt`, LSI `createdAt-priority`, `All` projection; base query 0.8 / scan 0.25; per-GSI
+query 0.75 / scan 0.30). `OrderTrackingBehavior` replaces the Slice-1 `throw` with the improved read
+shapes over the **passed (target) state**: `scanShape` = whole target (`itemCount`, exact projected
+`totalItemBytes`), `queryShape` = `min(population, max(1, Poisson(mean)))` items × projected avg bytes,
+returned = `returnedFraction` of evaluated (cosmetic), empty target → zero shape. `OrderTrackingWorkload`
+emits base (strong) + per-GSI (eventual) query/scan flows; `Poisson(0)` draws no rng so `phase1Default`'s
+stream is byte-identical (gate green). `OrderTrackingTrialRunner` passes the config's indexes to
+`DynamoDbTable.Config`. Tests (+7): behavior scan/query/empty shapes; workload per-target means ≈ λ +
+consistency + LSI-never + no-reads-for-phase1; runner indexed end-to-end smoke. `aws` 80 tests green;
+whole build compiles; phase-1 gate green; no legacy file touched.
 
 ### Slice 5 — Per-index reporting, aggregation, JSONL, `@main`
 

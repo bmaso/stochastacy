@@ -34,9 +34,11 @@ final class OrderTrackingTrialRunner(
     val framed   = TickFraming.frame(arrivals.iterator, config.simulationTicks).toVector
 
     val tableConfig = DynamoDbTable.Config(
-      initialState = config.initialTableState,
-      behavior     = new OrderTrackingBehavior(config),
-      latency      = latency
+      initialState           = config.initialTableState,
+      behavior               = new OrderTrackingBehavior(config),
+      latency                = latency,
+      globalSecondaryIndexes = config.globalSecondaryIndexes,
+      localSecondaryIndexes  = config.localSecondaryIndexes
     )
 
     val graph = RunnableGraph.fromGraph(
