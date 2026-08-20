@@ -38,36 +38,44 @@ multi-region capstone.
 
 ## Planned — to parity, then retirement
 
-Ordering is smallest-leap-first; phases 4–6 are largely independent feature-depth increments that the
-capstone (7) then integrates, so their relative order can shift by priority.
+Ordering is smallest-leap-first, and every phase keeps a **clean legacy reconcile**. The thermostat domain
+(a telemetry behavior + workload) leads, because the remaining legacy demos — including the multi-table one
+— are all *thermostat* scenarios; porting the single-table thermostat demo first (no engine changes) gives
+every later phase a legacy scenario to reconcile against. Feature-depth phases (6–7) are largely
+independent and the capstone (8) integrates them, so their relative order can shift by priority.
 
-- **v2/phase4 — Multi-table composition.** Compose several v2 `DynamoDbTable`s (on-demand + indexed —
-  everything we have today) into one simulation; per-table + overall reporting (the legacy `Table:<name>:…`
-  metric names); a workload router. Proves `MultiTableScenarioConfig`. This cashes in the "table is the
-  composable unit" design; the smallest leap, and it erects the capstone's skeleton.
-- **v2/phase5 — Provisioned capacity + throttling + auto-scaling.** Provisioned billing (capacity-hour
+- **v2/phase4 — Thermostat single-table demo (single-region).** Port the single-region
+  `ThermostatFleetScenarioConfig`: **one on-demand `device-telemetry` table + 2 GSIs + the thermostat
+  telemetry behavior / workload**, on the existing indexed table (Query/Scan + GSIs). **No engine
+  changes** — a new demo *domain* only. Proves the single-region thermostat scenario, and introduces the
+  thermostat behavior/workload that every later phase reuses.
+- **v2/phase5 — Multi-table composition.** Compose several v2 `DynamoDbTable`s (the now-available thermostat
+  tables) into one simulation; per-table + overall reporting (the legacy `Table:<name>:…` metric names).
+  Proves `MultiTableScenarioConfig`. Cashes in the "table is the composable graph-level unit" design and
+  erects the capstone's skeleton.
+- **v2/phase6 — Provisioned capacity + throttling + auto-scaling.** Provisioned billing (capacity-hour
   cost), **throttling** (requests over per-tick capacity are rejected), then auto-scaling (capacity tracks
   utilization). **Central decision:** throttling via an `Interface.wrap` gate vs. internal admission — the
   fork deferred since phase-2; the gate machinery was built for exactly this.
-- **v2/phase6 — TTL + transactions.** Item **TTL** expiry (frees storage over ticks) and **transactions**
+- **v2/phase7 — TTL + transactions.** Item **TTL** expiry (frees storage over ticks) and **transactions**
   (`TransactWriteItems` / `TransactGetItems`, 2× capacity, atomic multi-item) — two mostly-independent
   single-table capability slices. Proves the Telemetry (TTL) and Commands (transaction) patterns.
-- **v2/phase7 — Thermostat-fleet capstone (single-region).** Assemble the full **4-table fleet** (Registry
+- **v2/phase8 — Thermostat-fleet capstone (single-region).** Assemble the full **4-table fleet** (Registry
   on-demand+GSIs, Telemetry provisioned+auto-scaling+TTL, Commands transactions, Alerts spike) with a
   **time-varying "polar-vortex" workload** (tick-varying rates are already expressible with the core
   samplers — config, not engine). Proves `ThermostatFleetCapstoneConfig` (single-region) — the integration
   proof.
-- **v2/phase8 — Multi-region / global tables.** Cross-region **replication** (global tables →
+- **v2/phase9 — Multi-region / global tables.** Cross-region **replication** (global tables →
   `ReplicatedWriteCapacityConsumed`), cross-region **transfer** bytes/cost, per-region metrics. Proves the
   multi-region thermostat scenarios.
-- **v2/phase9 — Grafana delivery + legacy retirement.** Port the `generate → stage → view` Postgres/Grafana
+- **v2/phase10 — Grafana delivery + legacy retirement.** Port the `generate → stage → view` Postgres/Grafana
   pipeline to the v2 demos (likely a separate `aws-grafana` bridge module — the `aws` module is
   deliberately JDBC-free); then **delete the legacy `stochastacy.aws` code and the legacy `examples`
   demos** once parity is confirmed everywhere.
 
-**Reorder notes.** The polar-vortex spike is not its own phase (workload config). Grafana delivery (phase 9)
-is orthogonal to the simulation features and can be pulled forward as a standalone bridge phase whenever
-visualization is wanted. Legacy retirement is the finish line — only after every legacy demo has a
+**Reorder notes.** The polar-vortex spike is not its own phase (workload config). Grafana delivery
+(phase 10) is orthogonal to the simulation features and can be pulled forward as a standalone bridge phase
+whenever visualization is wanted. Legacy retirement is the finish line — only after every legacy demo has a
 reconciled v2 counterpart.
 
 ## Modules at parity
