@@ -73,6 +73,52 @@ and time-series paths disagree on their accrual count, so it carries no clean si
 
 ---
 
+## Indexed Order-Tracking (Query/Scan + secondary indexes)
+
+A second scenario, `indexedDefault`, extends the same table with the read side of an order-tracking
+service: **Query and Scan** over **two GSIs** — `customerId-status` (a customer's orders by status) and
+`sellerId-createdAt` (a seller's orders by time) — and **one LSI**, `createdAt-priority`. It re-implements
+the legacy `order-tracking-phase2` scenario.
+
+### What it adds
+- **Secondary indexes, declared on the table.** Each write fans out maintenance to every index (its own
+  WCU + storage, GSI asynchronously / LSI synchronously), sized by the index's projection (`All` here).
+  Indexes are configured on the `DynamoDbTable`, never wired as graph nodes — see the
+  [AWS component catalog](aws-component-catalog.md#dynamodbtable).
+- **Query/Scan with per-index metrics.** Reads target the base table or a GSI (GSI reads are eventually
+  consistent). The JSONL breaks out per-GSI capacity under the legacy names
+  `GSI:<name>:ReadCapacityUnits` / `WriteCapacityUnits` (and `Total…`).
+
+### The improved read model (why v2 diverges from legacy, on purpose)
+A read consults **the target's own state**: a **scan evaluates the whole target** (its item count and
+projected bytes — so scan cost *grows with the table*), and a **query** evaluates a bounded page (a Poisson
+selectivity draw capped at the target's population). The legacy modeled every read as a capped few items
+(4–6) off the base table's size — so its scan cost never grew with the data, and projection was ignored.
+We deliberately fixed this; the assumptions are explicit config (`queryEvaluatedItemsMean`,
+`returnedFraction`), not magic constants.
+
+### Reconciliation with legacy
+Because the read model changed on purpose, the gate (`OrderTrackingIndexedReconciliationSpec`) is a
+**reconciliation, not a blind match** — equivalence on the faithful path, quantified divergence where we
+improved (100 trials × 30 ticks):
+
+| metric | v2 vs legacy | verdict |
+|---|---|---|
+| total **write** capacity units | **−1.5%** (band ±5%) | equivalent — writes + index maintenance replicate the legacy math |
+| per-GSI **write** capacity units | **−1.6%** (band ±10%) | equivalent — index maintenance matches |
+| total **read** capacity units | **+41%** | *deliberate* — scans now read the whole target |
+| final storage bytes | ≈ legacy **+ all-targets initial** (≈30.7 KB), within ±15% | *corrected* — v2 bills every target's pre-loaded storage the legacy dropped |
+| total estimated cost | **+1.7%** | mostly write-driven; the read divergence is a small share of the bill |
+
+### Running it
+```bash
+sbt 'aws/runMain stochastacy.aws.examples.ordertracking.IndexedOrderTrackingDemo --output /tmp/order-tracking-indexed.jsonl --trials 100 --ticks 30 --seed 1'
+```
+Same flags as the Phase-1 demo; the console summary adds a per-GSI RCU/WCU line. To run the reconciliation
+gate: `sbt 'aws/testOnly stochastacy.aws.examples.ordertracking.OrderTrackingIndexedReconciliationSpec'`.
+
+---
+
 ## 3. Running the demo
 
 No external services — the demo writes JSONL plus a console summary.

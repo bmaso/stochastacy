@@ -25,6 +25,7 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
   override def afterAll(): Unit = system.terminate()
 
   private val strong = ReadConsistency.StronglyConsistent
+  private val Table  = DynamoDbTarget.Table
 
   /** A deterministic behavior driven by a fixed script of outcomes, one per request (in order). The
    *  real stochastic behavior arrives in Slice 3; here we pin outcomes so the mechanics are exactly
@@ -34,12 +35,23 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
     def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider): OperationOutcome =
       it.next()
 
+  /** A stateless behavior that turns whatever state it is handed into a whole-target read shape — used to
+   *  observe *which* state the sampler routes a read to. */
+  private final class StateReadingBehavior extends TableBehavior:
+    def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider): OperationOutcome =
+      request match
+        case q: QueryRequest => OperationOutcome.Query(q.target, q.consistency, shapeOf(state))
+        case s: ScanRequest  => OperationOutcome.Scan(s.target, s.consistency, shapeOf(state))
+        case _               => OperationOutcome.Get(None, ReadConsistency.StronglyConsistent)
+    private def shapeOf(s: TableSummaryState): TableMechanics.ReadShape =
+      TableMechanics.ReadShape(s.itemCount, s.totalItemBytes, s.itemCount, s.totalItemBytes)
+
   private def config(
     behavior:     TableBehavior,
     initialState: TableSummaryState = TableSummaryState.initial(10L, 768L),
     latency:      Double            = 0.5
   ): DynamoDbTable.Config =
-    DynamoDbTable.Config(initialState, behavior, ConstantSampler(latency), strong)
+    DynamoDbTable.Config(initialState, behavior, ConstantSampler(latency))
 
   private def req(tick: Long, r: DynamoDbRequest): Timed[DynamoDbRequest] = Timed(r, SimTime.of(tick), 0.0, "orders")
 
@@ -75,7 +87,7 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
     cfg:   DynamoDbTable.Config,
     input: Vector[Timed[DynamoDbRequest]],
     ticks: Long
-  ): ComponentResult[TableSummaryState] =
+  ): ComponentResult[TableState] =
     val graph = RunnableGraph.fromGraph(
       GraphDSL.createGraph(DynamoDbTable.componentOf(cfg, RandomSource.KISS.create(1L))) { implicit b => td =>
         import GraphDSL.Implicits.*
@@ -97,7 +109,7 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
 
     "return a get response after the latency delay, with capacity consumed at execution time" in {
       val (resp, cons) = runPlanes(
-        config(ScriptedBehavior(Seq(OperationOutcome.Get(Some(768L))))),
+        config(ScriptedBehavior(Seq(OperationOutcome.Get(Some(768L), strong)))),
         Vector(req(1L, GetItemRequest)),
         ticks = 3L
       )
@@ -107,7 +119,7 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
       r.head.intraTick       shouldBe 0.5     // latency applied to the response
 
       val c = consumptions(cons)
-      c.map(_.event)         shouldBe Seq(ReadCapacityConsumed(BigDecimal(1), strong))
+      c.map(_.event)         shouldBe Seq(ReadCapacityConsumed(BigDecimal(1), strong, Table))
       c.head.eventTime.ticks shouldBe 1L      // consumption at execution time...
       c.head.intraTick       shouldBe 0.0     // ...delay 0, no latency
     }
@@ -120,7 +132,7 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
       )
       responses(resp).map(_.event) shouldBe Seq(PutItemResponse(storedItemBytes = 800L, createdNewItem = true, previousItemBytes = None))
       consumptions(cons).map(_.event) should contain theSameElementsAs
-        Seq(WriteCapacityConsumed(BigDecimal(1)), StorageBytesDelta(800L))
+        Seq(WriteCapacityConsumed(BigDecimal(1), Table), StorageBytesDelta(800L, Table))
     }
 
     "thread table state across a sequence of operations (final state in the materialized value)" in {
@@ -135,13 +147,34 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
         ticks = 5L
       )
       // 7680 +800 +132 -768 = 7844 bytes; 10 +1 -1 = 10 items
-      result.finalState    shouldBe TableSummaryState(10L, 7844L)
-      result.residue.total shouldBe 0L
+      result.finalState.base shouldBe TableSummaryState(10L, 7844L)
+      result.residue.total   shouldBe 0L
+    }
+
+    "maintain a GSI and an LSI on a base write (per-index facts, tagged and delayed; index state evolves)" in {
+      // a fresh config per materialization — the scripted behavior's iterator is single-use
+      def cfg = config(ScriptedBehavior(Seq(OperationOutcome.Put(writtenItemBytes = 800L, previousItemBytes = None))))
+        .withGlobalSecondaryIndex(GlobalSecondaryIndex("customerId-status")) // All projection; async delay 0 (default)
+        .withLocalSecondaryIndex(LocalSecondaryIndex("createdAt-priority"))  // All projection; synchronous
+
+      val (_, cons) = runPlanes(cfg, Vector(req(1L, PutItemRequest(800L))), ticks = 3L)
+      // base put + one insert per index (All projection: entry = 800 bytes -> 1 WCU, +800 storage), tagged by target
+      consumptions(cons).map(_.event) should contain theSameElementsAs Seq(
+        WriteCapacityConsumed(BigDecimal(1), Table), StorageBytesDelta(800L, Table),
+        WriteCapacityConsumed(BigDecimal(1), DynamoDbTarget.Gsi("customerId-status")), StorageBytesDelta(800L, DynamoDbTarget.Gsi("customerId-status")),
+        WriteCapacityConsumed(BigDecimal(1), DynamoDbTarget.Lsi("createdAt-priority")), StorageBytesDelta(800L, DynamoDbTarget.Lsi("createdAt-priority"))
+      )
+
+      // final state: base 11 items / 8480 bytes; each index seeded from 10 base items (All -> 7680) + this insert
+      val result = runResult(cfg, Vector(req(1L, PutItemRequest(800L))), ticks = 3L)
+      result.finalState.base                       shouldBe TableSummaryState(11L, 8480L)
+      result.finalState.index("customerId-status") shouldBe TableSummaryState(11L, 8480L)
+      result.finalState.index("createdAt-priority") shouldBe TableSummaryState(11L, 8480L)
     }
 
     "preserve control events, ending both planes with EndOfTime" in {
       val (resp, cons) = runPlanes(
-        config(ScriptedBehavior(Seq(OperationOutcome.Get(None)))),
+        config(ScriptedBehavior(Seq(OperationOutcome.Get(None, strong)))),
         Vector(req(1L, GetItemRequest)),
         ticks = 3L
       )
@@ -149,10 +182,39 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
       cons.last shouldBe EndOfTime
     }
 
+    "serve a query: response carries the read shape, RCU charged from evaluated bytes at execution time" in {
+      val shape = TableMechanics.ReadShape(evaluatedItemCount = 20L, evaluatedBytes = 20L * 768L, returnedItemCount = 12L, returnedBytes = 12L * 768L)
+      val (resp, cons) = runPlanes(
+        config(ScriptedBehavior(Seq(OperationOutcome.Query(Table, strong, shape)))),
+        Vector(req(1L, QueryRequest(Table, strong))),
+        ticks = 3L
+      )
+      responses(resp).map(_.event) shouldBe Seq(QueryResponse(20L, 15360L, 12L, 9216L))
+
+      val c = consumptions(cons)
+      c.map(_.event)         shouldBe Seq(ReadCapacityConsumed(BigDecimal(4), strong, Table)) // ceil(15360/4096)=4
+      c.head.eventTime.ticks shouldBe 1L
+      c.head.intraTick       shouldBe 0.0
+    }
+
+    "route a GSI read to the index's own (projected) state, not the base's" in {
+      val gsi = GlobalSecondaryIndex("g", IndexProjection.KeysOnly) // entries capped at 128 B
+      val cfg = config(new StateReadingBehavior()).withGlobalSecondaryIndex(gsi)
+      // base: 10 x 768 = 7680 B; GSI (KeysOnly): 10 x 128 = 1280 B (seeded from the base's 10 items)
+
+      val (baseResp, baseCons) = runPlanes(cfg, Vector(req(1L, ScanRequest(Table, strong))), ticks = 3L)
+      responses(baseResp).map(_.event)    shouldBe Seq(ScanResponse(10L, 7680L, 10L, 7680L))
+      consumptions(baseCons).map(_.event) shouldBe Seq(ReadCapacityConsumed(BigDecimal(2), strong, Table)) // ceil(7680/4096)=2
+
+      val (gsiResp, gsiCons) = runPlanes(cfg, Vector(req(1L, ScanRequest(DynamoDbTarget.Gsi("g"), strong))), ticks = 3L)
+      responses(gsiResp).map(_.event)    shouldBe Seq(ScanResponse(10L, 1280L, 10L, 1280L)) // GSI's projected bytes, not the base's
+      consumptions(gsiCons).map(_.event) shouldBe Seq(ReadCapacityConsumed(BigDecimal(1), strong, DynamoDbTarget.Gsi("g"))) // ceil(1280/4096)=1
+    }
+
     "be deterministic under a fixed seed" in {
       def once(): Seq[DynamoDbResponse] =
         val (resp, _) = runPlanes(
-          config(ScriptedBehavior(Seq(OperationOutcome.Get(Some(768L)), OperationOutcome.Delete(None)))),
+          config(ScriptedBehavior(Seq(OperationOutcome.Get(Some(768L), strong), OperationOutcome.Delete(None)))),
           Vector(req(1L, GetItemRequest), req(2L, DeleteItemRequest)),
           ticks = 4L
         )

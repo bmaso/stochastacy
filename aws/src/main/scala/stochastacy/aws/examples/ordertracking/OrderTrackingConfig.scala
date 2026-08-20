@@ -1,6 +1,6 @@
 package stochastacy.aws.examples.ordertracking
 
-import stochastacy.aws.dynamodb.{ReadConsistency, TableSummaryState}
+import stochastacy.aws.dynamodb.{GlobalSecondaryIndex, LocalSecondaryIndex, ReadConsistency, SecondaryIndex, SecondaryIndexMechanics, TableSummaryState}
 
 /**
  * The Order-Tracking demo scenario, re-created on the v2 core — a single on-demand DynamoDB table under
@@ -32,7 +32,15 @@ final case class OrderTrackingConfig(
   updateRatePerTick:         Double,
   deleteRatePerTick:         Double,
   putItemBytes:              ByteRange,
-  updateItemBytes:           ByteRange
+  updateItemBytes:           ByteRange,
+  globalSecondaryIndexes:    Vector[GlobalSecondaryIndex] = Vector.empty,
+  localSecondaryIndexes:     Vector[LocalSecondaryIndex]  = Vector.empty,
+  baseQueryRatePerTick:      Double = 0.0,
+  baseScanRatePerTick:       Double = 0.0,
+  gsiQueryRatePerTick:       Double = 0.0, // applied to each GSI
+  gsiScanRatePerTick:        Double = 0.0, // applied to each GSI
+  queryEvaluatedItemsMean:   Double = 3.0, // mean "page" a query evaluates (bounded by the target's population)
+  returnedFraction:          Double = 0.7  // fraction of evaluated items returned (cosmetic — RCU is on evaluated)
 ):
   require(scenarioId.nonEmpty,                       "scenarioId must be non-empty")
   require(tableName.nonEmpty,                        "tableName must be non-empty")
@@ -48,10 +56,27 @@ final case class OrderTrackingConfig(
   require(getRatePerTick >= 0.0,                     "getRatePerTick must be non-negative")
   require(updateRatePerTick >= 0.0,                  "updateRatePerTick must be non-negative")
   require(deleteRatePerTick >= 0.0,                  "deleteRatePerTick must be non-negative")
+  require(baseQueryRatePerTick >= 0.0,               "baseQueryRatePerTick must be non-negative")
+  require(baseScanRatePerTick >= 0.0,                "baseScanRatePerTick must be non-negative")
+  require(gsiQueryRatePerTick >= 0.0,                "gsiQueryRatePerTick must be non-negative")
+  require(gsiScanRatePerTick >= 0.0,                 "gsiScanRatePerTick must be non-negative")
+  require(queryEvaluatedItemsMean >= 0.0,            "queryEvaluatedItemsMean must be non-negative")
+  require(isProbability(returnedFraction),           "returnedFraction must be between 0 and 1")
 
   /** The table's starting summary state. */
   def initialTableState: TableSummaryState =
     TableSummaryState.initial(initialItemCount, initialAverageItemBytes)
+
+  /** All secondary indexes declared on the table, GSIs then LSIs. */
+  def secondaryIndexes: Vector[SecondaryIndex] = globalSecondaryIndexes ++ localSecondaryIndexes
+
+  /** The pre-loaded storage across *all* targets: the base's items plus each index's projected initial
+   *  contents — the seed the trial accounting bills from (so index storage is counted too). */
+  def initialStorageBytesAllTargets: Long =
+    val base = initialItemCount * initialAverageItemBytes
+    base + secondaryIndexes.map { idx =>
+      initialItemCount * SecondaryIndexMechanics.projectedEntryBytes(Some(initialAverageItemBytes), idx.projection).getOrElse(0L)
+    }.sum
 
   private def isProbability(value: Double): Boolean = value >= 0.0 && value <= 1.0
 
@@ -81,4 +106,17 @@ object OrderTrackingConfig:
       deleteRatePerTick         = 0.4,
       putItemBytes              = ByteRange(672L, 1120L),
       updateItemBytes           = ByteRange(768L, 1280L)
+    )
+
+  /** The Indexed Order-Tracking scenario — Phase-1's writes/gets plus Query/Scan over two GSIs and one
+   *  LSI (the `order-tracking-phase2` equivalent). GSIs/LSI use the default `All` projection. */
+  val indexedDefault: OrderTrackingConfig =
+    phase1Default.copy(
+      scenarioId             = "order-tracking-indexed",
+      globalSecondaryIndexes = Vector(GlobalSecondaryIndex("customerId-status"), GlobalSecondaryIndex("sellerId-createdAt")),
+      localSecondaryIndexes  = Vector(LocalSecondaryIndex("createdAt-priority")),
+      baseQueryRatePerTick   = 0.8,
+      baseScanRatePerTick    = 0.25,
+      gsiQueryRatePerTick    = 0.75,
+      gsiScanRatePerTick     = 0.30
     )

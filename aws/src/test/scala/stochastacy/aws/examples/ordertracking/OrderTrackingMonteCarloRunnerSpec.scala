@@ -42,7 +42,7 @@ class OrderTrackingMonteCarloRunnerSpec extends AnyWordSpec with should.Matchers
     "assign trial ids 0..n-1 and aggregate over the whole ensemble" in {
       val result = run(config, seed = 1L)
       result.trials.map(_.trialId) shouldBe (0 until trials).toVector
-      result.aggregateSummary.count(_.statistic == AggregateStatistic.Mean) shouldBe MonteCarloAggregation.summaryMetrics.size
+      result.aggregateSummary.count(_.statistic == AggregateStatistic.Mean) shouldBe MonteCarloAggregation.summaryMetrics(Vector.empty).size
     }
 
     "emit JSONL records in the expected counts" in {
@@ -57,6 +57,16 @@ class OrderTrackingMonteCarloRunnerSpec extends AnyWordSpec with should.Matchers
       count("trial-summary")         shouldBe trials * 5
       count("aggregate-time-series") shouldBe ticks.toInt * 4 * 2
       count("aggregate-summary")     shouldBe 5 * 2
+    }
+
+    "emit per-GSI aggregate records for the indexed scenario" in {
+      val indexed = OrderTrackingConfig.indexedDefault.copy(trialCount = 4, simulationTicks = 5, parallelism = 4)
+      val records = JsonlExport.records(run(indexed, seed = 1L))
+      def hasAggregateSummary(metric: String): Boolean =
+        records.exists { case r: DemoRecord.AggregateSummary => r.metric == metric; case _ => false }
+      hasAggregateSummary("GSI:customerId-status:TotalReadCapacityUnits")   shouldBe true
+      hasAggregateSummary("GSI:customerId-status:TotalWriteCapacityUnits")  shouldBe true
+      hasAggregateSummary("GSI:sellerId-createdAt:TotalWriteCapacityUnits") shouldBe true
     }
 
     "render well-formed JSONL, one JSON object per line" in {

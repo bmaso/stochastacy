@@ -4,7 +4,7 @@ import scala.collection.mutable
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{DeleteItemRequest, DynamoDbRequest, GetItemRequest, PutItemRequest, UpdateItemRequest}
+import stochastacy.aws.dynamodb.{DeleteItemRequest, DynamoDbRequest, DynamoDbTarget, GetItemRequest, PutItemRequest, QueryRequest, ReadConsistency, ScanRequest, UpdateItemRequest}
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.{PoissonSampler, UniformSampler}
 import stochastacy.sim.SimTime
@@ -26,6 +26,10 @@ object OrderTrackingWorkload:
     val deleteRate = PoissonSampler.constant(config.deleteRatePerTick)
     val putBytes    = UniformSampler.constant(config.putItemBytes.minBytes.toDouble,    config.putItemBytes.maxBytes.toDouble)
     val updateBytes = UniformSampler.constant(config.updateItemBytes.minBytes.toDouble, config.updateItemBytes.maxBytes.toDouble)
+    val baseQueryRate = PoissonSampler.constant(config.baseQueryRatePerTick)
+    val baseScanRate  = PoissonSampler.constant(config.baseScanRatePerTick)
+    val gsiQueryRate  = PoissonSampler.constant(config.gsiQueryRatePerTick)
+    val gsiScanRate   = PoissonSampler.constant(config.gsiScanRatePerTick)
 
     def bytesFrom(sampler: UniformSampler, tick: Long): Long =
       math.max(1L, math.round(sampler.sample(tick, rng, ())._1))
@@ -49,6 +53,16 @@ object OrderTrackingWorkload:
       emit(getRate.sample(tick, rng, ())._1,    () => GetItemRequest)
       emit(updateRate.sample(tick, rng, ())._1, () => UpdateItemRequest(bytesFrom(updateBytes, tick)))
       emit(deleteRate.sample(tick, rng, ())._1, () => DeleteItemRequest)
+
+      // Read flows: base reads at the table's consistency; GSI reads are always eventually consistent.
+      // (For the non-indexed default all read rates are 0, and Poisson(0) draws no rng — so the phase-1
+      // arrival stream is byte-identical.)
+      emit(baseQueryRate.sample(tick, rng, ())._1, () => QueryRequest(DynamoDbTarget.Table, config.readConsistency))
+      emit(baseScanRate.sample(tick, rng, ())._1,  () => ScanRequest(DynamoDbTarget.Table, config.readConsistency))
+      config.globalSecondaryIndexes.foreach { gsi =>
+        emit(gsiQueryRate.sample(tick, rng, ())._1, () => QueryRequest(gsi.target, ReadConsistency.EventuallyConsistent))
+        emit(gsiScanRate.sample(tick, rng, ())._1,  () => ScanRequest(gsi.target, ReadConsistency.EventuallyConsistent))
+      }
 
       perTick.sortInPlaceBy(_._1)
       perTick.foreach { case (phi, payload) => out += Timed(payload, SimTime.of(tick), phi, config.scenarioId) }

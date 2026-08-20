@@ -8,8 +8,9 @@ into your own simulator** — what each is, the properties it guarantees, when t
 pieces compose — as distinct from the [demo guides](README.ordertracking-v2.md), which explain what a
 particular simulation *shows* and how to run it.
 
-Scope today is **DynamoDB** (a single on-demand table). This catalog grows as the AWS line does; a second
-component (multi-table, multi-region) is expected with the thermostat-fleet capstone.
+Scope today is **DynamoDB** — a single on-demand table, now with **Query/Scan and secondary indexes**.
+This catalog grows as the AWS line does; multi-table / multi-region is expected with the thermostat-fleet
+capstone.
 
 ## How to read an entry
 
@@ -28,80 +29,132 @@ Each primary entry follows the same template as the core catalog:
 
 ### `DynamoDbTable`
 
-**Purpose.** Model a single DynamoDB table as a v2 component: turn a stream of requests into responses and
-the resource-consumption facts (capacity, storage) that price out to a bill.
+**Purpose.** Model a single DynamoDB table — with its secondary indexes — as a v2 component: turn a stream
+of requests into responses and the resource-consumption facts (capacity, storage) that price out to a bill.
 
 **Signature.**
 ```scala
-DynamoDbTable.componentOf(
-  config: DynamoDbTable.Config,   // initialState, behavior, latency, readConsistency
-  rng:    UniformRandomProvider
-): Graph[FanOutShape2[Timed[DynamoDbRequest], Timed[DynamoDbResponse], Timed[DynamoDbConsumption]],
-         Future[ComponentResult[TableSummaryState]]]
+DynamoDbTable.componentOf(config: DynamoDbTable.Config, rng: UniformRandomProvider)
+  : Graph[FanOutShape2[Timed[DynamoDbRequest], Timed[DynamoDbResponse], Timed[DynamoDbConsumption]],
+          Future[ComponentResult[TableState]]]
+
+final case class Config(
+  initialState:           TableSummaryState,         // the base table's pre-loaded contents
+  behavior:               TableBehavior,             // the injected domain (see below)
+  latency:                StatelessSampler[Double],  // per-op service latency, fractional ticks
+  globalSecondaryIndexes: Vector[GlobalSecondaryIndex] = Vector.empty,
+  localSecondaryIndexes:  Vector[LocalSecondaryIndex]  = Vector.empty)
+  // .withGlobalSecondaryIndex(…) / .withLocalSecondaryIndex(…) builders append indexes
 ```
 *(element types abbreviated; the wire carries `TimedElement[Timed[…]]`.)*
 
+**Configuration.** A table is configured, not wired: you give it its initial contents, a domain behavior,
+a latency distribution, and **declare its secondary indexes on it** (via the `with…SecondaryIndex`
+builders). Indexes are *intrinsic table structure* — a table *with* an index accepts different requests
+and bills differently — so they live in the `Config`, never as separate graph nodes. (There is no
+`readConsistency` knob: read consistency is a per-read domain decision the behavior bakes into each read.)
+
 **Properties.**
 - **Generic mechanics, injected domain.** The table owns the *mechanics* — capacity math, storage
-  evolution, response shaping — and takes the *domain* as a plug-in [`TableBehavior`](#tablebehavior).
-  The same component serves any single-table workload; the demo supplies order-tracking's behavior. (This
-  is the v2 counterpart to the legacy `DynamoDbTable` + `UseCaseSampler` split.)
-- **Stochastic-summary state.** State is a [`TableSummaryState`](#tablesummarystate) — an item count and a
-  total-bytes figure, average derived — not a per-key map. Cost is near-constant in request volume and
-  key-space size (the project's core modelling principle).
+  evolution, index maintenance, response shaping — and takes the *domain* as a plug-in
+  [`TableBehavior`](#tablebehavior) (the v2 counterpart to the legacy `DynamoDbTable` + `UseCaseSampler`
+  split). The same component serves any single-table workload.
+- **Composite stochastic-summary state.** State is a [`TableState`](#tablesummarystate--tablestate) — the
+  base [`TableSummaryState`](#tablesummarystate--tablestate) plus one summary per secondary index (each an
+  item count + total-bytes figure), never a per-key map. Cost is near-constant in request volume and
+  key-space size. The materialized value carries the **final `TableState`** (base + every index).
+- **Operations.** Point ops `GetItem` / `PutItem` / `UpdateItem` / `DeleteItem`, and multi-item reads
+  `Query` / `Scan` that carry a [`DynamoDbTarget`](#the-protocol) (the base table or a named index) and a
+  read consistency. Every consumption fact is **tagged with its target**, so per-index usage breaks out
+  downstream.
+- **Reads consult their target's own state.** A `Query`/`Scan` against a GSI/LSI is resolved against *that
+  index's* summary (its population and its projected entry size), not the base table's — the table routes
+  the target's state to the behavior. So a scan can be sized against the whole (projected) index and a
+  query's selectivity bounded by the index's population.
+- **Writes maintain the indexes.** A base write fans out to each index via
+  [`SecondaryIndexMechanics`](#secondaryindexmechanics): the index's entry is inserted / replaced /
+  deleted (per its projection), consuming the index's own WCU and moving its storage — **GSI maintenance
+  asynchronously** (a per-index propagation delay), **LSI synchronously**. Index summaries are seeded from
+  the base's pre-loaded items (projected) — the entries a fresh index over an existing table already holds.
 - **Two output planes.** One forward **response** per request (in-band — the response *is* the outcome),
-  and zero-or-more **consumption facts** ([`DynamoDbConsumption`](#the-protocol)) on the metric plane. The
-  materialized value carries the table's **final `TableSummaryState`**.
+  and zero-or-more target-tagged **consumption facts** ([`DynamoDbConsumption`](#the-protocol)) on the
+  metric plane.
 - **Execution-time metering, latency on the response.** Consumption is stamped at execution time
-  (`delay 0`) — capacity is consumed and storage changes when the operation runs — while the response is
-  delayed by a per-op service latency drawn from a `StatelessSampler[Double]`. Latency affects only
+  (`delay 0`, GSI maintenance at its propagation delay) — capacity is consumed and storage changes when
+  the operation runs — while the response is delayed by the per-op service latency. Latency affects only
   response timing, never a total.
 - **Deterministic & reproducible** — given the seed, output is identical (the mechanics are rng-free; all
   randomness is the behavior's and the latency sampler's).
 
-**When to use.** Estimate a DynamoDB table's capacity consumption, storage growth, and on-demand cost for
-a workload you can describe as a request mix — without provisioning anything or tracking per-item state.
+**When to use.** Estimate a DynamoDB table's (and its indexes') capacity consumption, storage growth, and
+on-demand cost for a workload you can describe as a request mix — without provisioning anything or tracking
+per-item state.
 
-**Composition.** The table is a **leaf**: requests in, responses + consumption out. Drive it with a
-tick-framed `Timed[DynamoDbRequest]` source (see [`OrderTrackingWorkload`](README.ordertracking-v2.md));
-fold the consumption plane downstream into usage totals and cost. Because it presents a `Req → Resp` edge,
-a core [`Interface.wrap`](component-catalog.md#interfacewrap) gate could later decorate it (e.g. to add
-throttling) — the natural v2 home for admission control, which this Phase-1 table deliberately omits.
+**Composition.** The table is a **leaf**, and the composable graph-level unit: requests in, responses +
+consumption out. Drive it with a tick-framed `Timed[DynamoDbRequest]` source (see
+[`OrderTrackingWorkload`](README.ordertracking-v2.md)) and fold the consumption plane downstream into usage
+totals and cost. A multi-table demo composes several `DynamoDbTable`s; **indexes never appear at graph
+level** — one consistent rule (*decoration for cross-cutting edge behavior; configuration for intrinsic
+table structure*). Because it presents a `Req → Resp` edge, a core
+[`Interface.wrap`](component-catalog.md#interfacewrap) gate could later decorate it to add throttling — the
+natural v2 home for admission control, which this table deliberately omits.
 
-**Scope (Phase-1).** On-demand billing with **no throughput cap → no throttling**, a single table, no
-GSI/LSI, and none of the advanced models (hot-partition, burst, adaptive, PITR, TTL, replication). Those
-belong to later phases.
+**Scope.** On-demand billing with **no throughput cap → no throttling**, a single table with Query/Scan +
+GSIs/LSIs, and none of the advanced models (provisioned/auto-scaling, hot-partition, burst, adaptive, PITR,
+TTL, replication). Those belong to later phases.
 
 **Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md); `aws/…/DynamoDbTableSpec.scala` (timed
-response + execution-time consumption, multi-request state threading, control-event preservation,
-determinism); the equivalence gate `OrderTrackingEquivalenceSpec.scala` (reproduces the legacy demo).
+response + execution-time consumption, state threading, GSI+LSI maintenance, read routing to a projected
+GSI, control-event preservation, determinism); the phase-1 `OrderTrackingEquivalenceSpec.scala` and the
+`OrderTrackingIndexedReconciliationSpec.scala` (reconcile against the legacy demos).
 
 ### Supporting types
 
 #### `TableBehavior`
 The injected domain seam: `outcomeFor(request, state, rng): TableMechanics.OperationOutcome`. Given a
-request and the current summary, it *draws what the operation did* — a read hit/miss and size, the bytes
-written, whether an item existed. All operation-level randomness lives here; the mechanics that follow are
-pure. Implement one per domain (the demo's is `OrderTrackingBehavior`).
+request and **the state of the target it hits** (the sampler routes it — base for writes/gets/table reads,
+the index's summary for a GSI/LSI read), it *draws what the operation did* — a read hit/miss and size, the
+bytes written, whether an item existed, or a read's shape (how many items/bytes were evaluated vs.
+returned). All operation-level randomness lives here; the mechanics that follow are pure. Implement one per
+domain (the demo's is `OrderTrackingBehavior`).
 
 #### `TableMechanics`
-The rng-free mechanics. `resolve(outcome, readConsistency, state): Resolution` maps an `OperationOutcome`
-(`Get` / `Put` / `Update` / `Delete`) to the response, the consumption facts, and the next state —
-computing RCU/WCU via `ThroughputMath` and the storage delta from the state transition. Being pure and
-seedless, it is exhaustively unit-testable without a graph.
+The rng-free base-table mechanics. `resolve(outcome, state): Resolution` maps an `OperationOutcome`
+(`Get` / `Put` / `Update` / `Delete` / `Query` / `Scan`, each carrying whatever it needs — reads their
+target + consistency + `ReadShape`) to the response, the target-tagged consumption facts, and the next
+state — RCU from a read's *evaluated* bytes, WCU/storage from a write. Pure and seedless, so exhaustively
+unit-testable without a graph.
 
-#### `TableSummaryState`
-Immutable `(itemCount, totalItemBytes)`, average derived; `applyWrite` / `applyDelete` are the pure
-transitions (matching the legacy recorder semantics). This is the functionally-threaded `ComponentSampler`
-state — the immutable v2 counterpart to the legacy mutable `SummaryTableState`.
+#### `SecondaryIndexMechanics`
+The rng-free index-maintenance mechanics — the sibling of `TableMechanics`, over an index's own
+`TableSummaryState`. `maintain(index, newBaseBytes, prevBaseBytes, indexState): Maintenance` projects the
+base write's new/previous item to index-entry sizes (per the index's `IndexProjection` — `All`, `KeysOnly`
+capped at a 128 B key floor, or `Include(n)`), decides insert / replace / delete / no-op, and returns the
+index's WCU + storage-delta (tagged with the index target) and its next state. GSI and LSI share this math;
+their only difference — asynchronous vs. synchronous timing — is applied by the caller.
+
+#### `TableSummaryState` / `TableState`
+`TableSummaryState` is an immutable `(itemCount, totalItemBytes)`, average derived, with pure
+`applyWrite` / `applyDelete` transitions — the summary of one store (the base table or one index).
+`TableState` is the whole-table state the sampler threads: the base summary plus one `TableSummaryState`
+per index (keyed by name), seeded from the base's projected items.
+
+#### `SecondaryIndex` / `IndexProjection`
+`GlobalSecondaryIndex(indexName, projection = All, propagationDelayTicks = 0.0)` and
+`LocalSecondaryIndex(indexName, projection = All)` — the value objects a table declares. A GSI is an
+independent sub-store maintained asynchronously (raise `propagationDelayTicks` to model eventual-consistency
+lag); an LSI shares the base partition and is maintained synchronously. `IndexProjection` (`All` /
+`KeysOnly` / `Include(nonKeyBytes)`) sets each index entry's size, and so its storage and maintenance cost.
 
 #### The protocol
 `DynamoDbRequest` (`GetItemRequest` / `PutItemRequest(itemBytes)` / `UpdateItemRequest(itemBytes)` /
-`DeleteItemRequest`) and `DynamoDbResponse` are **timeless** payloads — timing lives on the `Timed[E]`
-envelope. `DynamoDbConsumption` is the metric plane: `ReadCapacityConsumed(units, consistency)`,
-`WriteCapacityConsumed(units)`, `StorageBytesDelta(bytesDelta)`. `ReadConsistency` sets the RCU multiplier
-(strong ×1, eventual ×0.5), applied by `ThroughputMath` (4 KB read / 1 KB write chunks, one-chunk
-minimum).
+`DeleteItemRequest` / `QueryRequest(target, consistency)` / `ScanRequest(target, consistency)`) and
+`DynamoDbResponse` are **timeless** payloads — timing lives on the `Timed[E]` envelope. `DynamoDbTarget`
+(`Table` | `Gsi(name)` | `Lsi(name)`) names the store a request/fact concerns. `DynamoDbConsumption` is the
+metric plane, each fact tagged with its `target`: `ReadCapacityConsumed(units, consistency, target)`,
+`WriteCapacityConsumed(units, target)`, `StorageBytesDelta(bytesDelta, target)`. `ReadConsistency` sets the
+RCU multiplier (strong ×1, eventual ×0.5), applied by `ThroughputMath` (4 KB read / 1 KB write chunks,
+one-chunk minimum).
 
 ---
 
@@ -117,8 +170,11 @@ the [core component catalog](component-catalog.md#foundations); they are not rep
 | I want to… | Component |
 |---|---|
 | model a DynamoDB table's capacity + storage + on-demand cost | `DynamoDbTable` |
-| plug my domain's read/write outcomes into a table | implement `TableBehavior` |
+| add a secondary index to a table | `Config.withGlobalSecondaryIndex` / `withLocalSecondaryIndex` |
+| plug my domain's read/write/query outcomes into a table | implement `TableBehavior` |
 | check per-op RCU/WCU/storage without a graph | `TableMechanics.resolve` |
+| check an index's maintenance without a graph | `SecondaryIndexMechanics.maintain` |
+| choose how much of an item an index projects | `IndexProjection` (`All` / `KeysOnly` / `Include`) |
 | add throttling to a table (later) | a core `Interface.wrap` gate on the table's edge |
 
 ## See also

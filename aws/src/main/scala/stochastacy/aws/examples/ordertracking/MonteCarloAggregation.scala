@@ -8,16 +8,14 @@ package stochastacy.aws.examples.ordertracking
  */
 object MonteCarloAggregation:
 
-  /** The per-tick metrics, in export order: name → extractor. */
-  val timeSeriesMetrics: Vector[(String, TrialTimeSeriesPoint => BigDecimal)] = Vector(
+  private val baseTimeSeriesMetrics: Vector[(String, TrialTimeSeriesPoint => BigDecimal)] = Vector(
     ("ReadCapacityUnits",       (p: TrialTimeSeriesPoint) => p.readCapacityUnits),
     ("WriteCapacityUnits",      (p: TrialTimeSeriesPoint) => p.writeCapacityUnits),
     ("StorageBytes",            (p: TrialTimeSeriesPoint) => BigDecimal(p.storageBytes)),
     ("CumulativeEstimatedCost", (p: TrialTimeSeriesPoint) => p.cumulativeEstimatedCost)
   )
 
-  /** The summary metrics, in export order: name → extractor. */
-  val summaryMetrics: Vector[(String, TrialSummary => BigDecimal)] = Vector(
+  private val baseSummaryMetrics: Vector[(String, TrialSummary => BigDecimal)] = Vector(
     ("TotalReadCapacityUnits",  (s: TrialSummary) => s.totalReadCapacityUnits),
     ("TotalWriteCapacityUnits", (s: TrialSummary) => s.totalWriteCapacityUnits),
     ("TotalStorageByteTicks",   (s: TrialSummary) => BigDecimal(s.totalStorageByteTicks)),
@@ -25,14 +23,37 @@ object MonteCarloAggregation:
     ("TotalEstimatedCost",      (s: TrialSummary) => s.totalEstimatedCost)
   )
 
+  /** The GSI names present in the ensemble (sorted), for the per-GSI metric breakout. */
+  def gsiNames(trials: Vector[OrderTrackingTrialResult]): Vector[String] =
+    trials.flatMap(_.summary.gsiTotalReadCapacityUnits.keys).distinct.sorted
+
+  /** The per-tick metrics — base plus a per-GSI RCU/WCU pair — as the single source of truth for both the
+   *  per-trial and the aggregate records (metric names match the legacy `GSI:<name>:…`). */
+  def timeSeriesMetrics(gsiNames: Vector[String]): Vector[(String, TrialTimeSeriesPoint => BigDecimal)] =
+    baseTimeSeriesMetrics ++ gsiNames.flatMap { n =>
+      Vector(
+        (s"GSI:$n:ReadCapacityUnits",  (p: TrialTimeSeriesPoint) => p.gsiReadCapacityUnits.getOrElse(n, BigDecimal(0))),
+        (s"GSI:$n:WriteCapacityUnits", (p: TrialTimeSeriesPoint) => p.gsiWriteCapacityUnits.getOrElse(n, BigDecimal(0)))
+      )
+    }
+
+  def summaryMetrics(gsiNames: Vector[String]): Vector[(String, TrialSummary => BigDecimal)] =
+    baseSummaryMetrics ++ gsiNames.flatMap { n =>
+      Vector(
+        (s"GSI:$n:TotalReadCapacityUnits",  (s: TrialSummary) => s.gsiTotalReadCapacityUnits.getOrElse(n, BigDecimal(0))),
+        (s"GSI:$n:TotalWriteCapacityUnits", (s: TrialSummary) => s.gsiTotalWriteCapacityUnits.getOrElse(n, BigDecimal(0)))
+      )
+    }
+
   def timeSeries(trials: Vector[OrderTrackingTrialResult]): Vector[AggregateTimeSeriesPoint] =
     if trials.isEmpty then Vector.empty
     else
-      val ticks         = trials.head.timeSeries.map(_.tick)
-      val pointsByTick  = trials.flatMap(_.timeSeries).groupBy(_.tick)
+      val metrics      = timeSeriesMetrics(gsiNames(trials))
+      val ticks        = trials.head.timeSeries.map(_.tick)
+      val pointsByTick = trials.flatMap(_.timeSeries).groupBy(_.tick)
       ticks.flatMap { tick =>
         val points = pointsByTick.getOrElse(tick, Vector.empty)
-        timeSeriesMetrics.flatMap { (name, extract) =>
+        metrics.flatMap { (name, extract) =>
           val (mean, sd) = meanAndStdDev(points.map(extract))
           Vector(
             AggregateTimeSeriesPoint(tick, name, AggregateStatistic.Mean,   mean),
@@ -42,7 +63,7 @@ object MonteCarloAggregation:
       }
 
   def summary(trials: Vector[OrderTrackingTrialResult]): Vector[AggregateSummaryValue] =
-    summaryMetrics.flatMap { (name, extract) =>
+    summaryMetrics(gsiNames(trials)).flatMap { (name, extract) =>
       val (mean, sd) = meanAndStdDev(trials.map(t => extract(t.summary)))
       Vector(
         AggregateSummaryValue(name, AggregateStatistic.Mean,   mean),

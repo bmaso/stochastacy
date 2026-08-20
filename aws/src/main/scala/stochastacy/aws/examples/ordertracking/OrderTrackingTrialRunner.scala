@@ -34,10 +34,11 @@ final class OrderTrackingTrialRunner(
     val framed   = TickFraming.frame(arrivals.iterator, config.simulationTicks).toVector
 
     val tableConfig = DynamoDbTable.Config(
-      initialState    = config.initialTableState,
-      behavior        = new OrderTrackingBehavior(config),
-      latency         = latency,
-      readConsistency = config.readConsistency
+      initialState           = config.initialTableState,
+      behavior               = new OrderTrackingBehavior(config),
+      latency                = latency,
+      globalSecondaryIndexes = config.globalSecondaryIndexes,
+      localSecondaryIndexes  = config.localSecondaryIndexes
     )
 
     val graph = RunnableGraph.fromGraph(
@@ -52,7 +53,6 @@ final class OrderTrackingTrialRunner(
     )
 
     graph.run().map { consumption =>
-      val initialStorageBytes = config.initialItemCount * config.initialAverageItemBytes
-      val (summary, series)   = TrialAccounting.account(consumption, initialStorageBytes, rates)
+      val (summary, series) = TrialAccounting.account(consumption, config.initialStorageBytesAllTargets, rates)
       OrderTrackingTrialResult(trialId, series, summary)
     }

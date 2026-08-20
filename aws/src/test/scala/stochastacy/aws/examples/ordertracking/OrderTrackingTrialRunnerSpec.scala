@@ -48,4 +48,12 @@ class OrderTrackingTrialRunnerSpec extends AnyWordSpec with should.Matchers with
     "be deterministic under a fixed seed" in {
       run(7L) shouldBe run(7L)
     }
+
+    "run the indexed scenario end-to-end (query/scan handled, indexes maintained)" in {
+      val indexed = OrderTrackingConfig.indexedDefault
+      val r = Await.result(new OrderTrackingTrialRunner().runTrial(indexed, trialId = 0, seed = 5L), 10.seconds)
+      r.timeSeries.map(_.tick)          shouldBe (1L to indexed.simulationTicks).toVector
+      r.summary.totalReadCapacityUnits  should be > BigDecimal(0) // reads (query/scan) consume RCU
+      r.summary.totalWriteCapacityUnits should be > BigDecimal(0) // writes + index maintenance consume WCU
+    }
   }
