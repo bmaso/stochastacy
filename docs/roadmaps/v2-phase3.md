@@ -1,7 +1,10 @@
 # v2/phase3 — Indexed Order-Tracking: Query/Scan + secondary indexes
 
-**Status: PLANNED** — six slices scoped below. The second AWS increment on the v2 core: the Order-Tracking
-table gains Query/Scan access patterns over secondary indexes.
+**Status: COMPLETE** — all six slices delivered. The second AWS increment on the v2 core: the Order-Tracking
+table gained Query/Scan access patterns over two GSIs + one LSI, with an **improved read model** (a scan
+reads the whole target) that fixes a legacy inaccuracy. Reconciled against the legacy Phase-2 demo — writes
++ index maintenance equivalent (WCU within ~1.5%), reads deliberately higher (scans grow with the table).
+`aws` 88 tests; the phase-1 demo and legacy code untouched.
 
 Started on branch `v2/phase3`, following the conclusion of `v2/phase2` (the single on-demand DynamoDB
 table + the Order-Tracking Phase-1 demo). This phase re-implements the legacy `order-tracking-phase2`
@@ -88,7 +91,7 @@ storage per the phase-2 initial-storage correction).
 | 3 | Read routing — a read consults its target's state | **Done** | GSI scan reads the index's projected state (not base); RCU tagged; 73 tests |
 | 4 | Indexed behavior (improved reads) + workload + demo config | **Done** | scan = whole target; query selectivity; per-target flow means ≈ λ; end-to-end indexed trial; 80 tests |
 | 5 | Per-index reporting + MC + JSONL + `@main` | **Done** | per-GSI records w/ legacy `GSI:<name>:…` names; index storage seeded; `@main`; 84 tests |
-| 6 | Reconciliation gate + docs + close-out | Planned | equivalence on writes/gets; read-model divergence quantified; phase COMPLETE |
+| 6 | Reconciliation gate + docs + close-out | **Done** | WCU equivalent (−1.5% overall / −1.6% per-GSI); RCU divergence +41% quantified; storage corrected; docs; 88 tests |
 
 ## Slices
 
@@ -240,6 +243,20 @@ the demo guide (an indexed section) and add a `SecondaryIndexMechanics` entry to
 
 **Validated by:** the gate passes with measured gaps reported and the read-model divergence explained; a
 reviewer can understand and run the indexed demo; phase COMPLETE.
+
+**Delivered.** Captured the legacy `OrderTrackingPhase2` baseline (100 trials × 30 ticks, seed 20260418)
+via `OrderTrackingPhase2Bridge generate` — pinned means (overall RCU/WCU/cost/final-storage + per-GSI
+WCU) in `OrderTrackingIndexedReconciliationSpec`. The gate **asserts equivalence on the faithful path**
+(overall WCU within ±5% — measured **−1.5%**; per-GSI WCU within ±10% — measured **−1.6%**), **asserts the
+storage correction** (v2 final ≈ legacy + all-targets initial ≈ 30.7 KB, within ±15% — measured **+6.8%**),
+and **quantifies the read-model divergence** (directional `v2 RCU > legacy` + an `info` report: total RCU
+**+41%**, cost **+1.7%** — scans now grow with the table). Docs: substantially expanded the `DynamoDbTable`
+entry in `specs/aws-component-catalog.md` (config + index declarations, composite state, read routing,
+maintenance, output planes) + new `SecondaryIndexMechanics` / `SecondaryIndex` / `IndexProjection` /
+`TableState` supporting entries + quick-ref; added an "Indexed Order-Tracking" section to
+`specs/README.ordertracking-v2.md` (improved read model + reconciliation table + run command). `aws` 88
+tests green; whole build compiles; phase-1 demo/gate unchanged; legacy only *run* to capture the baseline.
+**Phase v2/phase3 complete.**
 
 ## Design principles and reuse
 
