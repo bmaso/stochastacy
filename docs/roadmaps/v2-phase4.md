@@ -57,7 +57,7 @@ exercise projection-sized maintenance that order-tracking (All-only) did not.
 | 1 | Shared single-table demo harness (refactor) | **Done** | all 88 tests + both gates unchanged; generic harness in `demo` pkg |
 | 2 | Thread the current tick to `TableBehavior` | **Done** | tick threaded but unused; all 88 tests + both gates unchanged |
 | 3 | Thermostat behavior + config | **Done** | fleet-saturation insert/update (grows w/ tick); query 2–10 / scan 50–250; projection-correct read bytes; 97 tests |
-| 4 | Thermostat workload + demo end-to-end | Planned | end-to-end trial: base + 3 GSI + 1 LSI maintenance + per-GSI reporting |
+| 4 | Thermostat workload + demo end-to-end | **Done** | fleet-scaled telemetry + GSI query/scan; `@main`; per-GSI incl. write-only device-status; 104 tests |
 | 5 | Temporal shapes (spikes / vortex / bursts) | Planned | rate profile over ticks; determinism |
 | 6 | Reconciliation gate + docs + close-out | Planned | v2 vs captured legacy baseline (writes/maintenance equivalent; GSI-read divergence quantified); phase COMPLETE |
 

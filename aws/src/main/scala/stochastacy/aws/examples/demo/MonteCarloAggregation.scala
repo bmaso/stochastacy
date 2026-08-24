@@ -23,9 +23,10 @@ object MonteCarloAggregation:
     ("TotalEstimatedCost",      (s: TrialSummary) => s.totalEstimatedCost)
   )
 
-  /** The GSI names present in the ensemble (sorted), for the per-GSI metric breakout. */
+  /** The GSI names present in the ensemble (sorted), for the per-GSI metric breakout — the union of the
+   *  read and write breakouts, so a GSI that is only *maintained* (WCU, never read) is still reported. */
   def gsiNames(trials: Vector[TrialResult]): Vector[String] =
-    trials.flatMap(_.summary.gsiTotalReadCapacityUnits.keys).distinct.sorted
+    trials.flatMap(t => t.summary.gsiTotalReadCapacityUnits.keys ++ t.summary.gsiTotalWriteCapacityUnits.keys).distinct.sorted
 
   /** The per-tick metrics — base plus a per-GSI RCU/WCU pair — as the single source of truth for both the
    *  per-trial and the aggregate records (metric names match the legacy `GSI:<name>:…`). */

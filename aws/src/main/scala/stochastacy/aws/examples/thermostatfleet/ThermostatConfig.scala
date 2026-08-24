@@ -60,11 +60,14 @@ final case class ThermostatConfig(
   def initialTableState: TableSummaryState = TableSummaryState.empty
   def initialStorageBytesAllTargets: Long  = 0L
 
+  /** Devices in the fleet at `tick` (at least one) — the single source shared by workload and behavior. */
+  def fleetSize(tick: Long): Long =
+    math.max(1L, initialDeviceCount + (deviceGrowthPerTick * tick).toLong)
+
   def behavior: TableBehavior = new ThermostatFleetBehavior(this)
 
-  // Workload arrives in Slice 4.
   def arrivals(rng: UniformRandomProvider): Vector[Timed[DynamoDbRequest]] =
-    throw new NotImplementedError("ThermostatWorkload — Slice 4")
+    ThermostatWorkload.arrivals(this, rng)
 
 object ThermostatConfig:
   val CustomerDevicesGsiName    = "customer-devices"

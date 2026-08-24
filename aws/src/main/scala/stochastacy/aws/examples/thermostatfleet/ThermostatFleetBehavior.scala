@@ -33,13 +33,9 @@ final class ThermostatFleetBehavior(config: ThermostatConfig) extends TableBehav
       case other =>
         throw new IllegalArgumentException(s"the thermostat single-region workload uses put/query/scan, not $other")
 
-  /** Devices in the fleet at `tick` (at least one). */
-  private def fleetSize(tick: Long): Long =
-    math.max(1L, config.initialDeviceCount + (config.deviceGrowthPerTick * tick).toLong)
-
   /** Insert (None) vs. overwrite (Some(previous)) by fleet saturation. */
   private def telemetryPrevious(state: TableSummaryState, rng: UniformRandomProvider, tick: Long): Option[Long] =
-    val fs = fleetSize(tick)
+    val fs = config.fleetSize(tick)
     if state.itemCount <= 0L then None                              // empty table — every write is a new device
     else if state.itemCount >= fs then state.averageItemBytes       // fleet fully seen — every write is an overwrite
     else
