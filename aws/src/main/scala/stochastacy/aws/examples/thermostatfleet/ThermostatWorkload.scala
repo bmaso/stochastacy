@@ -10,16 +10,17 @@ import stochastacy.core.sampler.{PoissonSampler, UniformSampler}
 import stochastacy.sim.SimTime
 
 /**
- * The Thermostat-fleet single-region arrivals generator. Each tick, three flows: telemetry writes at a
- * **fleet-scaled** rate (`telemetryReportsPerDevicePerTick × fleetSize(tick)`, so it grows with the fleet),
- * a customer-support query on the `customer-devices` GSI, and a fleet-dashboard scan on the `fleet-alerts`
- * GSI (both eventually consistent — GSI reads cannot be strong). The temporal shaping of the telemetry
- * rate (spikes / vortex / bursts) is added in a later slice.
+ * The Thermostat-fleet single-region arrivals generator. Each tick, three flows: **temporally shaped**
+ * telemetry writes (the fleet-scaled per-device rate with morning/evening spikes, a polar-vortex window,
+ * and stochastic alert-storm bursts — see [[ThermostatConfig.telemetryRateSampler]]), a customer-support
+ * query on the `customer-devices` GSI, and a fleet-dashboard scan on the `fleet-alerts` GSI (both
+ * eventually consistent — GSI reads cannot be strong). The telemetry rate sampler is stateful (storm
+ * bursts persist for a fixed duration), so its state is threaded across ticks.
  */
 object ThermostatWorkload:
 
   def arrivals(config: ThermostatConfig, rng: UniformRandomProvider): Vector[Timed[DynamoDbRequest]] =
-    val telemetryRate = PoissonSampler(tick => config.telemetryReportsPerDevicePerTick * config.fleetSize(tick).toDouble)
+    val telemetryRate = config.telemetryRateSampler
     val queryRate     = PoissonSampler.constant(config.customerSupportQueryRatePerTick)
     val scanRate      = PoissonSampler.constant(config.fleetDashboardScanRatePerTick)
     val telemetryBytes = UniformSampler.constant(
@@ -33,8 +34,9 @@ object ThermostatWorkload:
     val customerDevices = DynamoDbTarget.Gsi(ThermostatConfig.CustomerDevicesGsiName)
     val fleetAlerts     = DynamoDbTarget.Gsi(ThermostatConfig.FleetAlertsGsiName)
 
-    val out  = Vector.newBuilder[Timed[DynamoDbRequest]]
-    var tick = 1L
+    val out            = Vector.newBuilder[Timed[DynamoDbRequest]]
+    var telemetryState = telemetryRate.initialState
+    var tick           = 1L
     while tick <= config.simulationTicks do
       val perTick = mutable.ArrayBuffer.empty[(Double, DynamoDbRequest)]
 
@@ -46,9 +48,11 @@ object ThermostatWorkload:
           perTick += ((phi, payload))
           i += 1
 
-      emit(telemetryRate.sample(tick, rng, ())._1, () => PutItemRequest(bytesFrom(telemetryBytes, tick)))
-      emit(queryRate.sample(tick, rng, ())._1,     () => QueryRequest(customerDevices, ReadConsistency.EventuallyConsistent))
-      emit(scanRate.sample(tick, rng, ())._1,      () => ScanRequest(fleetAlerts, ReadConsistency.EventuallyConsistent))
+      val (telemetryCount, nextTelemetryState) = telemetryRate.sample(tick, rng, telemetryState)
+      telemetryState = nextTelemetryState
+      emit(telemetryCount,                      () => PutItemRequest(bytesFrom(telemetryBytes, tick)))
+      emit(queryRate.sample(tick, rng, ())._1,  () => QueryRequest(customerDevices, ReadConsistency.EventuallyConsistent))
+      emit(scanRate.sample(tick, rng, ())._1,   () => ScanRequest(fleetAlerts, ReadConsistency.EventuallyConsistent))
 
       perTick.sortInPlaceBy(_._1)
       perTick.foreach { case (phi, payload) => out += Timed(payload, SimTime.of(tick), phi, config.scenarioId) }

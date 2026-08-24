@@ -58,7 +58,7 @@ exercise projection-sized maintenance that order-tracking (All-only) did not.
 | 2 | Thread the current tick to `TableBehavior` | **Done** | tick threaded but unused; all 88 tests + both gates unchanged |
 | 3 | Thermostat behavior + config | **Done** | fleet-saturation insert/update (grows w/ tick); query 2–10 / scan 50–250; projection-correct read bytes; 97 tests |
 | 4 | Thermostat workload + demo end-to-end | **Done** | fleet-scaled telemetry + GSI query/scan; `@main`; per-GSI incl. write-only device-status; 104 tests |
-| 5 | Temporal shapes (spikes / vortex / bursts) | Planned | rate profile over ticks; determinism |
+| 5 | Temporal shapes (spikes / vortex / bursts) | **Done** | morning/evening triangular spikes, vortex window, alert-storm bursts on telemetry λ; 109 tests |
 | 6 | Reconciliation gate + docs + close-out | Planned | v2 vs captured legacy baseline (writes/maintenance equivalent; GSI-read divergence quantified); phase COMPLETE |
 
 ## Slices
@@ -146,6 +146,22 @@ temporal params; apply them to the telemetry rate.
 
 **Validated by:** rate-profile tests — spikes peak in their tick windows, the vortex window multiplier
 applies, bursts fire at ~their probability; determinism. Resolves **DD-temporal-slicing**.
+
+**Delivered.** `ThermostatConfig` gains the temporal params (morning/evening spike multiplier + tick range,
+alert-storm probability / duration / write multiplier, polar-vortex multiplier / affected-fraction / tick
+range) with `singleRegionDefault` carrying the legacy values (spikes at (420,540)/(1020,1140) ×2.0, storm
+0.002/30/×5.0, vortex **off** — `multiplier 1.0`). A private `baseTelemetryLambda` (`Sampler.deterministic`)
+composes `reportsPerDevicePerTick × max(morningSpike, eveningSpike) × vortex × fleetSize(tick)` via
+`TemporalShapeFunctions.triangularFactor`, wrapped by a public `telemetryRateSampler: RandomBurstSampler[Unit]`
+for the additive alert-storm bursts — the exact legacy formula, co-located with its params (**DD-temporal-home**,
+config-side). `ThermostatWorkload` samples that stateful rate, threading its `(Int, Unit)` state across the
+tick loop (**DD-storm-state-threading**); reads stay constant-rate. `ThermostatWorkloadSpec` split into a
+flat-path block (its `longConfig` now shaping-**off**, so the constant fleet-scaled rate still reconciles —
+**DD-temporal-slicing**) and a temporal-shaping block (morning-spike ≈1.5× over window / ≈2× at centre;
+vortex `1+fraction·(mult−1)` in-window and inert when off; storm bursts ≈5× on ~their expected active
+fraction; determinism with shaping on). `aws` 109 tests green; both order-tracking gates unchanged; whole
+build compiles; no core-engine or legacy file touched (the `TemporalShapeFunctions` / `RandomBurstSampler`
+core samplers already existed).
 
 ### Slice 6 — Reconciliation gate + docs + close-out
 
