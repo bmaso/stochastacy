@@ -77,3 +77,7 @@ final case class ScanResponse(
   returnedItemCount:  Long,
   returnedBytes:      Long
 ) extends DynamoDbResponse
+
+/** The error response to any request the system-error gate rejects — DynamoDB's `InternalServerError`.
+ *  No capacity is consumed and no state is mutated (a rejected request never reaches the table). */
+case object SystemErrorResponse extends DynamoDbResponse

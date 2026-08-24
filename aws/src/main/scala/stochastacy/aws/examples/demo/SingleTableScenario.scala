@@ -38,3 +38,7 @@ trait SingleTableScenario:
 
   /** On-demand pricing rates. */
   def rates: Rates = OnDemandPricing.phase1Default
+
+  /** Load-independent per-request failure rate, applied by the harness as an inbound `ChaosGate` on the
+   *  table's inlet (0.0 = no gate). A rejected request consumes no capacity and mutates no state. */
+  def systemErrorRate: Double = 0.0

@@ -25,6 +25,10 @@ import stochastacy.core.sampler.{RandomBurstSampler, Sampler, StatelessSampler, 
  * the fleet-scaled per-device rate — reproducing the legacy `ThermostatFleetScenarioConfig` telemetry
  * profile. Reads (query/scan) are constant-rate. With the shipped `singleRegionDefault` the vortex is off
  * (`polarVortexWriteMultiplier == 1.0`), so a no-shape config still yields the plain fleet-scaled rate.
+ *
+ * A small `systemErrorRate` (default 0.001, matching the legacy) models DynamoDB's intrinsic transient
+ * failures: the harness attaches a load-independent `ChaosGate` on the table's inlet, so ~0.1 % of
+ * requests are rejected with a `SystemErrorResponse` — consuming no capacity and mutating no state.
  */
 final case class ThermostatConfig(
   scenarioId:                       String = "thermostat-fleet-single-region",
@@ -47,7 +51,8 @@ final case class ThermostatConfig(
   alertStormWriteMultiplier:        Double        = 5.0,
   polarVortexWriteMultiplier:       Double        = 1.0,
   polarVortexAffectedFraction:      Double        = 0.5,
-  polarVortexTickRange:             (Long, Long)  = (0L, 0L)
+  polarVortexTickRange:             (Long, Long)  = (0L, 0L),
+  override val systemErrorRate:     Double        = 0.001
 ) extends SingleTableScenario:
   require(scenarioId.nonEmpty,                          "scenarioId must be non-empty")
   require(simulationTicks >= 1L,                        "simulationTicks must be at least 1")
@@ -73,6 +78,7 @@ final case class ThermostatConfig(
   require(polarVortexAffectedFraction > 0.0 && polarVortexAffectedFraction <= 1.0, "polarVortexAffectedFraction must be in (0, 1]")
   require(polarVortexTickRange._1 >= 0L && polarVortexTickRange._2 >= polarVortexTickRange._1,
                                                         "polarVortexTickRange must be a valid range (start >= 0, end >= start)")
+  require(systemErrorRate >= 0.0 && systemErrorRate < 1.0, "systemErrorRate must be in [0, 1)")
 
   def globalSecondaryIndexes: Vector[GlobalSecondaryIndex] = Vector(
     GlobalSecondaryIndex(ThermostatConfig.CustomerDevicesGsiName, IndexProjection.KeysOnly),

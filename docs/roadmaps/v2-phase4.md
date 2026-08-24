@@ -42,9 +42,10 @@ exercise projection-sized maintenance that order-tracking (All-only) did not.
 
 ## Open design decisions (resolved at each slice's plan)
 
-- **DD-system-error (Slice 3/6)** — the legacy `systemErrorRate = 0.001`; **defer** (model all-success —
-  0.1% is inside reconcile tolerance), noting the negligible gap. A `ChaosGate` wrap is the natural home
-  if ever wanted (the throttling/failure phase).
+- **DD-system-error (Slice 3/6a)** — the legacy `systemErrorRate = 0.001`. Originally deferred (model
+  all-success, 0.1% inside tolerance); **resolved in Slice 6a** by modeling it faithfully with an inbound
+  `ChaosGate` (`Interface.wrap`), which reproduces the legacy "no capacity, no state" semantics and removes
+  the gap entirely.
 - **DD-initial-state (Slice 3)** — the table's initial item count / bytes and the all-targets storage seed
   for the thermostat table (pinned from the legacy runner when implementing).
 - **DD-temporal-slicing (Slice 5)** — build constant-per-device first, then layer the temporal shapes, so
@@ -59,7 +60,8 @@ exercise projection-sized maintenance that order-tracking (All-only) did not.
 | 3 | Thermostat behavior + config | **Done** | fleet-saturation insert/update (grows w/ tick); query 2–10 / scan 50–250; projection-correct read bytes; 97 tests |
 | 4 | Thermostat workload + demo end-to-end | **Done** | fleet-scaled telemetry + GSI query/scan; `@main`; per-GSI incl. write-only device-status; 104 tests |
 | 5 | Temporal shapes (spikes / vortex / bursts) | **Done** | morning/evening triangular spikes, vortex window, alert-storm bursts on telemetry λ; 109 tests |
-| 6 | Reconciliation gate + docs + close-out | Planned | v2 vs captured legacy baseline (writes/maintenance equivalent; GSI-read divergence quantified); phase COMPLETE |
+| 6a | System-error gate (`Interface.wrap` + `ChaosGate`) | **Done** | inbound chaos gate rejects ~`systemErrorRate` (0.001) with `SystemErrorResponse`; no capacity/state; 113 tests |
+| 6b | Reconciliation gate + docs + close-out | Planned | v2 vs captured legacy baseline (writes/maintenance equivalent; GSI-read divergence quantified); phase COMPLETE |
 
 ## Slices
 
@@ -163,7 +165,32 @@ fraction; determinism with shaping on). `aws` 109 tests green; both order-tracki
 build compiles; no core-engine or legacy file touched (the `TemporalShapeFunctions` / `RandomBurstSampler`
 core samplers already existed).
 
-### Slice 6 — Reconciliation gate + docs + close-out
+### Slice 6a — System-error gate (`Interface.wrap` + `ChaosGate`)
+
+Model DynamoDB's intrinsic transient-failure rate (legacy `systemErrorRate = 0.001`) by wrapping the
+`DynamoDbTable` component with a load-independent `ChaosGate` on its inbound inlet — the first use of the
+`Interface` decorator on an AWS table. A rejected request produces a `SystemErrorResponse` and never
+reaches the table, so it consumes no capacity and mutates no state — exactly the legacy semantics
+(`op_events.scala`: "no capacity is consumed and no state is mutated"). This removes the deferred
+reconciliation gap (**DD-system-error**) and de-risks Phase 6's throttling gates (same machinery, simpler
+load-independent case).
+
+**Validated by:** component-level tests (reject ~`rate` with a `SystemErrorResponse`, 1:1 request/response,
+rejected requests bill nothing so consumption scales with the admitted fraction, determinism) + a
+runner-level monotonicity test (higher error rate → lower total WCU); order-tracking gates unchanged.
+
+**Delivered.** New `SystemErrorResponse` variant on the `DynamoDbResponse` ADT (was non-error-only).
+`SingleTableScenario` gains `systemErrorRate: Double = 0.0`; `ThermostatConfig` overrides it to `0.001`
+(so `singleRegionDefault` carries the legacy value). `SingleTableTrialRunner` derives a third (gate) seed —
+`SeedSequence.derive(seed, 3)` shares its first two elements with the old `derive(seed, 2)`, so the
+workload/table seeds are unchanged — and wraps the table graph with `Interface.wrap(table,
+ChaosGate.constant(rate, SystemErrorResponse), gateRng)` **iff `systemErrorRate > 0`** (so order-tracking,
+rate 0, keeps the exact unwrapped graph and RNG stream). New `SystemErrorGateSpec` (component-level, empty
+indexes → one write per admitted put) + a `ThermostatFleetTrialSpec` monotonicity case. `aws` 113 tests
+green; both order-tracking gates unchanged; whole build compiles (no ADT-exhaustiveness warning); no
+core-engine or legacy file touched.
+
+### Slice 6b — Reconciliation gate + docs + close-out
 
 Capture the legacy `singleRegionDefault` baseline (100 trials × 1200 ticks) and reconcile v2 (overall +
 per-GSI RCU / WCU / cost within tolerance — the read model is faithful, so ≈ phase-1's ~2%; storage per the

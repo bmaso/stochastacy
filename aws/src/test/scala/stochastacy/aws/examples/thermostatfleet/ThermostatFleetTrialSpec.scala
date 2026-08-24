@@ -28,6 +28,9 @@ class ThermostatFleetTrialSpec extends AnyWordSpec with should.Matchers with Bef
   private def run(seed: Long): MonteCarloResult =
     Await.result(new SingleTableMonteCarloRunner().run(config, seed), 60.seconds)
 
+  private def runCfg(c: ThermostatConfig, seed: Long): MonteCarloResult =
+    Await.result(new SingleTableMonteCarloRunner().run(c, seed), 60.seconds)
+
   private def mean(result: MonteCarloResult, metric: String): BigDecimal =
     result.aggregateSummary.collectFirst { case AggregateSummaryValue(`metric`, AggregateStatistic.Mean, v) => v }.getOrElse(BigDecimal(0))
 
@@ -47,5 +50,11 @@ class ThermostatFleetTrialSpec extends AnyWordSpec with should.Matchers with Bef
 
     "be reproducible under a fixed seed" in {
       run(seed = 7L) shouldBe run(seed = 7L)
+    }
+
+    "bill less write capacity when the system-error gate rejects a fraction of requests" in {
+      val healthy = runCfg(config.copy(systemErrorRate = 0.0), seed = 3L)
+      val faulty  = runCfg(config.copy(systemErrorRate = 0.3), seed = 3L)
+      mean(faulty, "TotalWriteCapacityUnits") should be < mean(healthy, "TotalWriteCapacityUnits")
     }
   }
