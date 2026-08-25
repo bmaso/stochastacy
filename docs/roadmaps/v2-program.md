@@ -51,9 +51,11 @@ every later phase a legacy scenario to reconcile against. Feature-depth phases (
 independent and the capstone (8) integrates them, so their relative order can shift by priority.
 
 - **v2/phase5 — Multi-table composition.** Compose several v2 `DynamoDbTable`s (the now-available thermostat
-  tables) into one simulation; per-table + overall reporting (the legacy `Table:<name>:…` metric names).
-  Proves `MultiTableScenarioConfig`. Cashes in the "table is the composable graph-level unit" design and
-  erects the capstone's skeleton.
+  tables) into one simulation; **per-table** reporting (the legacy `Table:<name>:…` metric names). Also
+  **generalizes the single-table demo harness into a multi-table one** — extracting a per-table `TableSpec`
+  and reusing the accounting / aggregation / streaming primitives, single-table left intact. Proves
+  `MultiTableScenarioConfig.twoTableDefault`. Cashes in the "table is the composable graph-level unit"
+  design and erects the capstone's skeleton. Roadmap: `v2-phase5.md`.
 - **v2/phase6 — Provisioned capacity + throttling + auto-scaling.** Provisioned billing (capacity-hour
   cost), **throttling** (requests over per-tick capacity are rejected), then auto-scaling (capacity tracks
   utilization). **Central decision:** throttling via an `Interface.wrap` gate vs. internal admission — the
