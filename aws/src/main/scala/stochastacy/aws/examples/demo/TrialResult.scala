@@ -1,4 +1,4 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.demo
 
 /** One tick's slice of a trial: the capacity consumed that tick (overall, plus a per-GSI breakout), the
  *  storage held at tick close, and the running estimated cost through that tick. */
@@ -26,7 +26,7 @@ final case class TrialSummary(
 )
 
 /** The result of one Order-Tracking trial: the per-tick series and the summary totals. */
-final case class OrderTrackingTrialResult(
+final case class TrialResult(
   trialId:    Int,
   timeSeries: Vector[TrialTimeSeriesPoint],
   summary:    TrialSummary

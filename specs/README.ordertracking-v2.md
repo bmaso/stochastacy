@@ -165,34 +165,41 @@ delete (λ 0.4) — emitted per tick with a uniform-random intra-tick position, 
 consumes.
 
 ### 4.3 One trial
-`OrderTrackingTrialRunner.runTrial` wires `workload → DynamoDbTable`, discards the responses, and drains
-the consumption plane. `TrialAccounting` folds it — in a single pass, so the summary and per-tick series
-always reconcile — into an `OrderTrackingTrialResult`: totals (RCU, WCU, byte-ticks, final storage, cost)
-plus a per-tick series. `OnDemandPricing` supplies the on-demand rates and the cost formula. The fold is
-**seeded with the table's initial storage** (§2). The workload and table draw from independent derived
-rngs, so the eagerly-generated arrivals and the table's sampling do not share a stream.
+The demo runs on a **shared single-table harness** (`stochastacy.aws.examples.demo`): `OrderTrackingConfig`
+implements `SingleTableScenario`, and the generic `SingleTableTrialRunner.runTrial` wires
+`workload → DynamoDbTable`, discards the responses, and folds the consumption plane **incrementally as it
+flows** (a `Sink.fold`, so a trial never holds its raw facts) into a `TrialResult`: totals (RCU, WCU,
+byte-ticks, final storage, cost) plus a per-tick series that always reconciles with the summary.
+`OnDemandPricing` supplies the on-demand rates and the cost formula. The fold is **seeded with the table's
+initial storage** (§2). The workload and table draw from independent derived rngs, so the eagerly-generated
+arrivals and the table's sampling do not share a stream.
 
 ### 4.4 The ensemble
-`OrderTrackingMonteCarloRunner.run` drives the core `MonteCarlo.run` — `trialCount` reproducible trials
-from one master seed, order-stable and parallelism-independent — then `MonteCarloAggregation` reduces the
-trials to across-trial mean and (population) standard deviation per metric. `JsonlExport` renders the
-per-trial and aggregate records as JSONL.
+`SingleTableMonteCarloRunner` drives the core `MonteCarlo.stream` — `trialCount` reproducible trials from
+one master seed, order-stable and parallelism-independent — folding each completed trial into an
+`IncrementalAggregator` (running moments per metric → across-trial mean and population standard deviation)
+and then releasing it. The `@main`'s `runToFile` streams each trial's records to disk through a `JsonlWriter`
+as it completes and appends the aggregates at the end, so memory stays flat in the trial count and the file
+grows during the run; a collecting `run` variant (returning every trial) backs the tests and gates.
 
 ---
 
 ## Source map
 
+The demo-specific pieces live in `stochastacy.aws.examples.ordertracking`; the runner / accounting /
+aggregation / export are the **shared single-table harness** in `stochastacy.aws.examples.demo`.
+
 | concern | file |
 |---|---|
-| scenario config (incl. flow rates / byte ranges) | `OrderTrackingConfig.scala` |
-| domain behavior | `OrderTrackingBehavior.scala` |
-| workload driver | `OrderTrackingWorkload.scala` |
-| single-trial runner | `OrderTrackingTrialRunner.scala` |
-| accounting + pricing + result types | `TrialAccounting.scala`, `OnDemandPricing.scala`, `TrialResult.scala` |
-| Monte Carlo + aggregation | `OrderTrackingMonteCarloRunner.scala`, `MonteCarloAggregation.scala`, `MonteCarloResult.scala` |
-| JSONL export | `JsonlExport.scala` |
-| `@main` | `OrderTrackingDemo.scala` |
-| equivalence gate | `test/.../OrderTrackingEquivalenceSpec.scala` |
+| scenario config (incl. flow rates / byte ranges) | `ordertracking/OrderTrackingConfig.scala` (implements `demo/SingleTableScenario`) |
+| domain behavior | `ordertracking/OrderTrackingBehavior.scala` |
+| workload driver | `ordertracking/OrderTrackingWorkload.scala` |
+| single-trial runner (streaming fold) | `demo/SingleTableTrialRunner.scala` |
+| accounting + pricing + result types | `demo/TrialAccounting.scala`, `demo/OnDemandPricing.scala`, `demo/TrialResult.scala` |
+| Monte Carlo + incremental aggregation | `demo/SingleTableMonteCarloRunner.scala`, `demo/IncrementalAggregator.scala`, `demo/MonteCarloAggregation.scala`, `demo/MonteCarloResult.scala` |
+| JSONL export (streaming writer + records) | `demo/JsonlWriter.scala`, `demo/JsonlExport.scala` |
+| `@main` | `ordertracking/OrderTrackingDemo.scala`, `ordertracking/IndexedOrderTrackingDemo.scala` |
+| equivalence / reconciliation gates | `test/.../OrderTrackingEquivalenceSpec.scala`, `test/.../OrderTrackingIndexedReconciliationSpec.scala` |
 | the reusable table component | `stochastacy.aws.dynamodb.*` |
 
 ## See also

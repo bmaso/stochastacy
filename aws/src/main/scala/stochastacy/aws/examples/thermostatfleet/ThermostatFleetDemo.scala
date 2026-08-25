@@ -1,4 +1,4 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.thermostatfleet
 
 import java.nio.file.Path
 
@@ -11,32 +11,32 @@ import org.apache.pekko.stream.Materializer
 import stochastacy.aws.examples.demo.*
 
 /**
- * Runnable Indexed Order-Tracking demo: the `indexedDefault` scenario (Query/Scan over two GSIs + one LSI)
- * as a Monte Carlo ensemble, written as JSONL (per-GSI metrics included) plus a console summary. No
- * external services. The Phase-1 [[OrderTrackingDemo]] is left untouched.
+ * Runnable Thermostat-fleet single-region demo: the `singleRegionDefault` scenario (a growing fleet of
+ * thermostats writing telemetry to one on-demand table, queried and scanned via GSIs) as a Monte Carlo
+ * ensemble, written as JSONL (per-GSI metrics included) plus a console summary. No external services.
  *
  * Flags (all optional): `--output <path>` `--seed <long>` `--trials <int>` `--ticks <long>`
- * `--parallelism <int>`; unset values fall back to `OrderTrackingConfig.indexedDefault`.
+ * `--parallelism <int>`; unset values fall back to `ThermostatConfig.singleRegionDefault`.
  */
-@main def IndexedOrderTrackingDemo(args: String*): Unit =
+@main def ThermostatFleetDemo(args: String*): Unit =
   def flag(name: String): Option[String] =
     args.grouped(2).collectFirst { case Seq(k, v) if k == s"--$name" => v }
 
-  val output = flag("output").map(Path.of(_)).getOrElse(Path.of("/tmp/order-tracking-indexed.jsonl"))
+  val output = flag("output").map(Path.of(_)).getOrElse(Path.of("/tmp/thermostat-fleet-single-region.jsonl"))
   val seed   = flag("seed").flatMap(_.toLongOption).getOrElse(1L)
 
-  val base = OrderTrackingConfig.indexedDefault
+  val base = ThermostatConfig.singleRegionDefault
   val config = base.copy(
     trialCount      = flag("trials").flatMap(_.toIntOption).getOrElse(base.trialCount),
     simulationTicks = flag("ticks").flatMap(_.toLongOption).getOrElse(base.simulationTicks),
     parallelism     = flag("parallelism").flatMap(_.toIntOption).getOrElse(base.parallelism)
   )
 
-  given system: ActorSystem = ActorSystem("IndexedOrderTrackingDemo")
+  given system: ActorSystem = ActorSystem("ThermostatFleetDemo")
   given Materializer        = Materializer.matFromSystem
   given ExecutionContext    = system.dispatcher
   try
-    val report = Await.result(new SingleTableMonteCarloRunner().runToFile(config, seed, output), 10.minutes)
+    val report = Await.result(new SingleTableMonteCarloRunner().runToFile(config, seed, output), 30.minutes)
 
     def mean(metric: String): BigDecimal =
       report.aggregateSummary.collectFirst { case AggregateSummaryValue(`metric`, AggregateStatistic.Mean, v) => v }.getOrElse(BigDecimal(0))
@@ -45,7 +45,7 @@ import stochastacy.aws.examples.demo.*
     }.mkString("\n")
 
     println(
-      s"""Indexed Order-Tracking — Monte Carlo summary (${report.trialCount} trials, ${config.simulationTicks} ticks)
+      s"""Thermostat-fleet single-region — Monte Carlo summary (${report.trialCount} trials, ${config.simulationTicks} ticks)
          |  mean total read capacity units:  ${mean("TotalReadCapacityUnits")}
          |  mean total write capacity units: ${mean("TotalWriteCapacityUnits")}
          |  mean final storage bytes:        ${mean("FinalStorageBytes")}

@@ -1,4 +1,4 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.demo
 
 /** On-demand DynamoDB rates (a demo-local, Phase-1-scoped pricing model — no provisioned / reserved /
  *  replicated / PITR pricing). Storage is priced per GiB-second with one tick treated as one second. */

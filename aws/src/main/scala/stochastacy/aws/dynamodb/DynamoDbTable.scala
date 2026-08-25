@@ -61,7 +61,7 @@ object DynamoDbTable:
       state: TableState,
       rng:   UniformRandomProvider
     ): Emission[TableState, DynamoDbResponse, DynamoDbConsumption] =
-      val outcome      = config.behavior.outcomeFor(in, readTargetState(in, state), rng)
+      val outcome      = config.behavior.outcomeFor(in, readTargetState(in, state), rng, state.currentTick)
       val resolution   = TableMechanics.resolve(outcome, state.base)
       val (latency, _) = config.latency.sample(0L, rng, ())
 
@@ -83,11 +83,13 @@ object DynamoDbTable:
           }
 
       Emission(
-        newState    = TableState(resolution.state, nextIndexes),
+        newState    = state.copy(base = resolution.state, indexes = nextIndexes), // copy preserves currentTick
         output      = Scheduled(resolution.response, math.max(0.0, latency)),
         consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
       )
-    // onTick: inherited no-op — the table keeps no per-tick state.
+
+    /** Advance the current tick at each tick boundary, so a time-dependent behavior can read it. */
+    override def onTick(tick: Long, state: TableState): TableState = state.copy(currentTick = tick)
 
     /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,
      *  the base summary for a table read and for every write/get. */

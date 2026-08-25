@@ -1,4 +1,4 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.demo
 
 import scala.collection.mutable
 
@@ -20,51 +20,65 @@ import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
  */
 object TrialAccounting:
 
+  /** Fold a fully-materialized consumption sequence — a thin convenience over [[TrialAccountingState]]
+   *  (the streaming trial runner drives the same state incrementally via `Sink.fold`). */
   def account(
     consumption:         Seq[TimedElement[Timed[DynamoDbConsumption]]],
     initialStorageBytes: Long,
     rates:               Rates
   ): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
-    var currentBytes = initialStorageBytes
-    var totalRcu     = BigDecimal(0)
-    var totalWcu     = BigDecimal(0)
-    var byteTicks    = BigInt(0)
-    val gsiRcuTotal  = mutable.Map.empty[String, BigDecimal]
-    val gsiWcuTotal  = mutable.Map.empty[String, BigDecimal]
+    val state = new TrialAccountingState(initialStorageBytes, rates)
+    consumption.foreach(state.update)
+    state.result()
 
-    // cumulative-through-this-tick, for the time series' running cost
-    var cumRcu       = BigDecimal(0)
-    var cumWcu       = BigDecimal(0)
-    var cumByteTicks = BigInt(0)
+/**
+ * The mutable accumulator behind [[TrialAccounting]]: the exact single-pass fold, exposed as an
+ * `update(element)` / `result()` pair so it can be driven **incrementally** off the live consumption
+ * stream (via `Sink.fold`) without ever materializing the raw facts. One instance per trial; `update` is
+ * called in stream order, `result()` once at completion.
+ */
+final class TrialAccountingState(initialStorageBytes: Long, rates: Rates):
+  private var currentBytes = initialStorageBytes
+  private var totalRcu     = BigDecimal(0)
+  private var totalWcu     = BigDecimal(0)
+  private var byteTicks    = BigInt(0)
+  private val gsiRcuTotal  = mutable.Map.empty[String, BigDecimal]
+  private val gsiWcuTotal  = mutable.Map.empty[String, BigDecimal]
 
-    var bucketOpen   = false
-    var bucketTick   = 0L
-    var bucketRcu    = BigDecimal(0)
-    var bucketWcu    = BigDecimal(0)
-    var bucketGsiRcu = mutable.Map.empty[String, BigDecimal]
-    var bucketGsiWcu = mutable.Map.empty[String, BigDecimal]
-    val points       = Vector.newBuilder[TrialTimeSeriesPoint]
+  // cumulative-through-this-tick, for the time series' running cost
+  private var cumRcu       = BigDecimal(0)
+  private var cumWcu       = BigDecimal(0)
+  private var cumByteTicks = BigInt(0)
 
-    def bump(m: mutable.Map[String, BigDecimal], key: String, v: BigDecimal): Unit =
-      m.update(key, m.getOrElse(key, BigDecimal(0)) + v)
+  private var bucketOpen   = false
+  private var bucketTick   = 0L
+  private var bucketRcu    = BigDecimal(0)
+  private var bucketWcu    = BigDecimal(0)
+  private var bucketGsiRcu = mutable.Map.empty[String, BigDecimal]
+  private var bucketGsiWcu = mutable.Map.empty[String, BigDecimal]
+  private val points       = Vector.newBuilder[TrialTimeSeriesPoint]
 
-    def finalizeBucket(): Unit =
-      if bucketOpen then
-        cumRcu       += bucketRcu
-        cumWcu       += bucketWcu
-        byteTicks    += BigInt(currentBytes)
-        cumByteTicks += BigInt(currentBytes)
-        points += TrialTimeSeriesPoint(
-          tick                    = bucketTick,
-          readCapacityUnits       = bucketRcu,
-          writeCapacityUnits      = bucketWcu,
-          storageBytes            = currentBytes,
-          cumulativeEstimatedCost = OnDemandPricing.cost(cumRcu, cumWcu, cumByteTicks, rates),
-          gsiReadCapacityUnits    = bucketGsiRcu.toMap,
-          gsiWriteCapacityUnits   = bucketGsiWcu.toMap
-        )
+  private def bump(m: mutable.Map[String, BigDecimal], key: String, v: BigDecimal): Unit =
+    m.update(key, m.getOrElse(key, BigDecimal(0)) + v)
 
-    consumption.foreach {
+  private def finalizeBucket(): Unit =
+    if bucketOpen then
+      cumRcu       += bucketRcu
+      cumWcu       += bucketWcu
+      byteTicks    += BigInt(currentBytes)
+      cumByteTicks += BigInt(currentBytes)
+      points += TrialTimeSeriesPoint(
+        tick                    = bucketTick,
+        readCapacityUnits       = bucketRcu,
+        writeCapacityUnits      = bucketWcu,
+        storageBytes            = currentBytes,
+        cumulativeEstimatedCost = OnDemandPricing.cost(cumRcu, cumWcu, cumByteTicks, rates),
+        gsiReadCapacityUnits    = bucketGsiRcu.toMap,
+        gsiWriteCapacityUnits   = bucketGsiWcu.toMap
+      )
+
+  def update(element: TimedElement[Timed[DynamoDbConsumption]]): Unit =
+    element match
       case tick: TimedControlEvent.Tick =>
         finalizeBucket()
         bucketTick   = tick.eventTime.ticks
@@ -88,8 +102,8 @@ object TrialAccounting:
             target match { case DynamoDbTarget.Gsi(n) => bump(bucketGsiWcu, n, u); bump(gsiWcuTotal, n, u); case _ => () }
           case StorageBytesDelta(d, _) =>
             currentBytes += d
-    }
 
+  def result(): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
     val summary = TrialSummary(
       totalReadCapacityUnits     = totalRcu,
       totalWriteCapacityUnits    = totalWcu,

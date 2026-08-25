@@ -1,5 +1,7 @@
 package stochastacy.aws.examples.ordertracking
 
+import stochastacy.aws.examples.demo.*
+
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext}
 
@@ -53,7 +55,7 @@ class OrderTrackingIndexedReconciliationSpec extends AnyWordSpec with should.Mat
   private val StorageTol     = BigDecimal("0.15") // storage-correction band (net deltas are noisy)
 
   private lazy val result =
-    Await.result(new OrderTrackingMonteCarloRunner().run(config, masterSeed = 20260418L), 5.minutes)
+    Await.result(new SingleTableMonteCarloRunner().run(config, masterSeed = 20260418L), 5.minutes)
 
   private def meanOf(metric: String): BigDecimal =
     result.aggregateSummary

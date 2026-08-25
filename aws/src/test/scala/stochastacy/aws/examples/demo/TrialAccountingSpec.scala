@@ -1,4 +1,4 @@
-package stochastacy.aws.examples.ordertracking
+package stochastacy.aws.examples.demo
 
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec

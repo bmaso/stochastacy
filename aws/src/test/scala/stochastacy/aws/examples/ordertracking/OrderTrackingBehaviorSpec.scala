@@ -22,20 +22,20 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
   /** Fraction of `N` draws (against `state`) whose outcome satisfies `p`, over one threaded rng. */
   private def fractionWhere(state: TableSummaryState, request: DynamoDbRequest)(p: OperationOutcome => Boolean): Double =
     val rng = RandomSource.KISS.create(42L)
-    val hits = (0 until N).count(_ => p(behavior.outcomeFor(request, state, rng)))
+    val hits = (0 until N).count(_ => p(behavior.outcomeFor(request, state, rng, 1L)))
     hits.toDouble / N
 
   "OrderTrackingBehavior — request mapping" should {
     "map a put to a new-item Put carrying the request bytes" in {
-      behavior.outcomeFor(PutItemRequest(500L), populated, RandomSource.KISS.create(1L)) shouldBe
+      behavior.outcomeFor(PutItemRequest(500L), populated, RandomSource.KISS.create(1L), 1L) shouldBe
         OperationOutcome.Put(writtenItemBytes = 500L, previousItemBytes = None)
     }
     "map each request type to its matching outcome case" in {
       val rng = RandomSource.KISS.create(1L)
-      behavior.outcomeFor(GetItemRequest,        populated, rng) shouldBe a[OperationOutcome.Get]
-      behavior.outcomeFor(PutItemRequest(500L),  populated, rng) shouldBe a[OperationOutcome.Put]
-      behavior.outcomeFor(UpdateItemRequest(600L), populated, rng) shouldBe a[OperationOutcome.Update]
-      behavior.outcomeFor(DeleteItemRequest,     populated, rng) shouldBe a[OperationOutcome.Delete]
+      behavior.outcomeFor(GetItemRequest,        populated, rng, 1L) shouldBe a[OperationOutcome.Get]
+      behavior.outcomeFor(PutItemRequest(500L),  populated, rng, 1L) shouldBe a[OperationOutcome.Put]
+      behavior.outcomeFor(UpdateItemRequest(600L), populated, rng, 1L) shouldBe a[OperationOutcome.Update]
+      behavior.outcomeFor(DeleteItemRequest,     populated, rng, 1L) shouldBe a[OperationOutcome.Delete]
     }
   }
 
@@ -59,7 +59,7 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
       val rng = RandomSource.KISS.create(7L)
       val hitBytes =
         (0 until N).flatMap { _ =>
-          behavior.outcomeFor(GetItemRequest, populated, rng) match
+          behavior.outcomeFor(GetItemRequest, populated, rng, 1L) match
             case OperationOutcome.Get(Some(b), _) => Some(b)
             case _                                => None
         }
@@ -92,7 +92,7 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
     val rng      = RandomSource.KISS.create(3L)
 
     "make a scan evaluate the whole target it is handed (count + projected total bytes)" in {
-      behavior.outcomeFor(ScanRequest(DynamoDbTarget.Table, strong), populated, rng) match
+      behavior.outcomeFor(ScanRequest(DynamoDbTarget.Table, strong), populated, rng, 1L) match
         case OperationOutcome.Scan(target, consistency, shape) =>
           target      shouldBe DynamoDbTarget.Table
           consistency shouldBe strong
@@ -105,7 +105,7 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
     "make a query evaluate a bounded page, sized by the target's average, echoing its target/consistency" in {
       val gsi = DynamoDbTarget.Gsi("customerId-status")
       (0 until 1000).foreach { _ =>
-        behavior.outcomeFor(QueryRequest(gsi, eventual), populated, rng) match
+        behavior.outcomeFor(QueryRequest(gsi, eventual), populated, rng, 1L) match
           case OperationOutcome.Query(target, consistency, shape) =>
             target      shouldBe gsi
             consistency shouldBe eventual
@@ -117,10 +117,10 @@ class OrderTrackingBehaviorSpec extends AnyWordSpec with should.Matchers:
     }
 
     "yield a zero shape when the target is empty" in {
-      behavior.outcomeFor(ScanRequest(DynamoDbTarget.Table, strong), emptyTable, rng) match
+      behavior.outcomeFor(ScanRequest(DynamoDbTarget.Table, strong), emptyTable, rng, 1L) match
         case OperationOutcome.Scan(_, _, shape) => shape shouldBe TableMechanics.ReadShape(0L, 0L, 0L, 0L)
         case other => fail(s"expected a Scan, got $other")
-      behavior.outcomeFor(QueryRequest(DynamoDbTarget.Table, strong), emptyTable, rng) match
+      behavior.outcomeFor(QueryRequest(DynamoDbTarget.Table, strong), emptyTable, rng, 1L) match
         case OperationOutcome.Query(_, _, shape) => shape shouldBe TableMechanics.ReadShape(0L, 0L, 0L, 0L)
         case other => fail(s"expected a Query, got $other")
     }

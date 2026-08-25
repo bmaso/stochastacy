@@ -32,13 +32,13 @@ class DynamoDbTableSpec extends AnyWordSpec with should.Matchers with BeforeAndA
    *  checked. Single-use (its iterator is consumed once per materialization). */
   private final class ScriptedBehavior(script: Seq[OperationOutcome]) extends TableBehavior:
     private val it = script.iterator
-    def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider): OperationOutcome =
+    def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider, tick: Long): OperationOutcome =
       it.next()
 
   /** A stateless behavior that turns whatever state it is handed into a whole-target read shape — used to
    *  observe *which* state the sampler routes a read to. */
   private final class StateReadingBehavior extends TableBehavior:
-    def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider): OperationOutcome =
+    def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider, tick: Long): OperationOutcome =
       request match
         case q: QueryRequest => OperationOutcome.Query(q.target, q.consistency, shapeOf(state))
         case s: ScanRequest  => OperationOutcome.Scan(s.target, s.consistency, shapeOf(state))

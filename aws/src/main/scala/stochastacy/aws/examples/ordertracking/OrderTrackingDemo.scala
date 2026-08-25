@@ -8,6 +8,8 @@ import scala.concurrent.{Await, ExecutionContext}
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
 
+import stochastacy.aws.examples.demo.*
+
 /**
  * Runnable Order-Tracking Phase-1 demo: run the Monte Carlo ensemble and write the results as JSONL,
  * plus a short console summary. No external services — the Postgres `stage` / Grafana `view` pipeline is
@@ -32,24 +34,23 @@ import org.apache.pekko.stream.Materializer
   given Materializer            = Materializer.matFromSystem
   given ExecutionContext        = system.dispatcher
   try
-    val result = Await.result(new OrderTrackingMonteCarloRunner().run(config, seed), 10.minutes)
-    JsonlExport.write(output, result)
-    println(summaryText(config, output, result))
+    val report = Await.result(new SingleTableMonteCarloRunner().runToFile(config, seed, output), 10.minutes)
+    println(summaryText(config, output, report))
   finally
     Await.result(system.terminate(), 30.seconds)
 
 private def parseFlags(args: Seq[String]): Map[String, String] =
   args.grouped(2).collect { case Seq(k, v) if k.startsWith("--") => k.drop(2) -> v }.toMap
 
-private def summaryText(config: OrderTrackingConfig, output: Path, result: OrderTrackingMonteCarloResult): String =
+private def summaryText(config: OrderTrackingConfig, output: Path, report: MonteCarloRunReport): String =
   def mean(metric: String): BigDecimal =
-    result.aggregateSummary
+    report.aggregateSummary
       .collectFirst { case AggregateSummaryValue(`metric`, AggregateStatistic.Mean, v) => v }
       .getOrElse(BigDecimal(0))
 
-  s"""Order-Tracking Phase-1 — Monte Carlo summary (${result.trialCount} trials, ${config.simulationTicks} ticks)
+  s"""Order-Tracking Phase-1 — Monte Carlo summary (${report.trialCount} trials, ${config.simulationTicks} ticks)
      |  mean total read capacity units:  ${mean("TotalReadCapacityUnits")}
      |  mean total write capacity units: ${mean("TotalWriteCapacityUnits")}
      |  mean final storage bytes:        ${mean("FinalStorageBytes")}
      |  mean total estimated cost:       $$${mean("TotalEstimatedCost").setScale(8, BigDecimal.RoundingMode.HALF_UP)}
-     |  wrote ${JsonlExport.records(result).size} records to $output""".stripMargin
+     |  wrote ${report.recordsWritten} records to $output""".stripMargin
