@@ -55,7 +55,7 @@ per-GSI-within-table breakout.**
 | # | slice | status | proof (target) |
 |---|---|---|---|
 | 1 | `TableSpec` + multi-table trial runner | **Done** | `TableSpec` + `TableLegRunner` (shared) + `MultiTable{Scenario,TrialRunner}`; single-table byte-identical; aws 131 tests |
-| 2 | Per-table aggregation + `Table:` export + MC runner | Planned | streaming == collecting; per-table records on disk; determinism; memory flat |
+| 2 | Per-table aggregation + `Table:` export + MC runner | **Done** | per-table `IncrementalAggregator` + `Table:<name>:` export + `MultiTableMonteCarloRunner` (streaming); per-table parity; base metrics only |
 | 3 | Thermostat 2-table scenario + demo | Planned | end-to-end per-table metrics for both tables; per-flow means ≈ configured |
 | 4 | Reconciliation gate + docs + close-out | Planned | reconciliation passes with measured gaps; phase COMPLETE |
 
@@ -99,6 +99,18 @@ tests/gates.
 
 **Validated by:** streaming `runToFile` aggregates == collecting `run` aggregates; the JSONL carries the
 `Table:<name>:…` per-table records for every table; determinism; memory flat in the trial count.
+
+**Delivered.** Two additive `JsonlExport` helpers — `tableTrialRecords` / `tableAggregateRecords` — emit a
+table's records with **base** metrics only (`gsiNames = Vector.empty`), names prefixed `Table:<name>:<metric>`
+(reusing the `DemoRecord` ADT + `JsonlWriter`). New `TableAggregate` (per-table aggregates, **un-prefixed**
+metric names — the prefix is applied only at export), `MultiTableMonteCarloResult` (collecting + trials for
+tests), `MultiTableRunReport` (streaming, bounded). New `MultiTableMonteCarloRunner` mirrors the single-table
+one over `MonteCarlo.stream`: a private `runStreaming` folds each trial's per-table `TrialResult`s into one
+`IncrementalAggregator` per table (base metric lists), with a collecting `run` and a bounded-memory
+`runToFile`. `MultiTableMonteCarloRunnerSpec`: per-table parity (an index-free table's aggregates == a
+standalone single-table ensemble at the same seed, via the derive prefix property), `Table:<name>:` records
+present for every table with **no per-GSI / no overall / no un-prefixed** metrics, streaming == collecting,
+byte-identical determinism. No single-table type or aggregation/export core changed beyond the two helpers.
 
 ### Slice 3 — Thermostat 2-table scenario + demo
 

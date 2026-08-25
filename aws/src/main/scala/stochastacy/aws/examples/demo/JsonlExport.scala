@@ -54,6 +54,33 @@ object JsonlExport:
       DemoRecord.AggregateSummary(scenarioId, trialCount, s.metric, s.statistic.exportName, s.value)
     }
 
+  /** The per-trial records for ONE table of a multi-table trial: the **base** metrics only (no per-GSI
+   *  breakout), each named `Table:<tableName>:<metric>` — the legacy multi-table record shape. */
+  def tableTrialRecords(scenarioId: String, tableName: String, trial: TrialResult): Vector[DemoRecord] =
+    val ts = trial.timeSeries.flatMap { point =>
+      MonteCarloAggregation.timeSeriesMetrics(Vector.empty).map { (name, extract) =>
+        DemoRecord.TrialTimeSeries(scenarioId, trial.trialId, point.tick, s"Table:$tableName:$name", extract(point))
+      }
+    }
+    val summary = MonteCarloAggregation.summaryMetrics(Vector.empty).map { (name, extract) =>
+      DemoRecord.TrialSummary(scenarioId, trial.trialId, s"Table:$tableName:$name", extract(trial.summary))
+    }
+    ts ++ summary
+
+  /** The aggregate records for ONE table of a multi-table ensemble, named `Table:<tableName>:<metric>`. */
+  def tableAggregateRecords(
+    scenarioId:          String,
+    tableName:           String,
+    trialCount:          Int,
+    aggregateTimeSeries: Vector[AggregateTimeSeriesPoint],
+    aggregateSummary:    Vector[AggregateSummaryValue]
+  ): Vector[DemoRecord] =
+    aggregateTimeSeries.map { p =>
+      DemoRecord.AggregateTimeSeries(scenarioId, trialCount, p.tick, s"Table:$tableName:${p.metric}", p.statistic.exportName, p.value)
+    } ++ aggregateSummary.map { s =>
+      DemoRecord.AggregateSummary(scenarioId, trialCount, s"Table:$tableName:${s.metric}", s.statistic.exportName, s.value)
+    }
+
   /** Serialize one record to its JSONL line (no trailing newline). */
   def line(record: DemoRecord): String = Serialization.write(record)
 
