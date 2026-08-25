@@ -1,8 +1,9 @@
 # v2/phase4 — Thermostat single-table demo (single-region)
 
-**Status: IN PROGRESS** — six slices (Slices 1–2 done). The thermostat-fleet family begins on the v2 core,
-and the thermostat *domain* (behavior + workload) it introduces is reused by every later phase (multi-table,
-capstone, multi-region).
+**Status: COMPLETE** — seven slices (1–5, 6a, 6b), all delivered. The v2 single-region Thermostat-fleet demo
+reconciles with the legacy demo within ~2 % on every dimension (writes, reads, storage, cost). The
+thermostat-fleet family begins on the v2 core, and the thermostat *domain* (behavior + workload) it
+introduces is reused by every later phase (multi-table, capstone, multi-region).
 
 Started on branch `v2/phase4`, following `v2/phase3` (Indexed Order-Tracking). This phase ports the
 single-region `ThermostatFleetScenarioConfig` — **one on-demand `device-telemetry` table + 3 GSIs + 1 LSI
@@ -61,7 +62,7 @@ exercise projection-sized maintenance that order-tracking (All-only) did not.
 | 4 | Thermostat workload + demo end-to-end | **Done** | fleet-scaled telemetry + GSI query/scan; `@main`; per-GSI incl. write-only device-status; 104 tests |
 | 5 | Temporal shapes (spikes / vortex / bursts) | **Done** | morning/evening triangular spikes, vortex window, alert-storm bursts on telemetry λ; 109 tests |
 | 6a | System-error gate (`Interface.wrap` + `ChaosGate`) | **Done** | inbound chaos gate rejects ~`systemErrorRate` (0.001) with `SystemErrorResponse`; no capacity/state; 113 tests |
-| 6b | Reconciliation gate + docs + close-out | Planned | v2 vs captured legacy baseline (writes/maintenance equivalent; GSI-read divergence quantified); phase COMPLETE |
+| 6b | Reconciliation gate + docs + close-out | **Done** | clean equivalence vs captured legacy baseline — all metrics within ~2% (reads did NOT diverge); README.thermostat-v2 + catalog; 121 tests; phase COMPLETE |
 
 ## Slices
 
@@ -198,9 +199,24 @@ initial-storage correction). Docs: a thermostat demo guide (`specs/README.thermo
 note that the table is now exercised with mixed projections. Roadmap + memory close-out.
 
 **Validated by:** the reconciliation passes with measured gaps reported; a reviewer can understand and run
-the thermostat demo; phase COMPLETE. **Note:** 1200 ticks × 100 trials is heavier than order-tracking's
-30 × 100 — the baseline capture and reconcile run take a few minutes; if too slow for CI, reconcile at a
-reduced but representative scale and say so.
+the thermostat demo; phase COMPLETE.
+
+**Delivered.** Legacy baseline captured (100 × 1200) via `ThermostatFleetBridge generate --mode
+single-region`; the legacy `DemoMetric.exportName` names match the v2 `MonteCarloAggregation` names exactly,
+so the baseline maps 1:1 and is pinned in `ThermostatFleetReconciliationSpec` (aws can't reference legacy).
+**Outcome: a CLEAN EQUIVALENCE, not a reconciliation-with-divergence** — every dimension within ~2 %: TotalWCU
+−0.18 %, per-GSI WCU ≤0.2 %, TotalRCU +0.47 %, per-GSI RCU customer-devices −0.5 % / fleet-alerts +1.2 %,
+FinalStorageBytes +0.11 %, TotalEstimatedCost −0.18 % (bands: WCU/storage/cost 3 %, RCU 5 %; device-status
+RCU asserted exactly 0). **FINDING — the anticipated GSI-read divergence did NOT materialize** (revises
+D-faithful-reads): v2 charges reads for each GSI's *projected* bytes (KeysOnly ≈128 B, Include ≈192 B) vs the
+legacy base 300 B, but the reads are small enough that RCU rounding (4 KB blocks × eventual-consistency
+halving) absorbs the difference — so reads reconcile, unlike phase-3's unbounded scans. The Slice-6a
+system-error gate closed the last write-path gap (no deferred 0.1 %). Pricing rates verified identical
+(`OnDemandPricing.phase1Default` == legacy `phase1Default`). Immaterial differences documented not gated
+(constant-vs-±25 % item bytes → same 1 WCU/item + storage; inert vortex `affectedFraction`). Full run is
+FAST (~21 s), not slow — no reduced-scale fallback needed. Docs: new `specs/README.thermostat-v2.md`;
+`specs/aws-component-catalog.md` updated (realized `Interface.wrap`/`ChaosGate` decoration; mixed-projection
+exercise; stale `outcomeFor` signature fixed to include `tick`). `aws` 121 tests green.
 
 ## Design principles and reuse
 

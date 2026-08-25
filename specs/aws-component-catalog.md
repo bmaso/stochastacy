@@ -96,24 +96,31 @@ consumption out. Drive it with a tick-framed `Timed[DynamoDbRequest]` source (se
 totals and cost. A multi-table demo composes several `DynamoDbTable`s; **indexes never appear at graph
 level** — one consistent rule (*decoration for cross-cutting edge behavior; configuration for intrinsic
 table structure*). Because it presents a `Req → Resp` edge, a core
-[`Interface.wrap`](component-catalog.md#interfacewrap) gate could later decorate it to add throttling — the
-natural v2 home for admission control, which this table deliberately omits.
+[`Interface.wrap`](component-catalog.md#interfacewrap) gate decorates it transparently: the
+[Thermostat-fleet demo](README.thermostat-v2.md) wraps the table with a `ChaosGate` at the table's inlet to
+model DynamoDB's intrinsic ~0.1 % transient failures (a rejected request consumes nothing) — the first
+realized decoration on an AWS table. The same seam is the natural home for **throttling** admission control,
+which this table still deliberately omits (a later phase).
 
 **Scope.** On-demand billing with **no throughput cap → no throttling**, a single table with Query/Scan +
 GSIs/LSIs, and none of the advanced models (provisioned/auto-scaling, hot-partition, burst, adaptive, PITR,
 TTL, replication). Those belong to later phases.
 
-**Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md); `aws/…/DynamoDbTableSpec.scala` (timed
-response + execution-time consumption, state threading, GSI+LSI maintenance, read routing to a projected
-GSI, control-event preservation, determinism); the phase-1 `OrderTrackingEquivalenceSpec.scala` and the
-`OrderTrackingIndexedReconciliationSpec.scala` (reconcile against the legacy demos).
+**Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md) (single table, then Query/Scan + two
+All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a growing fleet with **mixed
+index projections** — KeysOnly / Include / All — and an **inbound `ChaosGate`**); `aws/…/DynamoDbTableSpec.scala`
+(timed response + execution-time consumption, state threading, GSI+LSI maintenance, read routing to a
+projected GSI, control-event preservation, determinism); the `OrderTrackingEquivalenceSpec.scala`,
+`OrderTrackingIndexedReconciliationSpec.scala`, and `ThermostatFleetReconciliationSpec.scala` (reconcile
+against the legacy demos).
 
 ### Supporting types
 
 #### `TableBehavior`
-The injected domain seam: `outcomeFor(request, state, rng): TableMechanics.OperationOutcome`. Given a
+The injected domain seam: `outcomeFor(request, state, rng, tick): TableMechanics.OperationOutcome`. Given a
 request and **the state of the target it hits** (the sampler routes it — base for writes/gets/table reads,
-the index's summary for a GSI/LSI read), it *draws what the operation did* — a read hit/miss and size, the
+the index's summary for a GSI/LSI read) and the current `tick` (so a behavior can be time-dependent, e.g. a
+growing fleet), it *draws what the operation did* — a read hit/miss and size, the
 bytes written, whether an item existed, or a read's shape (how many items/bytes were evaluated vs.
 returned). All operation-level randomness lives here; the mechanics that follow are pure. Implement one per
 domain (the demo's is `OrderTrackingBehavior`).
