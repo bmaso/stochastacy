@@ -150,10 +150,12 @@ independent seeds (workload / table / gate) so the flows don't share an RNG stre
 the consumption in one pass into a `TrialResult` (totals + per-tick series), and `OnDemandPricing` prices it.
 
 ### 4.4 The ensemble
-`SingleTableMonteCarloRunner.run` drives the core `MonteCarlo.run` — `trialCount` reproducible trials from
-one master seed, order-stable and parallelism-independent — then `MonteCarloAggregation` reduces the trials
-to across-trial mean and (population) standard deviation per metric. `JsonlExport` renders the per-trial and
-aggregate records as JSONL.
+`SingleTableMonteCarloRunner` drives the core `MonteCarlo.stream` — `trialCount` reproducible trials from
+one master seed, order-stable and parallelism-independent — folding each completed trial into an
+`IncrementalAggregator` (running moments per metric → across-trial mean and population standard deviation)
+and releasing it. The `@main`'s `runToFile` streams each trial's records to disk through a `JsonlWriter` as
+it completes, then appends the aggregates — so a run's memory stays flat in the trial count and the JSONL
+grows during the run rather than being buffered whole (a collecting `run` variant backs the tests/gates).
 
 ---
 

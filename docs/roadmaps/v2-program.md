@@ -30,25 +30,26 @@ sequence.
 - **v2/phase3** — **Indexed Order-Tracking** (Query/Scan + GSIs/LSIs): indexes as intrinsic table config,
   `SecondaryIndexMechanics`, an improved read model (scan cost grows with the table), per-GSI reporting.
   Roadmap: `v2-phase3.md`.
+- **v2/phase4** — **Thermostat single-table demo (single-region)**: the thermostat domain begins on the v2
+  core — one on-demand `device-telemetry` table + **3 GSIs + 1 LSI (mixed KeysOnly/Include/All projections)**
+  + the fleet-growth, temporally-shaped telemetry behavior/workload; a **system-error `ChaosGate`** (first
+  `Interface.wrap` on an AWS table); a **clean equivalence** reconcile with legacy (~2% on every dimension).
+  Plus an impromptu harness slice (**6c**) making the demo output **streaming / bounded-memory**. Roadmap:
+  `v2-phase4.md`.
 
-At this point the entire legacy **`ordertracking`** demo (both phases) is ported and reconciled. The only
-remaining legacy demo is the **thermostat-fleet** family (`examples/…/thermostatfleet`, driven by
-`ThermostatFleetBridge`) — a set of scenarios of increasing complexity that culminate in a 4-table,
-multi-region capstone.
+At this point the entire legacy **`ordertracking`** demo (both phases) and the single-region **thermostat**
+demo are ported and reconciled. The remaining legacy demos are the rest of the **thermostat-fleet** family
+(`examples/…/thermostatfleet`, driven by `ThermostatFleetBridge`) — multi-table, feature-depth, and a
+4-table multi-region capstone — all of which reuse the now-available thermostat domain.
 
 ## Planned — to parity, then retirement
 
 Ordering is smallest-leap-first, and every phase keeps a **clean legacy reconcile**. The thermostat domain
-(a telemetry behavior + workload) leads, because the remaining legacy demos — including the multi-table one
-— are all *thermostat* scenarios; porting the single-table thermostat demo first (no engine changes) gives
+(a telemetry behavior + workload) led (phase 4, now done), because the remaining legacy demos — including
+the multi-table one — are all *thermostat* scenarios; porting the single-table thermostat demo first gave
 every later phase a legacy scenario to reconcile against. Feature-depth phases (6–7) are largely
 independent and the capstone (8) integrates them, so their relative order can shift by priority.
 
-- **v2/phase4 — Thermostat single-table demo (single-region).** Port the single-region
-  `ThermostatFleetScenarioConfig`: **one on-demand `device-telemetry` table + 2 GSIs + the thermostat
-  telemetry behavior / workload**, on the existing indexed table (Query/Scan + GSIs). **No engine
-  changes** — a new demo *domain* only. Proves the single-region thermostat scenario, and introduces the
-  thermostat behavior/workload that every later phase reuses.
 - **v2/phase5 — Multi-table composition.** Compose several v2 `DynamoDbTable`s (the now-available thermostat
   tables) into one simulation; per-table + overall reporting (the legacy `Table:<name>:…` metric names).
   Proves `MultiTableScenarioConfig`. Cashes in the "table is the composable graph-level unit" design and
