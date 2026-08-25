@@ -46,37 +46,17 @@ object MonteCarloAggregation:
       )
     }
 
+  /** Batch across-trial aggregation — a thin wrapper over the streaming [[IncrementalAggregator]] (folds
+   *  the given trials, then reads its result), so batch and streaming aggregation are identical by
+   *  construction. `gsiNames` is derived from the trials (as before), so write-only GSIs are included. */
+  private def aggregatorFor(trials: Vector[TrialResult]): IncrementalAggregator =
+    val names = gsiNames(trials)
+    val agg   = new IncrementalAggregator(timeSeriesMetrics(names), summaryMetrics(names))
+    trials.foreach(agg.add)
+    agg
+
   def timeSeries(trials: Vector[TrialResult]): Vector[AggregateTimeSeriesPoint] =
-    if trials.isEmpty then Vector.empty
-    else
-      val metrics      = timeSeriesMetrics(gsiNames(trials))
-      val ticks        = trials.head.timeSeries.map(_.tick)
-      val pointsByTick = trials.flatMap(_.timeSeries).groupBy(_.tick)
-      ticks.flatMap { tick =>
-        val points = pointsByTick.getOrElse(tick, Vector.empty)
-        metrics.flatMap { (name, extract) =>
-          val (mean, sd) = meanAndStdDev(points.map(extract))
-          Vector(
-            AggregateTimeSeriesPoint(tick, name, AggregateStatistic.Mean,   mean),
-            AggregateTimeSeriesPoint(tick, name, AggregateStatistic.StdDev, sd)
-          )
-        }
-      }
+    if trials.isEmpty then Vector.empty else aggregatorFor(trials).timeSeries
 
   def summary(trials: Vector[TrialResult]): Vector[AggregateSummaryValue] =
-    summaryMetrics(gsiNames(trials)).flatMap { (name, extract) =>
-      val (mean, sd) = meanAndStdDev(trials.map(t => extract(t.summary)))
-      Vector(
-        AggregateSummaryValue(name, AggregateStatistic.Mean,   mean),
-        AggregateSummaryValue(name, AggregateStatistic.StdDev, sd)
-      )
-    }
-
-  /** Mean and population standard deviation (÷N; 0 for fewer than two values) — the legacy convention. */
-  private def meanAndStdDev(values: Seq[BigDecimal]): (BigDecimal, BigDecimal) =
-    val n = values.size
-    if n == 0 then (BigDecimal(0), BigDecimal(0))
-    else
-      val mean     = values.sum / BigDecimal(n)
-      val variance = if n < 2 then BigDecimal(0) else values.map(x => (x - mean).pow(2)).sum / BigDecimal(n)
-      (mean, BigDecimal.decimal(math.sqrt(variance.toDouble)))
+    aggregatorFor(trials).summary // empty trials → base metrics at zero (matches the legacy convention)

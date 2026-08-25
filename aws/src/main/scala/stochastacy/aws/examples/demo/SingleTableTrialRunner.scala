@@ -52,18 +52,25 @@ final class SingleTableTrialRunner()(using ActorSystem, Materializer, ExecutionC
           RandomSource.KISS.create(gateSeed))
       else tableGraph
 
+    // Fold the consumption plane incrementally as it flows, so a trial never holds its raw facts —
+    // only the running per-tick accounting (bounded by ticks × metrics).
+    val accountingSink =
+      Sink.fold[TrialAccountingState, TimedElement[Timed[DynamoDbConsumption]]](
+        new TrialAccountingState(scenario.initialStorageBytesAllTargets, scenario.rates)
+      ) { (state, element) => state.update(element); state }
+
     val graph = RunnableGraph.fromGraph(
-      GraphDSL.createGraph(Sink.seq[TimedElement[Timed[DynamoDbConsumption]]]) { implicit b => consSink =>
+      GraphDSL.createGraph(accountingSink) { implicit b => accSink =>
         import GraphDSL.Implicits.*
         val table = b.add(tableComponent)
         b.add(Source(framed)) ~> table.in
         table.out0 ~> b.add(Sink.ignore)
-        table.out1 ~> consSink.in
+        table.out1 ~> accSink.in
         ClosedShape
       }
     )
 
-    graph.run().map { consumption =>
-      val (summary, series) = TrialAccounting.account(consumption, scenario.initialStorageBytesAllTargets, scenario.rates)
+    graph.run().map { state =>
+      val (summary, series) = state.result()
       TrialResult(trialId, series, summary)
     }

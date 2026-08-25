@@ -36,23 +36,22 @@ import stochastacy.aws.examples.demo.*
   given Materializer        = Materializer.matFromSystem
   given ExecutionContext    = system.dispatcher
   try
-    val result = Await.result(new SingleTableMonteCarloRunner().run(config, seed), 30.minutes)
-    JsonlExport.write(output, result)
+    val report = Await.result(new SingleTableMonteCarloRunner().runToFile(config, seed, output), 30.minutes)
 
     def mean(metric: String): BigDecimal =
-      result.aggregateSummary.collectFirst { case AggregateSummaryValue(`metric`, AggregateStatistic.Mean, v) => v }.getOrElse(BigDecimal(0))
+      report.aggregateSummary.collectFirst { case AggregateSummaryValue(`metric`, AggregateStatistic.Mean, v) => v }.getOrElse(BigDecimal(0))
     val gsiLines = config.globalSecondaryIndexes.map { g =>
       s"    ${g.indexName}: RCU=${mean(s"GSI:${g.indexName}:TotalReadCapacityUnits")}, WCU=${mean(s"GSI:${g.indexName}:TotalWriteCapacityUnits")}"
     }.mkString("\n")
 
     println(
-      s"""Thermostat-fleet single-region — Monte Carlo summary (${result.trialCount} trials, ${config.simulationTicks} ticks)
+      s"""Thermostat-fleet single-region — Monte Carlo summary (${report.trialCount} trials, ${config.simulationTicks} ticks)
          |  mean total read capacity units:  ${mean("TotalReadCapacityUnits")}
          |  mean total write capacity units: ${mean("TotalWriteCapacityUnits")}
          |  mean final storage bytes:        ${mean("FinalStorageBytes")}
          |  mean total estimated cost:       $$${mean("TotalEstimatedCost").setScale(8, BigDecimal.RoundingMode.HALF_UP)}
          |  per-GSI total capacity (mean):
          |$gsiLines
-         |  wrote ${JsonlExport.records(result).size} records to $output""".stripMargin)
+         |  wrote ${report.recordsWritten} records to $output""".stripMargin)
   finally
     Await.result(system.terminate(), 30.seconds)

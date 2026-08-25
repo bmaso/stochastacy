@@ -24,11 +24,24 @@ final case class AggregateSummaryValue(
   value:     BigDecimal
 )
 
-/** The result of a Monte Carlo ensemble: the per-trial results plus their across-trial aggregates. */
+/** The result of a Monte Carlo ensemble: the per-trial results plus their across-trial aggregates. Used by
+ *  the collecting `run` (tests/gates at bounded sizes); the streaming `runToFile` returns a
+ *  [[MonteCarloRunReport]] instead, holding no per-trial data. */
 final case class MonteCarloResult(
   scenarioId:          String,
   trialCount:          Int,
   trials:              Vector[TrialResult],
   aggregateTimeSeries: Vector[AggregateTimeSeriesPoint],
   aggregateSummary:    Vector[AggregateSummaryValue]
+)
+
+/** The result of a **streaming** Monte Carlo run written straight to JSONL: the across-trial aggregates
+ *  (bounded — `O(ticks × metrics)`) plus how many records were written. Carries no per-trial data, so its
+ *  memory does not grow with the trial count. */
+final case class MonteCarloRunReport(
+  scenarioId:          String,
+  trialCount:          Int,
+  aggregateTimeSeries: Vector[AggregateTimeSeriesPoint],
+  aggregateSummary:    Vector[AggregateSummaryValue],
+  recordsWritten:      Long
 )

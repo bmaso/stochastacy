@@ -1,9 +1,10 @@
 # v2/phase4 — Thermostat single-table demo (single-region)
 
-**Status: COMPLETE** — seven slices (1–5, 6a, 6b), all delivered. The v2 single-region Thermostat-fleet demo
-reconciles with the legacy demo within ~2 % on every dimension (writes, reads, storage, cost). The
-thermostat-fleet family begins on the v2 core, and the thermostat *domain* (behavior + workload) it
-introduces is reused by every later phase (multi-table, capstone, multi-region).
+**Status: COMPLETE** — seven slices (1–5, 6a, 6b) delivered, plus an impromptu harness slice **6c**
+(bounded-memory streaming output). The v2 single-region Thermostat-fleet demo reconciles with the legacy
+demo within ~2 % on every dimension (writes, reads, storage, cost). The thermostat-fleet family begins on
+the v2 core, and the thermostat *domain* (behavior + workload) it introduces is reused by every later phase
+(multi-table, capstone, multi-region).
 
 Started on branch `v2/phase4`, following `v2/phase3` (Indexed Order-Tracking). This phase ports the
 single-region `ThermostatFleetScenarioConfig` — **one on-demand `device-telemetry` table + 3 GSIs + 1 LSI
@@ -63,6 +64,7 @@ exercise projection-sized maintenance that order-tracking (All-only) did not.
 | 5 | Temporal shapes (spikes / vortex / bursts) | **Done** | morning/evening triangular spikes, vortex window, alert-storm bursts on telemetry λ; 109 tests |
 | 6a | System-error gate (`Interface.wrap` + `ChaosGate`) | **Done** | inbound chaos gate rejects ~`systemErrorRate` (0.001) with `SystemErrorResponse`; no capacity/state; 113 tests |
 | 6b | Reconciliation gate + docs + close-out | **Done** | clean equivalence vs captured legacy baseline — all metrics within ~2% (reads did NOT diverge); README.thermostat-v2 + catalog; 121 tests; phase COMPLETE |
+| 6c | Streaming output accumulation (bounded memory) | **Done** | streaming per-trial fold + incremental aggregator + JSONL-to-disk writer; memory flat in trials/volume, file grows during run; identical numbers; core 511 / aws 127 tests |
 
 ## Slices
 
@@ -217,6 +219,28 @@ system-error gate closed the last write-path gap (no deferred 0.1 %). Pricing ra
 FAST (~21 s), not slow — no reduced-scale fallback needed. Docs: new `specs/README.thermostat-v2.md`;
 `specs/aws-component-catalog.md` updated (realized `Interface.wrap`/`ChaosGate` decoration; mixed-projection
 exercise; stale `outcomeFor` signature fixed to include `tick`). `aws` 121 tests green.
+
+### Slice 6c — Streaming output accumulation (bounded memory)
+
+An impromptu harness slice, prompted by the observation that the demo's JSONL was written only at the very
+end — the whole ensemble was staged in memory, so run size was bounded by RAM. Three compounding buffers
+were replaced with a streaming pipeline (a harness-level change in `stochastacy.aws.examples.demo`, so every
+v2 AWS demo benefits; it mirrors the legacy's `IncrementalMonteCarloAgg` + `BufferedWriter`).
+
+**Delivered.** (1) **Per-trial fold** — `TrialAccounting` refactored into a mutable `TrialAccountingState`
+(`update`/`result`); `SingleTableTrialRunner` drains the consumption plane through `Sink.fold` instead of
+`Sink.seq`, so a trial never holds its raw facts (memory *O(request volume)* → *O(ticks × metrics)*). (2)
+**Incremental aggregator** — new `IncrementalAggregator` keeps `(count, sum, sumSq)` per `(tick, metric)` /
+summary-metric (mean + population stddev in one pass, algebraically identical to the old two-pass);
+`MonteCarloAggregation` is now a thin batch wrapper over it (so its spec doubles as a parity check). (3)
+**Streaming writer** — new `JsonlWriter` (buffered, line-per-record); `MonteCarlo.stream` (a `Source[R]`
+variant of `run`, order-preserving); `SingleTableMonteCarloRunner.runToFile` streams each trial's records to
+disk as it completes then appends the aggregates, returning a bounded `MonteCarloRunReport` (no per-trial
+data). The collecting `run` is retained (over the same streaming core) for the fixed-size tests/gates. All
+three `@main`s switched to `runToFile`. New specs: `IncrementalAggregatorSpec` (batch == incremental),
+`SingleTableStreamingSpec` (records on disk, streaming == collecting aggregates, determinism). **Numbers
+identical** — the reconciliation gate reports the same gaps (RCU +0.47 %, WCU −0.18 %). `core` 511 / `aws`
+127 tests green. Verified on a large run (200 trials × 6000 ticks): the file grows steadily during the run.
 
 ## Design principles and reuse
 
