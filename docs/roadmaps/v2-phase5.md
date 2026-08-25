@@ -54,7 +54,7 @@ per-GSI-within-table breakout.**
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | `TableSpec` + multi-table trial runner | Planned | a 2-table trial yields correct per-table results; all single-table gates unchanged |
+| 1 | `TableSpec` + multi-table trial runner | **Done** | `TableSpec` + `TableLegRunner` (shared) + `MultiTable{Scenario,TrialRunner}`; single-table byte-identical; aws 131 tests |
 | 2 | Per-table aggregation + `Table:` export + MC runner | Planned | streaming == collecting; per-table records on disk; determinism; memory flat |
 | 3 | Thermostat 2-table scenario + demo | Planned | end-to-end per-table metrics for both tables; per-flow means ≈ configured |
 | 4 | Reconciliation gate + docs + close-out | Planned | reconciliation passes with measured gaps; phase COMPLETE |
@@ -74,6 +74,20 @@ seed.
 
 **Validated by:** a 2-table trial produces the right per-table results (each table's totals match a
 standalone single-table run of the same spec + seed); **every single-table test and gate stays green**.
+
+**Delivered.** New `TableSpec` (per-table unit: name, state, behavior, indexes, latency, rates,
+`systemErrorRate`, initial storage, `arrivals`) and a shared `TableLegRunner.run(spec, ticks, w, t, g)` —
+the old `SingleTableTrialRunner` body extracted verbatim (arrivals → frame → table `[+ ChaosGate]` →
+consumption `Sink.fold`). `SingleTableScenario` gains a defaulted `tableSpec`; `SingleTableTrialRunner` is
+now a thin wrapper that derives `(w, t, g) = SeedSequence.derive(seed, 3)` and delegates. New
+`MultiTableScenario` (ensemble params + `Vector[TableSpec]`), `MultiTableTrialResult` (per-table
+`(name, TrialResult)`, ordered), and `MultiTableTrialRunner` — one independent leg per table (its own
+graph + accounting fold, no tag/merge), per-table seeds from `derive(seed, 3 × N)` sliced `(3i, 3i+1,
+3i+2)`. The `derive` prefix property makes table 0's seeds equal `derive(seed, 3)` for any `N`, so a table
+is independent of its companions and a one-table scenario matches the single-table runner exactly — both
+proven by `MultiTableTrialRunnerSpec` (single-table equivalence, independence, per-table results,
+determinism). `aws` 131 tests green; the reconciliation gate reports the same gaps (single-table
+byte-identical); no engine/legacy change.
 
 ### Slice 2 — Per-table aggregation + `Table:` export + Monte Carlo runner
 
