@@ -57,7 +57,7 @@ a mid-run switch is priced by integrating the mode in force **per tick**. Thrott
 | # | slice | status | proof (target) |
 |---|---|---|---|
 | 1 | Billing mode + provisioned capacity-hour pricing | **Done** | `BillingMode` + per-target capacity-hour pricing; provisioned bills capacity-hours (consumption-independent); on-demand byte-identical |
-| 2 | Throttling (weighted per-tick cap, internal) | Planned | over-ceiling → throttled (no consumption/state); under → admitted; per-tick reset |
+| 2 | Throttling (weighted per-tick cap, internal) | **Done** | per-target `ThrottleBudget` in `TableState`; over-ceiling → `ThrottledResponse` + `RequestThrottled` (no consumption/state); per-tick reset; on-demand byte-identical |
 | 3 | Scheduled reconfiguration | Planned | mode/capacity change at the scheduled tick; 24 h switch cooldown; throttle follows new ceiling |
 | 4 | Mixed-mode scenario + demo (end-to-end) | Planned | demo runs the on-demand→provisioned→adjust trajectory; capacity-hour cost + throttle counts present; determinism |
 | 5 | Reconciliation gate + docs + close-out | Planned | reconcile vs captured legacy mixed-mode baseline; docs; phase COMPLETE |
@@ -103,11 +103,20 @@ throttle-count metric. Active only when the billing mode is `Provisioned`.
 **Validated by:** throttle unit tests (over-ceiling → throttled; under → admitted; per-tick reset; throttled
 → zero consumption and unchanged state).
 
-*Sub-decisions:* throttle granularity (base-only vs per-target — determined empirically against the
-mixed-mode baseline; base + synchronous-LSI is likely the binding constraint); how the throttle count is
-reported (a throttle-count fact on the consumption/metric plane, so the existing fold captures it — preferred
-— vs tapping the response plane); whether GSI-maintenance overage throttles the base write (a DynamoDB
-nuance — start simple, refine only if the reconcile needs it).
+**Delivered.** New `dynamodb.ThrottleBudget` — the reusable **weighted per-tick accumulator**, per budget
+target (`"base"` = base + LSI; each GSI by name), with `overBudget`/`add` against `Provisioned` ceilings.
+Two new protocol variants: `ThrottledResponse` (response) and `RequestThrottled(target)` (a 0-capacity
+marker on the consumption plane). `TableState` gains `perTickBudget` (reset in `onTick` alongside
+`currentTick`). `DynamoDbTable.Config` gains `billingMode` (default `OnDemand`); `sample` groups the op's
+demand per budget target (base + index maintenance, all at admission) and — when `Provisioned` — throttles
+if **any** target would exceed its ceiling (emit `ThrottledResponse` + `RequestThrottled`, no consumption,
+state/budget untouched), else admits and charges the budget. On-demand is byte-identical (no budget, no
+throttle). `TrialAccounting` counts `RequestThrottled` → `TrialSummary.totalThrottledRequests` (field only).
+`TableLegRunner` passes `spec.billingMode` into the table config. Decisions per Brian: **per-target**
+granularity, `RequestThrottled` metric marker, all-demand-at-admission. Tests: `ThrottlingSpec`
+(sampler-level — admit-to-ceiling-then-throttle, per-tick reset, **per-target GSI binds with base headroom**,
+on-demand never throttles) + `ThrottlingEndToEndSpec` (tight ceiling → throttles, loose/on-demand → 0). No
+mid-run switch yet (Slice 3); billing mode static.
 
 ### Slice 3 — Scheduled reconfiguration
 

@@ -47,7 +47,12 @@ object TableSummaryState:
  * read it). This is the `DynamoDbTable` sampler's state and its materialized value; a table with no
  * indexes carries an empty `indexes` map and behaves exactly as the base summary alone.
  */
-final case class TableState(base: TableSummaryState, indexes: Map[String, TableSummaryState], currentTick: Long = 0L):
+final case class TableState(
+  base:        TableSummaryState,
+  indexes:     Map[String, TableSummaryState],
+  currentTick: Long           = 0L,
+  perTickBudget: ThrottleBudget = ThrottleBudget.empty // provisioned capacity admitted this tick; reset each tick
+):
   /** The summary of the index named `indexName` (empty if unknown). */
   def index(indexName: String): TableSummaryState = indexes.getOrElse(indexName, TableSummaryState.empty)
 

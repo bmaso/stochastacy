@@ -34,7 +34,8 @@ object TableLegRunner:
       behavior               = spec.behavior,
       latency                = spec.latency,
       globalSecondaryIndexes = spec.globalSecondaryIndexes,
-      localSecondaryIndexes  = spec.localSecondaryIndexes
+      localSecondaryIndexes  = spec.localSecondaryIndexes,
+      billingMode            = spec.billingMode
     )
 
     // A load-independent system-error gate on the table's inlet: rejected requests never reach the table,

@@ -81,3 +81,8 @@ final case class ScanResponse(
 /** The error response to any request the system-error gate rejects — DynamoDB's `InternalServerError`.
  *  No capacity is consumed and no state is mutated (a rejected request never reaches the table). */
 case object SystemErrorResponse extends DynamoDbResponse
+
+/** The error response to a provisioned request throttled because its demand would exceed the table's (or a
+ *  GSI's) per-tick provisioned capacity — DynamoDB's `ProvisionedThroughputExceededException`. No capacity
+ *  is consumed and no state is mutated. */
+case object ThrottledResponse extends DynamoDbResponse

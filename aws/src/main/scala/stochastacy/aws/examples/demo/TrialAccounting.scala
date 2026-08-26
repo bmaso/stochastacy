@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import scala.collection.mutable
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, StorageBytesDelta, WriteCapacityConsumed}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, RequestThrottled, StorageBytesDelta, WriteCapacityConsumed}
 import stochastacy.core.component.Timed
 import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
 
@@ -64,10 +64,11 @@ final class TrialAccountingState(
 
   // Billable accumulators, attributed to the mode in force each tick: consumed capacity during on-demand
   // ticks, reserved capacity-ticks during provisioned ticks.
-  private var onDemandRcu  = BigDecimal(0)
-  private var onDemandWcu  = BigDecimal(0)
-  private var provRcuTicks = BigInt(0)
-  private var provWcuTicks = BigInt(0)
+  private var onDemandRcu   = BigDecimal(0)
+  private var onDemandWcu   = BigDecimal(0)
+  private var provRcuTicks  = BigInt(0)
+  private var provWcuTicks  = BigInt(0)
+  private var throttledReqs = 0L
 
   // cumulative-through-this-tick, for the time series' running cost
   private var cumOnDemandRcu  = BigDecimal(0)
@@ -137,6 +138,8 @@ final class TrialAccountingState(
             target match { case DynamoDbTarget.Gsi(n) => bump(bucketGsiWcu, n, u); bump(gsiWcuTotal, n, u); case _ => () }
           case StorageBytesDelta(d, _) =>
             currentBytes += d
+          case RequestThrottled(_) =>
+            throttledReqs += 1L
 
   def result(): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
     val summary = TrialSummary(
@@ -150,6 +153,7 @@ final class TrialAccountingState(
       gsiTotalReadCapacityUnits  = gsiRcuTotal.toMap,
       gsiTotalWriteCapacityUnits = gsiWcuTotal.toMap,
       totalProvisionedReadCapacityUnitTicks  = provRcuTicks,
-      totalProvisionedWriteCapacityUnitTicks = provWcuTicks
+      totalProvisionedWriteCapacityUnitTicks = provWcuTicks,
+      totalThrottledRequests                 = throttledReqs
     )
     (summary, points.result())
