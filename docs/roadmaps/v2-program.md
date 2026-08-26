@@ -36,24 +36,26 @@ sequence.
   `Interface.wrap` on an AWS table); a **clean equivalence** reconcile with legacy (~2% on every dimension).
   Plus an impromptu harness slice (**6c**) making the demo output **streaming / bounded-memory**. Roadmap:
   `v2-phase4.md`.
+- **v2/phase5** — **Multi-table composition**: compose several independent thermostat `DynamoDbTable`s into
+  one simulation with **per-table** (`Table:<name>:…`) reporting, reconciling the legacy `twoTableDefault`
+  (device-registry + device-telemetry) as a **clean per-table equivalence** (~2%). **Generalized the demo
+  harness** — a per-table `TableSpec` + `MultiTable{Scenario,Trial,MonteCarlo}Runner` reuse the single-table
+  accounting / aggregation / streaming primitives (single-table byte-identical). Roadmap: `v2-phase5.md`.
 
-At this point the entire legacy **`ordertracking`** demo (both phases) and the single-region **thermostat**
-demo are ported and reconciled. The remaining legacy demos are the rest of the **thermostat-fleet** family
-(`examples/…/thermostatfleet`, driven by `ThermostatFleetBridge`) — multi-table, feature-depth, and a
-4-table multi-region capstone — all of which reuse the now-available thermostat domain.
+At this point the entire legacy **`ordertracking`** demo (both phases) and the single-region + multi-table
+**thermostat** demos are ported and reconciled. The remaining legacy demos are the rest of the
+**thermostat-fleet** family (`examples/…/thermostatfleet`, driven by `ThermostatFleetBridge`) — feature-depth
+single-table capabilities and a 4-table multi-region capstone — all of which reuse the now-available
+thermostat domain and multi-table harness.
 
 ## Planned — to parity, then retirement
 
 Ordering is smallest-leap-first, and every phase keeps a **clean legacy reconcile**. The thermostat domain
-(a telemetry behavior + workload) led (phase 4, now done), because the remaining legacy demos — including
-the multi-table one — are all *thermostat* scenarios; porting the single-table thermostat demo first gave
+(a telemetry behavior + workload) led (phase 4) and multi-table composition followed (phase 5), because the
+remaining legacy demos are all *thermostat* scenarios; porting the single-table thermostat demo first gave
 every later phase a legacy scenario to reconcile against. Feature-depth phases (6–7) are largely
 independent and the capstone (8) integrates them, so their relative order can shift by priority.
 
-- **v2/phase5 — Multi-table composition.** Compose several v2 `DynamoDbTable`s (the now-available thermostat
-  tables) into one simulation; per-table + overall reporting (the legacy `Table:<name>:…` metric names).
-  Proves `MultiTableScenarioConfig`. Cashes in the "table is the composable graph-level unit" design and
-  erects the capstone's skeleton.
 - **v2/phase6 — Provisioned capacity + throttling + auto-scaling.** Provisioned billing (capacity-hour
   cost), **throttling** (requests over per-tick capacity are rejected), then auto-scaling (capacity tracks
   utilization). **Central decision:** throttling via an `Interface.wrap` gate vs. internal admission — the

@@ -159,6 +159,57 @@ grows during the run rather than being buffered whole (a collecting `run` varian
 
 ---
 
+## Multi-table composition (several tables in one simulation)
+
+A second scenario, `thermostat-fleet-multi-table`, composes **several independent thermostat tables** into
+one simulation and reports them **per table**. It re-implements the legacy `MultiTableScenarioConfig.twoTableDefault`:
+
+- **device-registry** — a large, **read-heavy / write-light** fleet (telemetry 0.005/device, query 2.0/tick,
+  scan 0.2/tick, no system errors).
+- **device-telemetry** — exactly the single-region default above (0.033 telemetry, temporal shapes, mixed
+  GSIs/LSI, system-error 0.001).
+
+### What it adds
+- **Composition, not new wiring.** Each table is an independent `DynamoDbTable` + workload; they share only
+  the ensemble (`simulationTicks` / `trialCount` / `parallelism`). This cashes in the "table is the
+  composable graph-level unit" design — there is no cross-table coupling (no shared workload, no
+  transactions).
+- **Per-table reporting.** The JSONL breaks out each table's capacity/storage/cost under the legacy names
+  `Table:<name>:ReadCapacityUnits` / `…WriteCapacityUnits` / … (and `Total…`) — **base metrics only** (no
+  per-GSI-within-table, no overall cross-table roll-up), matching the legacy multi-table output.
+
+### Generalized harness
+The single-table harness was **generalized** to support N tables by *reusing* its primitives, not
+duplicating them. A per-table `TableSpec` (one table's state / behavior / indexes / latency / system-error
+rate / workload) is the shared unit: a `SingleTableScenario` yields one, a `MultiTableScenario` carries a
+vector of them, and `TableLegRunner` turns one into a `TrialResult`. The `MultiTable{Trial,MonteCarlo}Runner`
+run each table as an independent leg (its own accounting fold; no tag/merge) and aggregate per table, reusing
+`TrialAccountingState`, `IncrementalAggregator`, and the streaming `JsonlWriter`. Per-table seeds come from
+`SeedSequence.derive(seed, 3 × N)` sliced per table; the derive prefix property makes a table's result
+independent of its companions and a one-table scenario identical to the single-table runner — so single-table
+output stays byte-identical.
+
+### Reconciliation
+`ThermostatMultiTableReconciliationSpec` reconciles v2 against the captured legacy `twoTableDefault` baseline
+(100 × 1200), **per table** — a clean equivalence like the single-region gate:
+
+| table | RCU | WCU | storage | cost |
+|---|---|---|---|---|
+| device-registry  | +0.25% | +0.57% | +0.11% | +0.57% |
+| device-telemetry | −2.00% | +0.50% | +0.12% | +0.50% |
+
+(bands: RCU ±5%, WCU/storage/cost ±3%). The reads reconcile for the same reason as the single-region demo —
+RCU rounding absorbs the projected-vs-base byte gap.
+
+### Running it
+```bash
+sbt 'aws/runMain stochastacy.aws.examples.thermostatfleet.ThermostatMultiTableDemo --output /tmp/thermostat-fleet-multi-table.jsonl --trials 100 --ticks 1200 --seed 1'
+```
+Same flags as the single-region demo; the console summary shows a per-table totals block. To run the gate:
+`sbt 'aws/testOnly stochastacy.aws.examples.thermostatfleet.ThermostatMultiTableReconciliationSpec'`.
+
+---
+
 ## Source map
 
 | concern | file |
@@ -166,9 +217,9 @@ grows during the run rather than being buffered whole (a collecting `run` varian
 | scenario config (fleet / telemetry / temporal shapes / system error / indexes / read rates) | `ThermostatConfig.scala` |
 | domain behavior (saturation write, query/scan read shapes) | `ThermostatFleetBehavior.scala` |
 | workload driver (shaped telemetry + GSI query/scan) | `ThermostatWorkload.scala` |
-| `@main` | `ThermostatFleetDemo.scala` |
-| reconciliation gate | `test/.../ThermostatFleetReconciliationSpec.scala` |
-| shared single-table demo harness | `stochastacy.aws.examples.demo.*` (`SingleTableScenario`, `SingleTable{Trial,MonteCarlo}Runner`, `TrialAccounting`, `OnDemandPricing`, `MonteCarloAggregation`, `JsonlExport`) |
+| single-region `@main` + reconciliation gate | `ThermostatFleetDemo.scala`, `test/.../ThermostatFleetReconciliationSpec.scala` |
+| multi-table scenario + `@main` + gate | `ThermostatMultiTableConfig.scala`, `ThermostatMultiTableDemo.scala`, `test/.../ThermostatMultiTableReconciliationSpec.scala` |
+| shared single/multi-table demo harness | `stochastacy.aws.examples.demo.*` (`TableSpec`, `TableLegRunner`, `SingleTableScenario`, `MultiTableScenario`, `SingleTable{Trial,MonteCarlo}Runner`, `MultiTable{Trial,MonteCarlo}Runner`, `TrialAccounting`, `IncrementalAggregator`, `OnDemandPricing`, `JsonlExport`/`JsonlWriter`) |
 | the reusable table component + gate | `stochastacy.aws.dynamodb.*`, `stochastacy.core.component.Interface` / `gate.ChaosGate` |
 
 ## See also

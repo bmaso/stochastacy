@@ -42,3 +42,18 @@ trait SingleTableScenario:
   /** Load-independent per-request failure rate, applied by the harness as an inbound `ChaosGate` on the
    *  table's inlet (0.0 = no gate). A rejected request consumes no capacity and mutates no state. */
   def systemErrorRate: Double = 0.0
+
+  /** This scenario as a single [[TableSpec]] — the per-table unit the shared harness runs. The table name
+   *  defaults to the scenario id (single-table output is not table-prefixed, so it is not otherwise used). */
+  def tableSpec: TableSpec = TableSpec(
+    tableName                     = scenarioId,
+    initialTableState             = initialTableState,
+    behavior                      = behavior,
+    globalSecondaryIndexes        = globalSecondaryIndexes,
+    localSecondaryIndexes         = localSecondaryIndexes,
+    initialStorageBytesAllTargets = initialStorageBytesAllTargets,
+    latency                       = latency,
+    rates                         = rates,
+    systemErrorRate               = systemErrorRate,
+    arrivals                      = arrivals
+  )

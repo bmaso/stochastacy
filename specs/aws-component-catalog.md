@@ -93,9 +93,12 @@ per-item state.
 **Composition.** The table is a **leaf**, and the composable graph-level unit: requests in, responses +
 consumption out. Drive it with a tick-framed `Timed[DynamoDbRequest]` source (see
 [`OrderTrackingWorkload`](README.ordertracking-v2.md)) and fold the consumption plane downstream into usage
-totals and cost. A multi-table demo composes several `DynamoDbTable`s; **indexes never appear at graph
-level** — one consistent rule (*decoration for cross-cutting edge behavior; configuration for intrinsic
-table structure*). Because it presents a `Req → Resp` edge, a core
+totals and cost. A **multi-table** demo composes several `DynamoDbTable`s as independent legs, reported
+per-table (`Table:<name>:…`) — the shared demo harness generalizes to N tables via a per-table `TableSpec`,
+reusing the single-table accounting / aggregation / streaming primitives (see the
+[Thermostat multi-table demo](README.thermostat-v2.md#multi-table-composition-several-tables-in-one-simulation)).
+**Indexes never appear at graph level** — one consistent rule (*decoration for cross-cutting edge behavior;
+configuration for intrinsic table structure*). Because it presents a `Req → Resp` edge, a core
 [`Interface.wrap`](component-catalog.md#interfacewrap) gate decorates it transparently: the
 [Thermostat-fleet demo](README.thermostat-v2.md) wraps the table with a `ChaosGate` at the table's inlet to
 model DynamoDB's intrinsic ~0.1 % transient failures (a rejected request consumes nothing) — the first
@@ -108,7 +111,8 @@ TTL, replication). Those belong to later phases.
 
 **Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md) (single table, then Query/Scan + two
 All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a growing fleet with **mixed
-index projections** — KeysOnly / Include / All — and an **inbound `ChaosGate`**); `aws/…/DynamoDbTableSpec.scala`
+index projections** — KeysOnly / Include / All — an **inbound `ChaosGate`**, and a **multi-table**
+composition of two thermostat tables); `aws/…/DynamoDbTableSpec.scala`
 (timed response + execution-time consumption, state threading, GSI+LSI maintenance, read routing to a
 projected GSI, control-event preservation, determinism); the `OrderTrackingEquivalenceSpec.scala`,
 `OrderTrackingIndexedReconciliationSpec.scala`, and `ThermostatFleetReconciliationSpec.scala` (reconcile
