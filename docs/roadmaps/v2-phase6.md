@@ -1,6 +1,6 @@
 # v2/phase6 — Provisioned capacity + throttling (auto-scaling deferred to phase 8)
 
-**Status: PLANNED** — four slices. Introduce the first **non-on-demand** billing mode and the first
+**Status: PLANNED** — five slices. Introduce the first **non-on-demand** billing mode and the first
 **load-dependent** admission control, reconciled against the legacy mixed-mode thermostat demo.
 
 Follows `v2/phase5` (multi-table composition). Everything so far has been **on-demand** billing with no
@@ -59,7 +59,8 @@ a mid-run switch is priced by integrating the mode in force **per tick**. Thrott
 | 1 | Billing mode + provisioned capacity-hour pricing | Planned | pricing unit tests; provisioned scenario bills capacity-hours; on-demand byte-identical |
 | 2 | Throttling (weighted per-tick cap, internal) | Planned | over-ceiling → throttled (no consumption/state); under → admitted; per-tick reset |
 | 3 | Scheduled reconfiguration | Planned | mode/capacity change at the scheduled tick; 24 h switch cooldown; throttle follows new ceiling |
-| 4 | Mixed-mode scenario + demo + reconciliation gate + docs | Planned | reconcile vs captured legacy mixed-mode baseline; phase COMPLETE |
+| 4 | Mixed-mode scenario + demo (end-to-end) | Planned | demo runs the on-demand→provisioned→adjust trajectory; capacity-hour cost + throttle counts present; determinism |
+| 5 | Reconciliation gate + docs + close-out | Planned | reconcile vs captured legacy mixed-mode baseline; docs; phase COMPLETE |
 
 ## Slices
 
@@ -109,17 +110,27 @@ throttle (Slice 2) follows the new ceiling.
 **Validated by:** reconfiguration unit tests (mode/capacity change at the scheduled ticks; cooldown
 rejection; throttling adopts the new ceiling after a change).
 
-### Slice 4 — Mixed-mode scenario + demo + reconciliation gate + docs + close-out
+### Slice 4 — Mixed-mode scenario + demo (end-to-end)
 
 Port `ThermostatFleetMixedModeConfig` as a v2 scenario (on-demand → `Provisioned(250,125)`@400 →
-`Provisioned(100,333)`@800) with a `ThermostatMixedModeDemo` `@main`. Capture the legacy baseline
-(`ThermostatFleetBridge generate --mode mixed-mode`), pin it, and reconcile — consumed RCU/WCU, **provisioned
-capacity-hour cost**, **throttle counts**, storage — within tolerance (determined empirically, phase-4/5
-style). Docs: an AWS-catalog entry for the billing mode + throttling, a demo section; roadmap + memory
-close-out.
+`Provisioned(100,333)`@800), assembling Slices 1–3 (provisioned pricing + throttling + reconfiguration) on
+the phase-4 telemetry behavior/workload, with a `ThermostatMixedModeDemo` `@main` (a console summary showing
+the capacity-hour cost and throttle counts).
 
-**Validated by:** the reconciliation passes with measured gaps reported; a reviewer can run the mixed-mode
-demo; phase COMPLETE.
+**Validated by:** an end-to-end spec — the demo runs the on-demand → provisioned → adjust trajectory (the
+billing mode changes at ticks 400/800), provisioned periods bill **capacity-hours**, **throttling fires**
+during the telemetry bursts under the tight ceiling, and the run is deterministic. No legacy reconcile yet
+(that is Slice 5).
+
+### Slice 5 — Reconciliation gate + docs + close-out
+
+Capture the legacy mixed-mode baseline (`ThermostatFleetBridge generate --mode mixed-mode`), pin it, and
+reconcile — consumed RCU/WCU, **provisioned capacity-hour cost**, **throttle counts**, storage — within
+tolerance (determined empirically, phase-4/5 style). Docs: an AWS-catalog entry for the billing mode +
+throttling, a demo section; roadmap + memory close-out.
+
+**Validated by:** the reconciliation passes with measured gaps reported; a reviewer can understand and run
+the mixed-mode demo; phase COMPLETE.
 
 ## Design principles and reuse
 
