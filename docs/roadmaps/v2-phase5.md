@@ -1,7 +1,8 @@
 # v2/phase5 — Multi-table composition
 
-**Status: PLANNED** — four slices. Compose several v2 `DynamoDbTable`s into one simulation, generalizing the
-single-table demo harness into a multi-table one, and reconcile against the legacy multi-table demo.
+**Status: COMPLETE** — four slices delivered. Compose several v2 `DynamoDbTable`s into one simulation,
+generalizing the single-table demo harness into a multi-table one, reconciling against the legacy multi-table
+demo as a **clean per-table equivalence** (~2% on every dimension).
 
 Follows `v2/phase4` (single-region Thermostat-fleet). Phase 4 delivered the thermostat *domain* (behavior +
 workload) and a shared single-table demo harness; this phase composes several of those tables side by side
@@ -57,7 +58,7 @@ per-GSI-within-table breakout.**
 | 1 | `TableSpec` + multi-table trial runner | **Done** | `TableSpec` + `TableLegRunner` (shared) + `MultiTable{Scenario,TrialRunner}`; single-table byte-identical; aws 131 tests |
 | 2 | Per-table aggregation + `Table:` export + MC runner | **Done** | per-table `IncrementalAggregator` + `Table:<name>:` export + `MultiTableMonteCarloRunner` (streaming); per-table parity; base metrics only |
 | 3 | Thermostat 2-table scenario + demo | **Done** | `ThermostatMultiTableConfig.twoTableDefault` + `ThermostatMultiTableDemo` @main; per-table metrics; registry read-heavy / telemetry write-heavy |
-| 4 | Reconciliation gate + docs + close-out | Planned | reconciliation passes with measured gaps; phase COMPLETE |
+| 4 | Reconciliation gate + docs + close-out | **Done** | clean per-table equivalence vs captured legacy baseline (~2%); README multi-table section + catalog; phase COMPLETE |
 
 ## Slices
 
@@ -142,6 +143,17 @@ table composes at graph level; roadmap + memory close-out.
 
 **Validated by:** the reconciliation passes with measured gaps reported; a reviewer can understand and run
 the multi-table demo; phase COMPLETE.
+
+**Delivered.** Legacy baseline captured (100 × 1200) via `ThermostatFleetBridge generate --mode multi-table`;
+the legacy `DemoMetric.Table*.exportName` names match the v2 `Table:<name>:…` export 1:1, so the per-table
+baseline is pinned directly in `ThermostatMultiTableReconciliationSpec`. **CLEAN per-table equivalence** —
+every dimension within ~2%: device-registry RCU +0.25% / WCU +0.57% / storage +0.11% / cost +0.57%;
+device-telemetry RCU −2.00% / WCU +0.50% / storage +0.12% / cost +0.50% (bands RCU 5%, WCU/storage/cost 3%).
+The projection-correct reads reconcile for the same reason as the single-region demo (RCU rounding absorbs
+the projected-vs-base byte gap), and the per-table system-error rates are matched (registry 0.0, telemetry
+0.001), so no deferred gap. Full v2 run is FAST (~17 s). Docs: a **multi-table section** in
+`specs/README.thermostat-v2.md` (composition, generalized harness, reconciliation, running it) + a
+`specs/aws-component-catalog.md` note (multi-table composition, per-table reporting). `aws` 143 tests green.
 
 ## Design principles and reuse
 
