@@ -56,7 +56,7 @@ per-GSI-within-table breakout.**
 |---|---|---|---|
 | 1 | `TableSpec` + multi-table trial runner | **Done** | `TableSpec` + `TableLegRunner` (shared) + `MultiTable{Scenario,TrialRunner}`; single-table byte-identical; aws 131 tests |
 | 2 | Per-table aggregation + `Table:` export + MC runner | **Done** | per-table `IncrementalAggregator` + `Table:<name>:` export + `MultiTableMonteCarloRunner` (streaming); per-table parity; base metrics only |
-| 3 | Thermostat 2-table scenario + demo | Planned | end-to-end per-table metrics for both tables; per-flow means ≈ configured |
+| 3 | Thermostat 2-table scenario + demo | **Done** | `ThermostatMultiTableConfig.twoTableDefault` + `ThermostatMultiTableDemo` @main; per-table metrics; registry read-heavy / telemetry write-heavy |
 | 4 | Reconciliation gate + docs + close-out | Planned | reconciliation passes with measured gaps; phase COMPLETE |
 
 ## Slices
@@ -120,6 +120,18 @@ Port `twoTableDefault` as a v2 `MultiTableScenario`: two `TableSpec`s built from
 
 **Validated by:** an end-to-end run emits per-table metrics for both tables; per-flow means ≈ configured;
 determinism.
+
+**Delivered.** New `ThermostatMultiTableConfig(scenarioId, simulationTicks, trialCount, parallelism,
+tableConfigs: Vector[(String, ThermostatConfig)])` implementing `MultiTableScenario` — `tables` maps each
+config to a named `TableSpec` via `tableSpec.copy(tableName = …)`; requires distinct names + matching
+horizons; a `withEnsemble(trials, ticks, par)` helper propagates the horizon into each per-table config (so
+`--ticks` reaches the baked-in `arrivals`). `twoTableDefault` = device-registry (3000 dev, telemetry 0.005,
+query 2.0, scan 0.2, **systemErrorRate 0.0** — legacy fresh-config default, overriding v2's 0.001) +
+device-telemetry (= `singleRegionDefault`, systemErrorRate 0.001). New `ThermostatMultiTableDemo` @main
+(runToFile + per-table console block). `ThermostatMultiTableSpec` (small fixed-fleet config): both tables
+present in order, non-zero per-table totals, per-table series length == ticks, **cross-table shape** (registry
+RCU > telemetry RCU; telemetry WCU > registry RCU), determinism. Smoke @60 ticks confirms the per-table JSONL
+(`Table:<name>:…` for both) + console. No engine/harness change — pure scenario + demo wiring on Slices 1–2.
 
 ### Slice 4 — Reconciliation gate + docs + close-out
 
