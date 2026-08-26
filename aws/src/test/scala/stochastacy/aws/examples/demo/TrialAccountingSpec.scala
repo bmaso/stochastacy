@@ -9,7 +9,7 @@ import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement}
 
 class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
 
-  private val rates  = OnDemandPricing.phase1Default
+  private val rates  = Pricing.phase1Default
   private val strong = ReadConsistency.StronglyConsistent
   private val Table  = DynamoDbTarget.Table
 
@@ -97,6 +97,6 @@ class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
         Vector(tick(1), cons(1, ReadCapacityConsumed(BigDecimal(10), strong, Table)), tick(2), tick(3), eot),
         initialStorageBytes = 0L, rates
       )
-      summary.totalEstimatedCost shouldBe OnDemandPricing.cost(BigDecimal(10), BigDecimal(0), summary.totalStorageByteTicks, rates)
+      summary.totalEstimatedCost shouldBe Pricing.cost(BigDecimal(10), BigDecimal(0), summary.totalStorageByteTicks, rates)
     }
   }

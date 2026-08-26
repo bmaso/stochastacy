@@ -53,7 +53,12 @@ object TableLegRunner:
     // only the running per-tick accounting (bounded by ticks × metrics).
     val accountingSink =
       Sink.fold[TrialAccountingState, TimedElement[Timed[DynamoDbConsumption]]](
-        new TrialAccountingState(spec.initialStorageBytesAllTargets, spec.rates)
+        new TrialAccountingState(
+          spec.initialStorageBytesAllTargets,
+          spec.rates,
+          spec.billingMode,
+          spec.globalSecondaryIndexes.map(_.indexName)
+        )
       ) { (state, element) => state.update(element); state }
 
     val graph = RunnableGraph.fromGraph(

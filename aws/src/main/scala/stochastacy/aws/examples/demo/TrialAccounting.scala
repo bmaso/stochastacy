@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import scala.collection.mutable
 
-import stochastacy.aws.dynamodb.{DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, StorageBytesDelta, WriteCapacityConsumed}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, StorageBytesDelta, WriteCapacityConsumed}
 import stochastacy.core.component.Timed
 import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
 
@@ -17,6 +17,11 @@ import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
  * the storage then held is accrued as byte-ticks. The final flush window (the `Tick(N+1)` that closes the
  * last real window) opens a bucket that is never closed, so it is discarded — yielding exactly one point
  * per simulated tick `1..N`.
+ *
+ * **Billing mode.** Under on-demand, cost is the consumed capacity at its unit prices; under provisioned,
+ * cost is the **reserved** capacity (base + each GSI) integrated per tick and priced as capacity-hours,
+ * independent of consumption. Consumed capacity is still summed and reported either way. The mode is fixed
+ * for the run here (Slice 1); attributing each tick to the mode in force generalizes to a mid-run switch.
  */
 object TrialAccounting:
 
@@ -25,9 +30,11 @@ object TrialAccounting:
   def account(
     consumption:         Seq[TimedElement[Timed[DynamoDbConsumption]]],
     initialStorageBytes: Long,
-    rates:               Rates
+    rates:               Rates,
+    billingMode:         BillingMode = BillingMode.OnDemand,
+    gsiNames:            Seq[String] = Nil
   ): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
-    val state = new TrialAccountingState(initialStorageBytes, rates)
+    val state = new TrialAccountingState(initialStorageBytes, rates, billingMode, gsiNames)
     consumption.foreach(state.update)
     state.result()
 
@@ -37,7 +44,17 @@ object TrialAccounting:
  * stream (via `Sink.fold`) without ever materializing the raw facts. One instance per trial; `update` is
  * called in stream order, `result()` once at completion.
  */
-final class TrialAccountingState(initialStorageBytes: Long, rates: Rates):
+final class TrialAccountingState(
+  initialStorageBytes: Long,
+  rates:               Rates,
+  billingMode:         BillingMode = BillingMode.OnDemand,
+  gsiNames:            Seq[String] = Nil
+):
+  // Reserved capacity per tick under provisioned billing (base + every GSI); `None` under on-demand.
+  private val provisionedPerTick: Option[(BigInt, BigInt)] = billingMode match
+    case p: BillingMode.Provisioned => Some((BigInt(p.totalReadCapacity(gsiNames)), BigInt(p.totalWriteCapacity(gsiNames))))
+    case BillingMode.OnDemand       => None
+
   private var currentBytes = initialStorageBytes
   private var totalRcu     = BigDecimal(0)
   private var totalWcu     = BigDecimal(0)
@@ -45,10 +62,19 @@ final class TrialAccountingState(initialStorageBytes: Long, rates: Rates):
   private val gsiRcuTotal  = mutable.Map.empty[String, BigDecimal]
   private val gsiWcuTotal  = mutable.Map.empty[String, BigDecimal]
 
+  // Billable accumulators, attributed to the mode in force each tick: consumed capacity during on-demand
+  // ticks, reserved capacity-ticks during provisioned ticks.
+  private var onDemandRcu  = BigDecimal(0)
+  private var onDemandWcu  = BigDecimal(0)
+  private var provRcuTicks = BigInt(0)
+  private var provWcuTicks = BigInt(0)
+
   // cumulative-through-this-tick, for the time series' running cost
-  private var cumRcu       = BigDecimal(0)
-  private var cumWcu       = BigDecimal(0)
-  private var cumByteTicks = BigInt(0)
+  private var cumOnDemandRcu  = BigDecimal(0)
+  private var cumOnDemandWcu  = BigDecimal(0)
+  private var cumProvRcuTicks = BigInt(0)
+  private var cumProvWcuTicks = BigInt(0)
+  private var cumByteTicks    = BigInt(0)
 
   private var bucketOpen   = false
   private var bucketTick   = 0L
@@ -63,8 +89,15 @@ final class TrialAccountingState(initialStorageBytes: Long, rates: Rates):
 
   private def finalizeBucket(): Unit =
     if bucketOpen then
-      cumRcu       += bucketRcu
-      cumWcu       += bucketWcu
+      // Attribute this tick to its billing mode: provisioned → accrue reserved capacity-ticks; on-demand →
+      // accrue the consumed capacity that gets billed.
+      provisionedPerTick match
+        case Some((r, w)) =>
+          provRcuTicks += r; cumProvRcuTicks += r
+          provWcuTicks += w; cumProvWcuTicks += w
+        case None =>
+          onDemandRcu    += bucketRcu; cumOnDemandRcu += bucketRcu
+          onDemandWcu    += bucketWcu; cumOnDemandWcu += bucketWcu
       byteTicks    += BigInt(currentBytes)
       cumByteTicks += BigInt(currentBytes)
       points += TrialTimeSeriesPoint(
@@ -72,7 +105,9 @@ final class TrialAccountingState(initialStorageBytes: Long, rates: Rates):
         readCapacityUnits       = bucketRcu,
         writeCapacityUnits      = bucketWcu,
         storageBytes            = currentBytes,
-        cumulativeEstimatedCost = OnDemandPricing.cost(cumRcu, cumWcu, cumByteTicks, rates),
+        cumulativeEstimatedCost = Pricing.consumptionCost(cumOnDemandRcu, cumOnDemandWcu, rates)
+                                    + Pricing.provisionedCost(cumProvRcuTicks, cumProvWcuTicks, rates)
+                                    + Pricing.storageCost(cumByteTicks, rates),
         gsiReadCapacityUnits    = bucketGsiRcu.toMap,
         gsiWriteCapacityUnits   = bucketGsiWcu.toMap
       )
@@ -109,8 +144,12 @@ final class TrialAccountingState(initialStorageBytes: Long, rates: Rates):
       totalWriteCapacityUnits    = totalWcu,
       totalStorageByteTicks      = byteTicks,
       finalStorageBytes          = currentBytes,
-      totalEstimatedCost         = OnDemandPricing.cost(totalRcu, totalWcu, byteTicks, rates),
+      totalEstimatedCost         = Pricing.consumptionCost(onDemandRcu, onDemandWcu, rates)
+                                     + Pricing.provisionedCost(provRcuTicks, provWcuTicks, rates)
+                                     + Pricing.storageCost(byteTicks, rates),
       gsiTotalReadCapacityUnits  = gsiRcuTotal.toMap,
-      gsiTotalWriteCapacityUnits = gsiWcuTotal.toMap
+      gsiTotalWriteCapacityUnits = gsiWcuTotal.toMap,
+      totalProvisionedReadCapacityUnitTicks  = provRcuTicks,
+      totalProvisionedWriteCapacityUnitTicks = provWcuTicks
     )
     (summary, points.result())

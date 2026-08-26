@@ -56,7 +56,7 @@ a mid-run switch is priced by integrating the mode in force **per tick**. Thrott
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | Billing mode + provisioned capacity-hour pricing | Planned | pricing unit tests; provisioned scenario bills capacity-hours; on-demand byte-identical |
+| 1 | Billing mode + provisioned capacity-hour pricing | **Done** | `BillingMode` + per-target capacity-hour pricing; provisioned bills capacity-hours (consumption-independent); on-demand byte-identical |
 | 2 | Throttling (weighted per-tick cap, internal) | Planned | over-ceiling → throttled (no consumption/state); under → admitted; per-tick reset |
 | 3 | Scheduled reconfiguration | Planned | mode/capacity change at the scheduled tick; 24 h switch cooldown; throttle follows new ceiling |
 | 4 | Mixed-mode scenario + demo (end-to-end) | Planned | demo runs the on-demand→provisioned→adjust trajectory; capacity-hour cost + throttle counts present; determinism |
@@ -78,8 +78,18 @@ setup for Slice 3's mid-run switch). A provisioned table still admits everything
 capacity-hours; every on-demand demo (order-tracking, single-region/multi-table thermostat) stays
 byte-identical.
 
-*Sub-decisions:* per-target provisioned capacity (base + per-GSI, base as fallback) vs base-only; where the
-provisioned rates live (extend `OnDemandPricing`/`Rates` vs a billing-mode-aware pricing type).
+**Delivered.** New `dynamodb.BillingMode` (`OnDemand` | `Provisioned(rcu, wcu, per-GSI maps)` with base-
+fallback `gsiRead/gsiWrite` + `totalRead/WriteCapacity(gsiNames)` helpers). `OnDemandPricing` **renamed to
+`Pricing`** (it now prices both modes); `Rates` gains `provisionedRcuHourlyPrice`/`provisionedWcuHourlyPrice`
+(AWS $0.00013/$0.00065); new `storageCost`/`consumptionCost`/`provisionedCost` helpers (`ticks ÷ 3600 ×
+hourly`). `SingleTableScenario`/`TableSpec` gain `billingMode` (default `OnDemand`). `TrialAccountingState`
+is billing-mode-aware: it attributes each tick to the mode in force (a run-static `provisionedPerTick`
+precompute) — provisioned ticks accrue **reserved capacity-ticks** (base + every GSI), on-demand ticks the
+**consumed** capacity — and prices `consumptionCost + provisionedCost + storageCost`; `TrialSummary` carries
+`totalProvisioned{Read,Write}CapacityUnitTicks` (not yet a JSONL metric, so on-demand output is unchanged).
+`ProvisionedPricingSpec` (5): capacity-hour formula; provisioned bills capacity-hours + storage with no
+consumption component; the reservation is consumption-independent (equal across seeds); per-target (base +
+2 GSIs = 3×); on-demand cost unchanged. The table is untouched (billing mode inert until Slice 2's throttle).
 
 ### Slice 2 — Throttling (weighted per-tick cap, internal admission)
 
