@@ -30,12 +30,13 @@ object TableLegRunner:
     val framed   = TickFraming.frame(arrivals.iterator, simulationTicks).toVector
 
     val tableConfig = DynamoDbTable.Config(
-      initialState           = spec.initialTableState,
-      behavior               = spec.behavior,
-      latency                = spec.latency,
-      globalSecondaryIndexes = spec.globalSecondaryIndexes,
-      localSecondaryIndexes  = spec.localSecondaryIndexes,
-      billingMode            = spec.billingMode
+      initialState            = spec.initialTableState,
+      behavior                = spec.behavior,
+      latency                 = spec.latency,
+      globalSecondaryIndexes  = spec.globalSecondaryIndexes,
+      localSecondaryIndexes   = spec.localSecondaryIndexes,
+      billingMode             = spec.billingMode,
+      reconfigurationSchedule = spec.reconfigurationSchedule
     )
 
     // A load-independent system-error gate on the table's inlet: rejected requests never reach the table,
@@ -58,7 +59,8 @@ object TableLegRunner:
           spec.initialStorageBytesAllTargets,
           spec.rates,
           spec.billingMode,
-          spec.globalSecondaryIndexes.map(_.indexName)
+          spec.globalSecondaryIndexes.map(_.indexName),
+          spec.reconfigurationSchedule
         )
       ) { (state, element) => state.update(element); state }
 

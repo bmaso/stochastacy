@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import scala.collection.mutable
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, RequestThrottled, StorageBytesDelta, WriteCapacityConsumed}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, ReconfigurationSchedule, RequestThrottled, StorageBytesDelta, WriteCapacityConsumed}
 import stochastacy.core.component.Timed
 import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
 
@@ -31,10 +31,11 @@ object TrialAccounting:
     consumption:         Seq[TimedElement[Timed[DynamoDbConsumption]]],
     initialStorageBytes: Long,
     rates:               Rates,
-    billingMode:         BillingMode = BillingMode.OnDemand,
-    gsiNames:            Seq[String] = Nil
+    billingMode:         BillingMode             = BillingMode.OnDemand,
+    gsiNames:            Seq[String]             = Nil,
+    schedule:            ReconfigurationSchedule = ReconfigurationSchedule.empty
   ): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
-    val state = new TrialAccountingState(initialStorageBytes, rates, billingMode, gsiNames)
+    val state = new TrialAccountingState(initialStorageBytes, rates, billingMode, gsiNames, schedule)
     consumption.foreach(state.update)
     state.result()
 
@@ -47,13 +48,16 @@ object TrialAccounting:
 final class TrialAccountingState(
   initialStorageBytes: Long,
   rates:               Rates,
-  billingMode:         BillingMode = BillingMode.OnDemand,
-  gsiNames:            Seq[String] = Nil
+  billingMode:         BillingMode             = BillingMode.OnDemand,
+  gsiNames:            Seq[String]             = Nil,
+  schedule:            ReconfigurationSchedule = ReconfigurationSchedule.empty
 ):
-  // Reserved capacity per tick under provisioned billing (base + every GSI); `None` under on-demand.
-  private val provisionedPerTick: Option[(BigInt, BigInt)] = billingMode match
-    case p: BillingMode.Provisioned => Some((BigInt(p.totalReadCapacity(gsiNames)), BigInt(p.totalWriteCapacity(gsiNames))))
-    case BillingMode.OnDemand       => None
+  // Reserved capacity per tick under provisioned billing (base + every GSI); `None` under on-demand — for
+  // the mode in force at `tick` (a mid-run reconfiguration switches which mode a tick is billed by).
+  private def provisionedPerTick(tick: Long): Option[(BigInt, BigInt)] =
+    schedule.billingModeAt(tick, billingMode) match
+      case p: BillingMode.Provisioned => Some((BigInt(p.totalReadCapacity(gsiNames)), BigInt(p.totalWriteCapacity(gsiNames))))
+      case BillingMode.OnDemand       => None
 
   private var currentBytes = initialStorageBytes
   private var totalRcu     = BigDecimal(0)
@@ -92,7 +96,7 @@ final class TrialAccountingState(
     if bucketOpen then
       // Attribute this tick to its billing mode: provisioned → accrue reserved capacity-ticks; on-demand →
       // accrue the consumed capacity that gets billed.
-      provisionedPerTick match
+      provisionedPerTick(bucketTick) match
         case Some((r, w)) =>
           provRcuTicks += r; cumProvRcuTicks += r
           provWcuTicks += w; cumProvWcuTicks += w

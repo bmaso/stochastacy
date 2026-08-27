@@ -48,10 +48,11 @@ object TableSummaryState:
  * indexes carries an empty `indexes` map and behaves exactly as the base summary alone.
  */
 final case class TableState(
-  base:        TableSummaryState,
-  indexes:     Map[String, TableSummaryState],
-  currentTick: Long           = 0L,
-  perTickBudget: ThrottleBudget = ThrottleBudget.empty // provisioned capacity admitted this tick; reset each tick
+  base:          TableSummaryState,
+  indexes:       Map[String, TableSummaryState],
+  currentTick:   Long           = 0L,
+  perTickBudget: ThrottleBudget = ThrottleBudget.empty, // provisioned capacity admitted this tick; reset each tick
+  billingMode:   BillingMode    = BillingMode.OnDemand  // the mode in force this tick (may change via a schedule)
 ):
   /** The summary of the index named `indexName` (empty if unknown). */
   def index(indexName: String): TableSummaryState = indexes.getOrElse(indexName, TableSummaryState.empty)
@@ -62,10 +63,10 @@ object TableState:
    * base's pre-loaded items projected through the index — the entries a freshly-created index over an
    * existing table already holds.
    */
-  def initial(base: TableSummaryState, indexes: Vector[SecondaryIndex]): TableState =
+  def initial(base: TableSummaryState, indexes: Vector[SecondaryIndex], billingMode: BillingMode = BillingMode.OnDemand): TableState =
     val avgBytes = base.averageItemBytes.getOrElse(0L)
     val seeded = indexes.map { idx =>
       val perEntry = SecondaryIndexMechanics.projectedEntryBytes(Some(avgBytes), idx.projection).getOrElse(0L)
       idx.indexName -> TableSummaryState(base.itemCount, base.itemCount * perEntry)
     }.toMap
-    TableState(base, seeded)
+    TableState(base, seeded, billingMode = billingMode)

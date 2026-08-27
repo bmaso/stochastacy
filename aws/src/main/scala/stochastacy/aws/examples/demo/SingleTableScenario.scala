@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, TableBehavior, TableSummaryState}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, ReconfigurationSchedule, TableBehavior, TableSummaryState}
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.{LogNormalSampler, StatelessSampler}
 
@@ -43,8 +43,11 @@ trait SingleTableScenario:
    *  table's inlet (0.0 = no gate). A rejected request consumes no capacity and mutates no state. */
   def systemErrorRate: Double = 0.0
 
-  /** The table's billing mode — on-demand (default) or provisioned. Intrinsic table config. */
+  /** The table's initial billing mode — on-demand (default) or provisioned. Intrinsic table config. */
   def billingMode: BillingMode = BillingMode.OnDemand
+
+  /** Scheduled billing-mode / capacity reconfiguration applied at tick boundaries (empty = static). */
+  def reconfigurationSchedule: ReconfigurationSchedule = ReconfigurationSchedule.empty
 
   /** This scenario as a single [[TableSpec]] — the per-table unit the shared harness runs. The table name
    *  defaults to the scenario id (single-table output is not table-prefixed, so it is not otherwise used). */
@@ -59,5 +62,6 @@ trait SingleTableScenario:
     rates                         = rates,
     systemErrorRate               = systemErrorRate,
     billingMode                   = billingMode,
+    reconfigurationSchedule       = reconfigurationSchedule,
     arrivals                      = arrivals
   )

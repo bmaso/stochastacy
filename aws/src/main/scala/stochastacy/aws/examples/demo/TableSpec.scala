@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, TableBehavior, TableSummaryState}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, ReconfigurationSchedule, TableBehavior, TableSummaryState}
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.StatelessSampler
 
@@ -26,6 +26,7 @@ final case class TableSpec(
   rates:                         Rates,
   systemErrorRate:               Double,
   billingMode:                   BillingMode,
+  reconfigurationSchedule:       ReconfigurationSchedule,
   arrivals:                      UniformRandomProvider => Vector[Timed[DynamoDbRequest]]
 ):
   require(tableName.nonEmpty,               "tableName must be non-empty")

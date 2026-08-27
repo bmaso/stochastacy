@@ -58,7 +58,7 @@ a mid-run switch is priced by integrating the mode in force **per tick**. Thrott
 |---|---|---|---|
 | 1 | Billing mode + provisioned capacity-hour pricing | **Done** | `BillingMode` + per-target capacity-hour pricing; provisioned bills capacity-hours (consumption-independent); on-demand byte-identical |
 | 2 | Throttling (weighted per-tick cap, internal) | **Done** | per-target `ThrottleBudget` in `TableState`; over-ceiling → `ThrottledResponse` + `RequestThrottled` (no consumption/state); per-tick reset; on-demand byte-identical |
-| 3 | Scheduled reconfiguration | Planned | mode/capacity change at the scheduled tick; 24 h switch cooldown; throttle follows new ceiling |
+| 3 | Scheduled reconfiguration | **Done** | `ReconfigurationSchedule` applied at `onTick` via shared `billingModeAt`; validation (cooldown, prov-only); throttle + pricing follow the switches |
 | 4 | Mixed-mode scenario + demo (end-to-end) | Planned | demo runs the on-demand→provisioned→adjust trajectory; capacity-hour cost + throttle counts present; determinism |
 | 5 | Reconciliation gate + docs + close-out | Planned | reconcile vs captured legacy mixed-mode baseline; docs; phase COMPLETE |
 
@@ -128,6 +128,20 @@ throttle (Slice 2) follows the new ceiling.
 
 **Validated by:** reconfiguration unit tests (mode/capacity change at the scheduled ticks; cooldown
 rejection; throttling adopts the new ceiling after a change).
+
+**Delivered.** New `dynamodb.ReconfigurationSchedule` — `ReconfigurationEvent` (`SwitchBillingMode` |
+`UpdateProvisionedCapacity`) at scheduled ticks, with `billingModeAt(tick, initial)` (a pure fold — the
+shared source of truth) and `validate(initial, ticks)` (horizon, 24 h/86,400-tick switch cooldown,
+capacity-update-only-while-provisioned). The **current** billing mode moved into `TableState`
+(`billingMode`, seeded by `TableState.initial`); `DynamoDbTable.Config` gains `reconfigurationSchedule`,
+`onTick` sets `state.billingMode = schedule.billingModeAt(tick, config.billingMode)` (and still resets the
+budget), and `sample` reads `state.billingMode`. The accounting takes the schedule and computes the mode
+**per tick** (Slice 1's static precompute → `provisionedPerTick(tick)`), so a mid-run switch bills on-demand
+ticks by consumption and provisioned ticks by capacity-hours at the respective capacities. `SingleTableScenario`
+/`TableSpec` gain `reconfigurationSchedule` (default empty); `TableLegRunner` threads it to both the table and
+the accounting. Tests: `ReconfigurationSpec` (validation, `billingModeAt` boundaries, table starts on-demand
+then throttles after a switch and follows a later capacity widening) + a `TrialAccountingSpec` case
+(mid-run switch bills each tick by the mode in force). Empty schedule ⇒ constant mode ⇒ byte-identical.
 
 ### Slice 4 — Mixed-mode scenario + demo (end-to-end)
 

@@ -33,7 +33,8 @@ object DynamoDbTable:
     latency:                StatelessSampler[Double], // per-op service latency, in fractional ticks
     globalSecondaryIndexes: Vector[GlobalSecondaryIndex] = Vector.empty,
     localSecondaryIndexes:  Vector[LocalSecondaryIndex]  = Vector.empty,
-    billingMode:            BillingMode                  = BillingMode.OnDemand
+    billingMode:            BillingMode                  = BillingMode.OnDemand, // the initial mode
+    reconfigurationSchedule: ReconfigurationSchedule     = ReconfigurationSchedule.empty
   ):
     def withGlobalSecondaryIndex(index: GlobalSecondaryIndex): Config =
       copy(globalSecondaryIndexes = globalSecondaryIndexes :+ index)
@@ -55,7 +56,7 @@ object DynamoDbTable:
 
     private val indexes: Vector[SecondaryIndex] = config.secondaryIndexes
 
-    def initialState: TableState = TableState.initial(config.initialState, indexes)
+    def initialState: TableState = TableState.initial(config.initialState, indexes, config.billingMode)
 
     def sample(
       in:    DynamoDbRequest,
@@ -88,7 +89,7 @@ object DynamoDbTable:
       val readDemand     = demandBy(allConsumption) { case ReadCapacityConsumed(u, _, t) => (ThrottleBudget.budgetKey(t), u) }
       val writeDemand    = demandBy(allConsumption) { case WriteCapacityConsumed(u, t)   => (ThrottleBudget.budgetKey(t), u) }
 
-      config.billingMode match
+      state.billingMode match
         case p: BillingMode.Provisioned if state.perTickBudget.overBudget(readDemand, writeDemand, p) =>
           // Throttle: reject the whole operation — no capacity consumed, no state mutated, budget untouched.
           Emission(
@@ -126,9 +127,14 @@ object DynamoDbTable:
                     p) => c.target
       }.getOrElse(DynamoDbTarget.Table)
 
-    /** Advance the current tick and reset the per-tick provisioned budget at each tick boundary. */
+    /** At each tick boundary: advance the tick, reset the per-tick provisioned budget, and apply any
+     *  scheduled reconfiguration — so the mode/capacity in force this tick reflects the schedule. */
     override def onTick(tick: Long, state: TableState): TableState =
-      state.copy(currentTick = tick, perTickBudget = ThrottleBudget.empty)
+      state.copy(
+        currentTick   = tick,
+        perTickBudget = ThrottleBudget.empty,
+        billingMode   = config.reconfigurationSchedule.billingModeAt(tick, config.billingMode)
+      )
 
     /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,
      *  the base summary for a table read and for every write/get. */

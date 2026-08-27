@@ -3,7 +3,7 @@ package stochastacy.aws.examples.demo
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
-import stochastacy.aws.dynamodb.{DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, ReadConsistency, StorageBytesDelta, WriteCapacityConsumed}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, ReadConsistency, ReconfigurationEvent, ReconfigurationSchedule, ScheduledReconfiguration, StorageBytesDelta, WriteCapacityConsumed}
 import stochastacy.core.component.Timed
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement}
 
@@ -98,5 +98,28 @@ class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
         initialStorageBytes = 0L, rates
       )
       summary.totalEstimatedCost shouldBe Pricing.cost(BigDecimal(10), BigDecimal(0), summary.totalStorageByteTicks, rates)
+    }
+
+    "bill each tick by the mode in force under a mid-run reconfiguration" in {
+      // Ticks 1–2 on-demand, then a switch to Provisioned(100 RCU, 50 WCU) from tick 3. Every tick writes 10 WCU.
+      val schedule = ReconfigurationSchedule(Vector(
+        ScheduledReconfiguration(3L, ReconfigurationEvent.SwitchBillingMode(BillingMode.Provisioned(100, 50)))
+      ))
+      val stream = Vector(
+        tick(1), cons(1, WriteCapacityConsumed(BigDecimal(10), Table)),
+        tick(2), cons(2, WriteCapacityConsumed(BigDecimal(10), Table)),
+        tick(3), cons(3, WriteCapacityConsumed(BigDecimal(10), Table)),
+        tick(4), eot
+      )
+      val (summary, _) = TrialAccounting.account(stream, initialStorageBytes = 0L, rates,
+        billingMode = BillingMode.OnDemand, gsiNames = Nil, schedule = schedule)
+
+      summary.totalWriteCapacityUnits                 shouldBe BigDecimal(30) // consumed, all ticks, still reported
+      summary.totalProvisionedReadCapacityUnitTicks   shouldBe BigInt(100)   // only tick 3 provisioned: base 100 RCU
+      summary.totalProvisionedWriteCapacityUnitTicks  shouldBe BigInt(50)    //                          base 50 WCU
+      // cost = on-demand consumption for ticks 1–2 (20 WCU) + provisioned capacity-hours for tick 3
+      summary.totalEstimatedCost shouldBe (
+        Pricing.consumptionCost(BigDecimal(0), BigDecimal(20), rates) + Pricing.provisionedCost(BigInt(100), BigInt(50), rates)
+      )
     }
   }
