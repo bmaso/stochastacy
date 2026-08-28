@@ -59,7 +59,7 @@ a mid-run switch is priced by integrating the mode in force **per tick**. Thrott
 | 1 | Billing mode + provisioned capacity-hour pricing | **Done** | `BillingMode` + per-target capacity-hour pricing; provisioned bills capacity-hours (consumption-independent); on-demand byte-identical |
 | 2 | Throttling (weighted per-tick cap, internal) | **Done** | per-target `ThrottleBudget` in `TableState`; over-ceiling → `ThrottledResponse` + `RequestThrottled` (no consumption/state); per-tick reset; on-demand byte-identical |
 | 3 | Scheduled reconfiguration | **Done** | `ReconfigurationSchedule` applied at `onTick` via shared `billingModeAt`; validation (cooldown, prov-only); throttle + pricing follow the switches |
-| 4 | Mixed-mode scenario + demo (end-to-end) | Planned | demo runs the on-demand→provisioned→adjust trajectory; capacity-hour cost + throttle counts present; determinism |
+| 4 | Mixed-mode scenario + demo (end-to-end) | **Done** | `ThermostatConfig.mixedModeDefault` + `@main`; billing-mode-aware provisioned/throttle metrics surfaced (on-demand byte-identical); throttling fires under the right-sized capacity |
 | 5 | Reconciliation gate + docs + close-out | Planned | reconcile vs captured legacy mixed-mode baseline; docs; phase COMPLETE |
 
 ## Slices
@@ -154,6 +154,19 @@ the capacity-hour cost and throttle counts).
 billing mode changes at ticks 400/800), provisioned periods bill **capacity-hours**, **throttling fires**
 during the telemetry bursts under the tight ceiling, and the run is deterministic. No legacy reconcile yet
 (that is Slice 5).
+
+**Delivered.** `ThermostatConfig` gains a `reconfigurationSchedule` param (validated in its `require`);
+`ThermostatConfig.mixedModeDefault` = the single-region workload starting on-demand, `SwitchBillingMode`→
+`Provisioned(250,125)`@400, `UpdateProvisionedCapacity`→`Provisioned(100,333)`@800. New
+`ThermostatMixedModeDemo` `@main` (per-run console: consumed RCU/WCU, provisioned capacity-ticks, throttle
+count, cost). **Metric-surfacing** (DQ-metric-surfacing): `MonteCarloAggregation` appends
+`TotalProvisioned{Read,Write}CapacityUnitTicks` + `TotalThrottledRequests` **only when the ensemble used
+provisioning** — batch derives it from the trials (`hasProvisioning`), the streaming runner from the scenario
+(`SingleTableScenario.usesProvisioning`), threaded through `IncrementalAggregator` / `JsonlExport` — so
+on-demand output is byte-identical (all three reconciliation gates unchanged). `ThermostatMixedModeSpec`
+(small fast config): provisioned capacity reserved + throttling fires under the tight ceiling; the metrics
+are surfaced for a provisioned ensemble and **absent** for an on-demand one; determinism. `@main` smoke at
+1200 ticks shows the right-sizing trap (~47k throttled requests against the tight provisioned capacity).
 
 ### Slice 5 — Reconciliation gate + docs + close-out
 

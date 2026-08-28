@@ -49,6 +49,11 @@ trait SingleTableScenario:
   /** Scheduled billing-mode / capacity reconfiguration applied at tick boundaries (empty = static). */
   def reconfigurationSchedule: ReconfigurationSchedule = ReconfigurationSchedule.empty
 
+  /** True if the table is (or becomes) provisioned — so provisioned-capacity and throttle metrics are worth
+   *  reporting. A purely on-demand scenario reports none of them (its output stays unchanged). */
+  def usesProvisioning: Boolean =
+    billingMode != BillingMode.OnDemand || reconfigurationSchedule.entries.nonEmpty
+
   /** This scenario as a single [[TableSpec]] — the per-table unit the shared harness runs. The table name
    *  defaults to the scenario id (single-table output is not table-prefixed, so it is not otherwise used). */
   def tableSpec: TableSpec = TableSpec(

@@ -2,7 +2,7 @@ package stochastacy.aws.examples.thermostatfleet
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{DynamoDbRequest, GlobalSecondaryIndex, IndexProjection, LocalSecondaryIndex, TableBehavior, TableSummaryState}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, IndexProjection, LocalSecondaryIndex, ReconfigurationEvent, ReconfigurationSchedule, ScheduledReconfiguration, TableBehavior, TableSummaryState}
 import stochastacy.aws.examples.demo.SingleTableScenario
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.{RandomBurstSampler, Sampler, StatelessSampler, TemporalShapeFunctions}
@@ -52,7 +52,8 @@ final case class ThermostatConfig(
   polarVortexWriteMultiplier:       Double        = 1.0,
   polarVortexAffectedFraction:      Double        = 0.5,
   polarVortexTickRange:             (Long, Long)  = (0L, 0L),
-  override val systemErrorRate:     Double        = 0.001
+  override val systemErrorRate:     Double        = 0.001,
+  override val reconfigurationSchedule: ReconfigurationSchedule = ReconfigurationSchedule.empty
 ) extends SingleTableScenario:
   require(scenarioId.nonEmpty,                          "scenarioId must be non-empty")
   require(simulationTicks >= 1L,                        "simulationTicks must be at least 1")
@@ -79,6 +80,9 @@ final case class ThermostatConfig(
   require(polarVortexTickRange._1 >= 0L && polarVortexTickRange._2 >= polarVortexTickRange._1,
                                                         "polarVortexTickRange must be a valid range (start >= 0, end >= start)")
   require(systemErrorRate >= 0.0 && systemErrorRate < 1.0, "systemErrorRate must be in [0, 1)")
+  reconfigurationSchedule.validate(billingMode, simulationTicks) match
+    case Left(message) => throw new IllegalArgumentException(message)
+    case Right(_)      => ()
 
   def globalSecondaryIndexes: Vector[GlobalSecondaryIndex] = Vector(
     GlobalSecondaryIndex(ThermostatConfig.CustomerDevicesGsiName, IndexProjection.KeysOnly),
@@ -136,3 +140,15 @@ object ThermostatConfig:
 
   /** The single-region scenario matching the legacy `ThermostatFleetScenarioConfig.singleRegionDefault`. */
   val singleRegionDefault: ThermostatConfig = ThermostatConfig()
+
+  /** The mixed-mode scenario matching the legacy `ThermostatFleetMixedModeConfig`: the single-region
+   *  workload, **starting on-demand**, switched to provisioned at tick 400 and then right-sized down at
+   *  tick 800 (the "right-sizing trap" — the tightened capacity throttles telemetry bursts on-demand
+   *  absorbed). */
+  val mixedModeDefault: ThermostatConfig = singleRegionDefault.copy(
+    scenarioId = "thermostat-fleet-mixed-mode",
+    reconfigurationSchedule = ReconfigurationSchedule(Vector(
+      ScheduledReconfiguration(400L, ReconfigurationEvent.SwitchBillingMode(BillingMode.Provisioned(250L, 125L))),
+      ScheduledReconfiguration(800L, ReconfigurationEvent.UpdateProvisionedCapacity(BillingMode.Provisioned(100L, 333L)))
+    ))
+  )
