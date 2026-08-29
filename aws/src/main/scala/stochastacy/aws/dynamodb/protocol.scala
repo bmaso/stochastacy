@@ -39,6 +39,18 @@ final case class QueryRequest(target: DynamoDbTarget, consistency: ReadConsisten
 /** Scan `target` at the given consistency. */
 final case class ScanRequest(target: DynamoDbTarget, consistency: ReadConsistency) extends DynamoDbRequest
 
+/** A transactional write of several items (put/update), all-or-nothing, each of the given size. Billed at
+ *  2× write capacity per item (two-phase commit); index maintenance follows the transactional rule
+ *  (LSI 2×, GSI 1×). */
+final case class TransactWriteItemsRequest(perItemBytes: Vector[Long]) extends DynamoDbRequest:
+  require(perItemBytes.nonEmpty,       "TransactWriteItemsRequest.perItemBytes must be non-empty")
+  require(perItemBytes.forall(_ > 0L), "TransactWriteItemsRequest.perItemBytes values must be positive")
+
+/** A transactional read of `itemCount` items, all strongly consistent, billed at 2× read capacity per
+ *  item (base table only — reads do not touch indexes). */
+final case class TransactGetItemsRequest(itemCount: Int) extends DynamoDbRequest:
+  require(itemCount > 0, s"TransactGetItemsRequest.itemCount must be positive, got $itemCount")
+
 sealed trait DynamoDbResponse
 
 /** The non-error response to a GetItem: whether the item existed and, if so, its size. */
@@ -77,6 +89,12 @@ final case class ScanResponse(
   returnedItemCount:  Long,
   returnedBytes:      Long
 ) extends DynamoDbResponse
+
+/** The non-error response to a TransactWriteItems: how many items were written atomically. */
+final case class TransactWriteItemsResponse(itemCount: Int) extends DynamoDbResponse
+
+/** The non-error response to a TransactGetItems: each item's size, or `None` where it was absent. */
+final case class TransactGetItemsResponse(items: Vector[Option[Long]]) extends DynamoDbResponse
 
 /** The error response to any request the system-error gate rejects — DynamoDB's `InternalServerError`.
  *  No capacity is consumed and no state is mutated (a rejected request never reaches the table). */

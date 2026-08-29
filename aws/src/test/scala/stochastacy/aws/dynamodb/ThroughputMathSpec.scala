@@ -39,3 +39,17 @@ class ThroughputMathSpec extends AnyWordSpec with should.Matchers:
       ThroughputMath.writeCapacityUnits(0L) shouldBe BigDecimal(1)
     }
   }
+
+  "ThroughputMath transactional capacity" should {
+    "double the write multiplier for the base table and an LSI, but not a GSI" in {
+      ThroughputMath.transactionalWriteMultiplier(DynamoDbTarget.Table)    shouldBe 2
+      ThroughputMath.transactionalWriteMultiplier(DynamoDbTarget.Lsi("l")) shouldBe 2
+      ThroughputMath.transactionalWriteMultiplier(DynamoDbTarget.Gsi("g")) shouldBe 1
+    }
+
+    "charge 2x strongly-consistent RCU per transactional-get item" in {
+      ThroughputMath.transactionalReadCapacityUnits(Some(4096L)) shouldBe BigDecimal(2) // 1 strong chunk x2
+      ThroughputMath.transactionalReadCapacityUnits(Some(4097L)) shouldBe BigDecimal(4) // 2 chunks x2
+      ThroughputMath.transactionalReadCapacityUnits(None)        shouldBe BigDecimal(2) // miss minimum x2
+    }
+  }

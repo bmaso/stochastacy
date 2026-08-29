@@ -25,5 +25,20 @@ object ThroughputMath:
   def writeCapacityUnits(itemBytes: Long): BigDecimal =
     BigDecimal(chunks(itemBytes, BytesPerWriteCapacityUnitChunk))
 
+  /**
+   * The transactional write-capacity multiplier for `target`. A transaction is a two-phase commit
+   * (prepare + commit), so DynamoDB writes every item in the transaction twice — the base item and its
+   * **synchronous, co-located LSI** entries are billed 2×. A **GSI** back-fill propagates asynchronously
+   * *after* the commit and is billed at the standard 1× rate, so it is not doubled.
+   */
+  def transactionalWriteMultiplier(target: DynamoDbTarget): Int = target match
+    case DynamoDbTarget.Gsi(_) => 1
+    case _                     => 2 // base table and LSI
+
+  /** RCU for one item in a `TransactGetItems`: transactional reads are always strongly consistent and
+   *  cost 2× per item. */
+  def transactionalReadCapacityUnits(itemBytes: Option[Long]): BigDecimal =
+    readCapacityUnits(itemBytes, ReadConsistency.StronglyConsistent) * 2
+
   private def chunks(bytes: Long, chunkBytes: Long): Long =
     if bytes > 0L then ((bytes - 1L) / chunkBytes) + 1L else 1L

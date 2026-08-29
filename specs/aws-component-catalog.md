@@ -9,9 +9,9 @@ pieces compose — as distinct from the [demo guides](README.ordertracking-v2.md
 particular simulation *shows* and how to run it.
 
 Scope today is **DynamoDB** — a single table with **Query/Scan and secondary indexes**, **on-demand or
-provisioned billing** (with throttling and scheduled reconfiguration), **item TTL** (storage expiry),
-composable into **multi-table** simulations. This catalog grows as the AWS line does; auto-scaling,
-transactions, and multi-region are expected with the thermostat-fleet capstone.
+provisioned billing** (with throttling and scheduled reconfiguration), **item TTL** (storage expiry), and
+**transactions** (2× capacity), composable into **multi-table** simulations. This catalog grows as the AWS
+line does; auto-scaling and multi-region are expected with the thermostat-fleet capstone.
 
 ## How to read an entry
 
@@ -128,9 +128,19 @@ the exact inverse of write-time index maintenance), **consuming no capacity**. P
 write tick, so they never TTL-expire. A table with no `ttlPeriodTicks` is byte-identical to one before TTL
 existed. See the [session-store demo](README.session-store-ttl.md).
 
-**Scope.** On-demand or provisioned billing (with throttling + scheduled reconfiguration), item TTL, a single
-table with Query/Scan + GSIs/LSIs, and none of the remaining advanced models (auto-scaling, hot-partition,
-burst, adaptive, PITR, transactions, replication). Those belong to later phases.
+**Transactions** (`TransactWriteItems` / `TransactGetItems`). A transactional write carries several sub-item
+writes applied **all-or-nothing** (one `Emission`; under provisioned billing the whole transaction is
+throttled as a unit, mutating nothing); a transactional read groups several strongly-consistent gets. Capacity
+follows **AWS's two-phase-commit billing**, which is *target-dependent*: the base-table write and its
+**synchronous, co-located LSI** maintenance are billed **2×**, while a **GSI** back-fill — which propagates
+*asynchronously after* the commit — is billed at the standard **1×**; transactional reads are 2× strongly
+consistent per item. (This deliberately diverges from the legacy simulator, which billed both index types at
+1×.) Each sub-write flows through the same storage, per-index maintenance, and TTL machinery as a single write.
+
+**Scope.** On-demand or provisioned billing (with throttling + scheduled reconfiguration), item TTL,
+transactions, a single table with Query/Scan + GSIs/LSIs, and none of the remaining advanced models
+(auto-scaling, hot-partition, burst, adaptive, PITR, replication). Those belong to later phases. Transaction
+conditional-checks / partial-failure (`TransactionCanceledException`) are out of scope.
 
 **Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md) (single table, then Query/Scan + two
 All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a growing fleet with **mixed

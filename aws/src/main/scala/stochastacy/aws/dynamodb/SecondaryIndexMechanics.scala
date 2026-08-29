@@ -38,7 +38,8 @@ object SecondaryIndexMechanics:
     index:                 SecondaryIndex,
     newBaseItemBytes:      Option[Long],
     previousBaseItemBytes: Option[Long],
-    indexState:            TableSummaryState
+    indexState:            TableSummaryState,
+    transactional:         Boolean          = false
   ): Maintenance =
     val newEntry  = projectedEntryBytes(newBaseItemBytes, index.projection)
     val prevEntry = projectedEntryBytes(previousBaseItemBytes, index.projection)
@@ -54,7 +55,10 @@ object SecondaryIndexMechanics:
       case None =>
         Maintenance(Nil, indexState)
       case Some((wcuBytes, next)) =>
-        val wcu   = WriteCapacityConsumed(ThroughputMath.writeCapacityUnits(wcuBytes), index.target)
+        // A transactional write bills its LSI maintenance 2× (synchronous, co-located) and its GSI
+        // maintenance 1× (async post-commit); a normal write bills 1× everywhere.
+        val multiplier = if transactional then ThroughputMath.transactionalWriteMultiplier(index.target) else 1
+        val wcu   = WriteCapacityConsumed(ThroughputMath.writeCapacityUnits(wcuBytes) * multiplier, index.target)
         val delta = next.totalItemBytes - indexState.totalItemBytes
         val facts = if delta != 0L then List(wcu, StorageBytesDelta(delta, index.target)) else List(wcu)
         Maintenance(facts, next)

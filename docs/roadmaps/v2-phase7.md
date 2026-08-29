@@ -40,7 +40,7 @@ the Commands pattern).
 | 1 | Core: tick-boundary consumption emission | **Done** | `onTick` returns `TickEmission[S, Cons]`; transducer stamps `(t,0)`/buffers/releases; ~6 sites migrated; boundary-fact test; every existing component/gate byte-identical |
 | 2 | TTL mechanism | **Done** | items expire exactly `ttlPeriodTicks` after write; **base + GSI + LSI** bytes freed; byte-ticks reflect it; no capacity consumed; TTL-off byte-identical |
 | 3 | TTL demo (session-store) + delete/expire coverage + docs | **Done** | bespoke session-store demo: storage plateaus (creations ≈ expiries) vs unbounded no-TTL; delete-before-TTL freed exactly once; determinism; TTL doc note |
-| 4 | Transactions mechanism | Planned | 2× WCU/RCU per item; atomic all-or-nothing; storage + per-index maintenance; determinism |
+| 4 | Transactions mechanism | **Done** | base+LSI 2× / GSI 1× (AWS-accurate) per item; atomic all-or-nothing; storage + per-index maintenance + TTL over sub-writes; determinism |
 | 5 | Transactions demo + docs + phase close-out | Planned | transactions bill 2× vs equivalent singles; determinism; phase COMPLETE |
 
 ## Slices
@@ -126,11 +126,33 @@ every existing reconciliation spec byte-identical.
 
 ### Slice 4 — Transactions mechanism
 `TransactWriteItems` / `TransactGetItems` protocol variants (carrying multiple item bytes); behavior/mechanics
-resolving them at **2× capacity** per item, **atomic** all-or-nothing, with storage and per-index maintenance;
-`transactWriteItemsPerItemBytes` config.
+resolving them at **2× capacity** per item, **atomic** all-or-nothing, with storage and per-index maintenance.
 
-**Validated by:** unit tests — 2× WCU/RCU per item; atomic (the whole transaction commits or nothing does);
-storage + per-index maintenance; determinism.
+**Capacity rule researched against AWS, not the legacy** (Brian: follow AWS first; ignore the legacy where it
+diverges). A transaction is a two-phase commit, so the doubling is **target-dependent**: the base-table write
+and its **synchronous, co-located LSI** maintenance are billed **2×**; a **GSI** back-fill propagates
+*asynchronously after* commit and is billed **1×** (standard); transactional reads are 2× strongly consistent
+per item. The legacy billed both index types at 1× — we diverge on **LSI** deliberately. (Sources: AWS
+transactions doc — "two underlying writes of every item" + "changes start propagating to GSIs… gradually.")
+
+**Validated by:** unit tests — base+LSI 2× / GSI 1× per item; atomic (the whole transaction commits, or under
+a tight provisioned budget nothing does); storage + per-index maintenance + TTL recording across all
+sub-writes; determinism.
+
+**Delivered.** `ThroughputMath.transactionalWriteMultiplier(target)` (Gsi→1, base/Lsi→2) +
+`transactionalReadCapacityUnits` (2× strong). Protocol: `TransactWriteItemsRequest(perItemBytes)` /
+`TransactGetItemsRequest(itemCount)` + responses. `TableMechanics`: `TransactWriteItem` + `OperationOutcome.
+TransactWrite/TransactGet`; `resolve` threads the base summary through all sub-writes (base 2× WCU + per-item
+storage delta) / bills 2× strong RCU per get. `SecondaryIndexMechanics.maintain` gained a defaulted
+`transactional` flag (LSI 2× / GSI 1×; default false → byte-identical). `DynamoDbTable.sample` generalized
+its single `writeFootprint` to a **list** so index maintenance *and* TTL recording iterate over every
+sub-write (single-op = one-element list → byte-identical); the admit/throttle path already treats a
+transaction's summed demand as a unit → all-or-nothing. `OrderTrackingBehavior` gained an explicit
+unsupported-op rejection (it enumerated request types without a catch-all). Tests: `ThroughputMathSpec` +2,
+`TableMechanicsSpec` +2, `SecondaryIndexMechanicsSpec` +2, new `DynamoDbTableTransactionSpec` +5 (base/LSI 2×
++ GSI 1× + per-target storage; atomic throttle-reject applies nothing; TTL over sub-writes expires the whole
+set; 2× strong txn-get; determinism). Catalog updated with the AWS-accurate rule. **aws 196 green**; single-op
+paths byte-identical. *(No `@main`/demo/scenario config — that is Slice 5, per DQ-txn-config-scope.)*
 
 ### Slice 5 — Transactions demo + docs + phase close-out
 A single-region **commands** preset (a transaction flow) + a `@main` + end-to-end. Docs: catalog/README

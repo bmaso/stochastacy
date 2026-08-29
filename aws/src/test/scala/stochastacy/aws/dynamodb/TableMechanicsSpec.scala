@@ -92,3 +92,34 @@ class TableMechanicsSpec extends AnyWordSpec with should.Matchers:
       r.state       shouldBe start
     }
   }
+
+  "TableMechanics.resolve — TransactWrite" should {
+    "bill 2x base WCU per item, emit per-item storage deltas, and thread state across sub-writes" in {
+      // an insert (800 B) then an overwrite (900 B replacing 768 B)
+      val items = Vector(
+        TableMechanics.TransactWriteItem(writtenItemBytes = 800L, previousItemBytes = None),
+        TableMechanics.TransactWriteItem(writtenItemBytes = 900L, previousItemBytes = Some(768L))
+      )
+      val r = TableMechanics.resolve(OperationOutcome.TransactWrite(items), start)
+      r.response shouldBe TransactWriteItemsResponse(2)
+      // base WCU doubled (ceil(800/1024)=1 ->2, ceil(900/1024)=1 ->2); storage +800 then +132
+      r.consumption shouldBe List(
+        WriteCapacityConsumed(BigDecimal(2), Table), StorageBytesDelta(800L, Table),
+        WriteCapacityConsumed(BigDecimal(2), Table), StorageBytesDelta(132L, Table)
+      )
+      // 10/7680 -> insert 11/8480 -> overwrite 11/8612
+      r.state shouldBe TableSummaryState(11L, 8612L)
+    }
+  }
+
+  "TableMechanics.resolve — TransactGet" should {
+    "bill 2x strong RCU per item and leave state unchanged" in {
+      val r = TableMechanics.resolve(OperationOutcome.TransactGet(Vector(Some(4096L), None)), start)
+      r.response    shouldBe TransactGetItemsResponse(Vector(Some(4096L), None))
+      r.consumption shouldBe List(
+        ReadCapacityConsumed(BigDecimal(2), strong, Table), // 1 strong chunk x2
+        ReadCapacityConsumed(BigDecimal(2), strong, Table)  // miss minimum x2
+      )
+      r.state shouldBe start
+    }
+  }

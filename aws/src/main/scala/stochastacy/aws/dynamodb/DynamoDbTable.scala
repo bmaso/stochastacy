@@ -68,32 +68,41 @@ object DynamoDbTable:
       val resolution   = TableMechanics.resolve(outcome, state.base)
       val (latency, _) = config.latency.sample(0L, rng, ())
 
-      // The base write's (new, previous) item bytes drive index maintenance; reads maintain nothing.
-      val writeFootprint: Option[(Option[Long], Option[Long])] = outcome match
-        case OperationOutcome.Put(written, previous)    => Some((Some(written), previous))
-        case OperationOutcome.Update(written, previous) => Some((Some(written), previous))
-        case OperationOutcome.Delete(deleted)           => Some((None, deleted))
-        case _                                          => None
+      // The base write's (new, previous) item bytes drive index maintenance; reads maintain nothing. A
+      // transactional write contributes one footprint per sub-item, so index + TTL maintenance iterate.
+      val writeFootprints: List[(Option[Long], Option[Long])] = outcome match
+        case OperationOutcome.Put(written, previous)    => List((Some(written), previous))
+        case OperationOutcome.Update(written, previous) => List((Some(written), previous))
+        case OperationOutcome.Delete(deleted)           => List((None, deleted))
+        case OperationOutcome.TransactWrite(items)      => items.map(i => (Some(i.writtenItemBytes), i.previousItemBytes)).toList
+        case _                                          => Nil
 
-      val (nextIndexes, indexScheduled) = writeFootprint match
-        case None =>
-          (state.indexes, List.empty[Scheduled[DynamoDbConsumption]])
-        case Some((newBytes, prevBytes)) =>
-          indexes.foldLeft((state.indexes, List.empty[Scheduled[DynamoDbConsumption]])) {
-            case ((states, scheduled), idx) =>
-              val m = SecondaryIndexMechanics.maintain(idx, newBytes, prevBytes, states.getOrElse(idx.indexName, TableSummaryState.empty))
-              (states.updated(idx.indexName, m.state), scheduled ++ m.consumption.map(c => Scheduled(c, idx.maintenanceDelay)))
-          }
+      // Transactional writes bill LSI maintenance 2× and GSI maintenance 1×; a normal write bills 1×.
+      val transactional = outcome match
+        case _: OperationOutcome.TransactWrite | _: OperationOutcome.TransactGet => true
+        case _                                                                   => false
 
-      // Record the write into the TTL ring buffer (if TTL is on) so it expires `ttlPeriodTicks` later. An
-      // insert records a write; an overwrite re-ages the item (delete the old, write the new); a delete
+      // Maintain each index for every sub-write, threading index state across the sub-writes.
+      val (nextIndexes, indexScheduled) =
+        writeFootprints.foldLeft((state.indexes, List.empty[Scheduled[DynamoDbConsumption]])) {
+          case ((states0, scheduled0), (newBytes, prevBytes)) =>
+            indexes.foldLeft((states0, scheduled0)) {
+              case ((states, scheduled), idx) =>
+                val m = SecondaryIndexMechanics.maintain(idx, newBytes, prevBytes, states.getOrElse(idx.indexName, TableSummaryState.empty), transactional)
+                (states.updated(idx.indexName, m.state), scheduled ++ m.consumption.map(c => Scheduled(c, idx.maintenanceDelay)))
+            }
+        }
+
+      // Record each sub-write into the TTL ring buffer (if TTL is on) so it expires `ttlPeriodTicks` later.
+      // An insert records a write; an overwrite re-ages the item (delete the old, write the new); a delete
       // removes one; reads and delete-of-absent leave it untouched. Applied only when the op is admitted.
-      val nextTtl: Option[TtlRingBuffer] = state.ttl.map { rb =>
-        writeFootprint match
-          case Some((Some(nb), None))    => rb.recordWrite(nb, state.currentTick)
-          case Some((Some(nb), Some(_))) => rb.recordDelete(state.currentTick).recordWrite(nb, state.currentTick)
-          case Some((None, Some(_)))     => rb.recordDelete(state.currentTick)
-          case _                         => rb
+      val nextTtl: Option[TtlRingBuffer] = state.ttl.map { rb0 =>
+        writeFootprints.foldLeft(rb0) {
+          case (rb, (Some(nb), None))    => rb.recordWrite(nb, state.currentTick)
+          case (rb, (Some(nb), Some(_))) => rb.recordDelete(state.currentTick).recordWrite(nb, state.currentTick)
+          case (rb, (None, Some(_)))     => rb.recordDelete(state.currentTick)
+          case (rb, _)                   => rb
+        }
       }
 
       // The operation's total capacity demand (base + index maintenance), grouped per budget target.
