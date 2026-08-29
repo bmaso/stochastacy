@@ -26,10 +26,14 @@ object BillingMode:
     require(gsiReadCapacityUnits.values.forall(_ > 0L),  "per-GSI readCapacityUnits must be positive")
     require(gsiWriteCapacityUnits.values.forall(_ > 0L), "per-GSI writeCapacityUnits must be positive")
 
-    /** A GSI's provisioned read/write capacity, falling back to the base table's value when unset. */
+    /** A GSI's provisioned read/write **throttle ceiling**, falling back to the base table's value when the
+     *  GSI's capacity is not separately provisioned (a GSI without its own capacity is limited by the base). */
     def gsiRead(indexName: String):  Long = gsiReadCapacityUnits.getOrElse(indexName, readCapacityUnits)
     def gsiWrite(indexName: String): Long = gsiWriteCapacityUnits.getOrElse(indexName, writeCapacityUnits)
 
-    /** Total reserved read/write capacity across the base table and every GSI (LSIs share the base). */
-    def totalReadCapacity(gsiNames: Seq[String]):  Long = readCapacityUnits  + gsiNames.map(gsiRead).sum
-    def totalWriteCapacity(gsiNames: Seq[String]): Long = writeCapacityUnits + gsiNames.map(gsiWrite).sum
+    /** Total **reserved** (billed) read/write capacity: the base table plus only the GSIs that are
+     *  **explicitly provisioned** (you pay for GSI capacity you actually provision; an unspecified GSI
+     *  reserves nothing of its own, though it is still throttle-limited by the base — see `gsiRead`).
+     *  LSIs share the base's throughput. */
+    def totalReadCapacity:  Long = readCapacityUnits  + gsiReadCapacityUnits.values.sum
+    def totalWriteCapacity: Long = writeCapacityUnits + gsiWriteCapacityUnits.values.sum

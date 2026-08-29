@@ -56,7 +56,7 @@ final class TrialAccountingState(
   // the mode in force at `tick` (a mid-run reconfiguration switches which mode a tick is billed by).
   private def provisionedPerTick(tick: Long): Option[(BigInt, BigInt)] =
     schedule.billingModeAt(tick, billingMode) match
-      case p: BillingMode.Provisioned => Some((BigInt(p.totalReadCapacity(gsiNames)), BigInt(p.totalWriteCapacity(gsiNames))))
+      case p: BillingMode.Provisioned => Some((BigInt(p.totalReadCapacity), BigInt(p.totalWriteCapacity)))
       case BillingMode.OnDemand       => None
 
   private var currentBytes = initialStorageBytes

@@ -8,9 +8,10 @@ into your own simulator** — what each is, the properties it guarantees, when t
 pieces compose — as distinct from the [demo guides](README.ordertracking-v2.md), which explain what a
 particular simulation *shows* and how to run it.
 
-Scope today is **DynamoDB** — a single on-demand table, now with **Query/Scan and secondary indexes**.
-This catalog grows as the AWS line does; multi-table / multi-region is expected with the thermostat-fleet
-capstone.
+Scope today is **DynamoDB** — a single table with **Query/Scan and secondary indexes**, **on-demand or
+provisioned billing** (with throttling and scheduled reconfiguration), composable into **multi-table**
+simulations. This catalog grows as the AWS line does; auto-scaling, TTL/transactions, and multi-region are
+expected with the thermostat-fleet capstone.
 
 ## How to read an entry
 
@@ -102,17 +103,29 @@ configuration for intrinsic table structure*). Because it presents a `Req → Re
 [`Interface.wrap`](component-catalog.md#interfacewrap) gate decorates it transparently: the
 [Thermostat-fleet demo](README.thermostat-v2.md) wraps the table with a `ChaosGate` at the table's inlet to
 model DynamoDB's intrinsic ~0.1 % transient failures (a rejected request consumes nothing) — the first
-realized decoration on an AWS table. The same seam is the natural home for **throttling** admission control,
-which this table still deliberately omits (a later phase).
+realized decoration on an AWS table.
 
-**Scope.** On-demand billing with **no throughput cap → no throttling**, a single table with Query/Scan +
-GSIs/LSIs, and none of the advanced models (provisioned/auto-scaling, hot-partition, burst, adaptive, PITR,
+**Billing mode, throttling, and reconfiguration** (intrinsic config, not a gate). A `BillingMode` on the
+`Config` selects **on-demand** (pay per consumed unit; uncapped) or **provisioned** (a reserved RCU/WCU
+capacity, base plus explicitly-provisioned GSIs, billed by **capacity-hours**). A provisioned table
+**throttles** — an internal, **per-target** weighted per-tick budget (base + LSI share the base; each GSI its
+own, base-fallback ceiling) held in `TableState`: a request whose mechanics-computed demand would push any
+target past its ceiling is rejected whole with a `ThrottledResponse`, consuming nothing and mutating no state
+(reset each tick). Capacity-unit throttling is coupled to the billing mode and the table's own capacity math,
+so it lives **inside** the table rather than in an edge gate — the gate family stays the tool for request-rate
+limits. A `ReconfigurationSchedule` applies `SwitchBillingMode` / `UpdateProvisionedCapacity` at tick
+boundaries (24 h switch cooldown); the mode-in-force is a pure `billingModeAt(tick)` fold shared by the table
+and the accounting. See the [mixed-mode demo](README.thermostat-v2.md#mixed-mode-provisioned-capacity--throttling--reconfiguration).
+
+**Scope.** On-demand or provisioned billing (with throttling + scheduled reconfiguration), a single table
+with Query/Scan + GSIs/LSIs, and none of the remaining advanced models (auto-scaling, hot-partition, burst, adaptive, PITR,
 TTL, replication). Those belong to later phases.
 
 **Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md) (single table, then Query/Scan + two
 All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a growing fleet with **mixed
-index projections** — KeysOnly / Include / All — an **inbound `ChaosGate`**, and a **multi-table**
-composition of two thermostat tables); `aws/…/DynamoDbTableSpec.scala`
+index projections** — KeysOnly / Include / All — an **inbound `ChaosGate`**, a **multi-table** composition of
+two thermostat tables, and a **mixed-mode** run exercising provisioned billing + throttling + scheduled
+reconfiguration); `aws/…/DynamoDbTableSpec.scala`
 (timed response + execution-time consumption, state threading, GSI+LSI maintenance, read routing to a
 projected GSI, control-event preservation, determinism); the `OrderTrackingEquivalenceSpec.scala`,
 `OrderTrackingIndexedReconciliationSpec.scala`, and `ThermostatFleetReconciliationSpec.scala` (reconcile

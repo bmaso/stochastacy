@@ -1,7 +1,9 @@
 # v2/phase6 — Provisioned capacity + throttling (auto-scaling deferred to phase 8)
 
-**Status: PLANNED** — five slices. Introduce the first **non-on-demand** billing mode and the first
-**load-dependent** admission control, reconciled against the legacy mixed-mode thermostat demo.
+**Status: COMPLETE** — five slices delivered. Introduced the first **non-on-demand** billing mode and the
+first **load-dependent** admission control (provisioned billing + throttling + scheduled reconfiguration),
+reconciled against the legacy mixed-mode thermostat demo — clean on the simulation (~1 %), with the cost a
+documented divergence.
 
 Follows `v2/phase5` (multi-table composition). Everything so far has been **on-demand** billing with no
 throughput cap → no throttling. This phase adds **provisioned billing** (a reserved RCU/WCU capacity billed
@@ -60,7 +62,7 @@ a mid-run switch is priced by integrating the mode in force **per tick**. Thrott
 | 2 | Throttling (weighted per-tick cap, internal) | **Done** | per-target `ThrottleBudget` in `TableState`; over-ceiling → `ThrottledResponse` + `RequestThrottled` (no consumption/state); per-tick reset; on-demand byte-identical |
 | 3 | Scheduled reconfiguration | **Done** | `ReconfigurationSchedule` applied at `onTick` via shared `billingModeAt`; validation (cooldown, prov-only); throttle + pricing follow the switches |
 | 4 | Mixed-mode scenario + demo (end-to-end) | **Done** | `ThermostatConfig.mixedModeDefault` + `@main`; billing-mode-aware provisioned/throttle metrics surfaced (on-demand byte-identical); throttling fires under the right-sized capacity |
-| 5 | Reconciliation gate + docs + close-out | Planned | reconcile vs captured legacy mixed-mode baseline; docs; phase COMPLETE |
+| 5 | Reconciliation gate + docs + close-out | **Done** | simulation reconciles ~1% vs legacy; cost a documented divergence; pricing fixed to explicit-GSI-only; docs; phase COMPLETE |
 
 ## Slices
 
@@ -177,6 +179,20 @@ throttling, a demo section; roadmap + memory close-out.
 
 **Validated by:** the reconciliation passes with measured gaps reported; a reviewer can understand and run
 the mixed-mode demo; phase COMPLETE.
+
+**Delivered.** Legacy baseline captured (100 × 1200) via `ThermostatFleetBridge generate --mode mixed-mode`;
+pinned in `ThermostatMixedModeReconciliationSpec`. **Pricing fix (DQ-granularity-final):** `BillingMode.
+totalRead/WriteCapacity` now reserves `base + explicitly-provisioned GSIs` (`gsi…CapacityUnits.values.sum`,
+no base fallback) — matching the legacy (line 1530 `.values.sum`) and more correct (you pay for GSI capacity
+you provision); throttling keeps per-target base-fallback ceilings (already matched). **Reconciliation
+outcome:** the **simulation reconciles cleanly** — consumed RCU +0.52 %, WCU −0.46 %, storage +0.10 %; **cost
+is a documented divergence** (−8.6 %): v2 uses a clean per-tick billing attribution (on-demand→consumption,
+provisioned→capacity-hours, no double-count), while the legacy's mixed-cost accounting is internally
+inconsistent (its per-tick capacity series 244,930 ≠ its summary total 373,178) — so we keep v2's improved
+model and document the gap (phase-2/3 pattern; `TotalStorageByteTicks` excluded for the same legacy
+inconsistency the order-tracking gate skips). Throttle count + provisioned capacity-ticks are v2 additions the
+legacy summary omits. Docs: a mixed-mode section in `specs/README.thermostat-v2.md` + `aws-component-catalog.md`
+updated (billing mode / throttling / reconfiguration, scope). `aws` 170 tests green; all prior gates unchanged.
 
 ## Design principles and reuse
 

@@ -63,12 +63,18 @@ class ProvisionedPricingSpec extends AnyWordSpec with should.Matchers with Befor
       a.totalReadCapacityUnits should not be b.totalReadCapacityUnits
     }
 
-    "reserve capacity per target — base plus every GSI" in {
-      val prov    = BillingMode.Provisioned(readCapacityUnits = 100, writeCapacityUnits = 50)
-      val withGsi = runLeg(OrderTrackingConfig.indexedDefault.tableSpec.copy(billingMode = prov), seed = 3L).summary // 2 GSIs
-      val base    = runLeg(baseSpec.copy(billingMode = prov), seed = 3L).summary                                    // no GSIs
-      // base + 2 GSIs = 3× the base-only reservation (independent of the workload)
-      withGsi.totalProvisionedReadCapacityUnitTicks shouldBe (base.totalProvisionedReadCapacityUnitTicks * 3)
+    "reserve base plus only the explicitly-provisioned GSI capacity (unspecified GSIs reserve nothing)" in {
+      // indexedDefault has 2 GSIs. With no per-GSI capacity provisioned, only the base is reserved ...
+      val baseOnly = runLeg(OrderTrackingConfig.indexedDefault.tableSpec.copy(
+        billingMode = BillingMode.Provisioned(readCapacityUnits = 100, writeCapacityUnits = 50)), seed = 3L).summary
+      baseOnly.totalProvisionedReadCapacityUnitTicks shouldBe BigInt(100 * ticks)
+
+      // ... whereas explicitly provisioning the two GSIs adds their capacity to the reservation.
+      val gsiNames = OrderTrackingConfig.indexedDefault.tableSpec.globalSecondaryIndexes.map(_.indexName)
+      val withGsi = runLeg(OrderTrackingConfig.indexedDefault.tableSpec.copy(
+        billingMode = BillingMode.Provisioned(readCapacityUnits = 100, writeCapacityUnits = 50,
+          gsiReadCapacityUnits = gsiNames.map(_ -> 100L).toMap)), seed = 3L).summary
+      withGsi.totalProvisionedReadCapacityUnitTicks shouldBe BigInt((100 + 100 * gsiNames.size) * ticks.toInt)
     }
   }
 
