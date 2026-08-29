@@ -1,8 +1,24 @@
 # v2/phase7 — TTL + transactions (with a core enhancement: tick-boundary emission)
 
-**Status: PLANNED** — five slices. Opens with the approved **core enhancement** (tick-boundary consumption
-emission), then two mostly-independent single-table capabilities — **TTL** (needs the core change) and
-**transactions** (does not) — each as a mechanism slice + a demo slice.
+**Status: COMPLETE** — five slices + a close-out coda. Opened with the approved **core enhancement**
+(tick-boundary consumption emission), then two mostly-independent single-table capabilities — **TTL** (needs
+the core change) and **transactions** (does not) — each as a mechanism slice + a demo slice.
+
+## Outcome
+
+Phase 7 landed the **first deliberate v2 core change** since the engine redefinition — `ComponentSampler.onTick`
+now returns `TickEmission[S, Cons]`, emitting consumption facts at tick boundaries (never forward outputs, so
+1:1 request/response is preserved) — and built two capabilities on it: **TTL** (an immutable ring-buffer expiry
+model as generic table mechanics, freeing **base + GSI + LSI** storage at the tick boundary with no capacity)
+and **transactions** (`TransactWriteItems` / `TransactGetItems` at a researched, AWS-accurate, target-dependent
+multiplier — base + synchronous LSI **2×**, async GSI back-fill **1×** — applied atomically). Because the
+thermostat domains don't fit either capability, both were proven by **bespoke** demos: the **session-store**
+(storage plateaus as creations balance expiries) and the **payments-ledger** (the ≈2× transaction premium via a
+`useTransactions` toggle). Full legacy reconcile of TTL + transactions is deferred to the **phase-8 capstone**.
+Every existing reconciliation spec stayed byte-identical (both features default off). The phase-closing
+whole-build gate (`sbt test`) also caught a **latent Slice-1 miss** — the `examples` module's
+`AdmissionSampler.onTick` was never migrated to `TickEmission` (Slices 1–5 gated only on `core/test` +
+`aws/test`); fixed in the coda. **core 512 / examples 244 / aws 200 green.**
 
 Follows `v2/phase6` (provisioned capacity + throttling). This is the **first deliberate v2 core change since
 the engine redefinition** — taken because the old `onTick: S` contract *blocked* (not supported) TTL, whose
@@ -42,7 +58,7 @@ the Commands pattern).
 | 3 | TTL demo (session-store) + delete/expire coverage + docs | **Done** | bespoke session-store demo: storage plateaus (creations ≈ expiries) vs unbounded no-TTL; delete-before-TTL freed exactly once; determinism; TTL doc note |
 | 4 | Transactions mechanism | **Done** | base+LSI 2× / GSI 1× (AWS-accurate) per item; atomic all-or-nothing; storage + per-index maintenance + TTL over sub-writes; determinism |
 | 5 | Transactions demo (payments ledger) + docs | **Done** | transactions bill ≈2× vs equivalent singles (write + read); storage flat; determinism |
-| 5-coda | Phase close-out | Planned | roadmap COMPLETE header, CLAUDE.md, program roadmap, memory-complete |
+| 5-coda | Phase close-out | **Done** | roadmap COMPLETE header + Outcome, CLAUDE.md, program roadmap, memory-complete, full `sbt test` green |
 
 ## Slices
 

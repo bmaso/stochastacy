@@ -63,9 +63,9 @@ capacity + throttling landed (phase 6); the remaining legacy demos are all *ther
 phase 7 is largely independent and the capstone (8) integrates everything, so their relative order can shift
 by priority.
 
-- **v2/phase7 — TTL + transactions (with a core enhancement: tick-boundary emission).** Opens with a
-  small, principled **core engine change**: a `ComponentSampler`'s `onTick` gains the ability to **emit
-  consumption facts at tick boundaries** — `onTick(tick, state, rng): TickEmission[S, Cons]` (new state plus
+- **v2/phase7 — TTL + transactions (with a core enhancement: tick-boundary emission) — DONE.** Opened with a
+  small, principled **core engine change**: a `ComponentSampler`'s `onTick` gained the ability to **emit
+  consumption facts at tick boundaries** — `onTick(tick, state): TickEmission[S, Cons]` (new state plus
   scheduled *metric-plane* facts; **never** forward outputs, so 1:1 request/response is preserved by
   construction). The `ScheduleReleaseTransducer` stamps these at the boundary time `(t, 0)`, buffers them,
   and releases them in time order like any tick-`t` output, so all timed-event invariants (tick framing,
@@ -80,6 +80,12 @@ by priority.
   atomically, processed in `sample()` like any operation (proves the Commands pattern). Reconcile note: the
   legacy sets TTL and transactions only in the **capstone** (phase 8), so phase 7 validates these with
   focused single-region demos + unit tests, deferring the full multi-table reconcile to the capstone.
+  **Delivered:** `onTick` needs **no `rng`** (TTL is deterministic — a ring buffer); TTL frees **base + GSI +
+  LSI** storage (not just base-table), as generic table mechanics rather than a behavior hook; the transaction
+  multiplier is the **AWS-accurate target-dependent** rule (base + synchronous LSI **2×**, async GSI back-fill
+  **1×**) — researched against AWS billing, deliberately diverging from the legacy's uniform 1× on indexes;
+  and the two capabilities were proven by **bespoke session-store + payments-ledger demos** (the thermostat is
+  a device registry / mixed-mode — neither fits an accumulate-then-expire or atomic-transfer story).
   Roadmap: `v2-phase7.md`.
 - **v2/phase8 — Thermostat-fleet capstone (single-region) + auto-scaling.** Assemble the full **4-table
   fleet** (Registry on-demand+GSIs, Telemetry provisioned+auto-scaling+TTL, Commands transactions, Alerts

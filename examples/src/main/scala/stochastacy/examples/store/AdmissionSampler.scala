@@ -1,7 +1,7 @@
 package stochastacy.examples.store
 
 import org.apache.commons.rng.UniformRandomProvider
-import stochastacy.core.component.{ComponentSampler, Emission, Scheduled}
+import stochastacy.core.component.{ComponentSampler, Emission, Scheduled, TickEmission}
 
 /** The admission gate: a load-aware component between ingress and the datastore. It admits the first
  *  `capacityPerTick` requests to arrive in a tick and throttles the rest — the first component whose
@@ -21,7 +21,8 @@ final class AdmissionSampler(cfg: AdmissionConfig)
 
   def initialState: AdmissionState = AdmissionState(0)
 
-  override def onTick(tick: Long, state: AdmissionState): AdmissionState = AdmissionState(0)
+  override def onTick(tick: Long, state: AdmissionState): TickEmission[AdmissionState, AdmissionConsumption] =
+    TickEmission(AdmissionState(0), Nil)
 
   def sample(
     in:    StoreRequest,
