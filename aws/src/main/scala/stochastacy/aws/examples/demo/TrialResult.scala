@@ -22,7 +22,13 @@ final case class TrialSummary(
   finalStorageBytes:          Long,
   totalEstimatedCost:         BigDecimal,
   gsiTotalReadCapacityUnits:  Map[String, BigDecimal] = Map.empty,
-  gsiTotalWriteCapacityUnits: Map[String, BigDecimal] = Map.empty
+  gsiTotalWriteCapacityUnits: Map[String, BigDecimal] = Map.empty,
+  // Reserved provisioned capacity integrated over the ticks it was in force (0 under on-demand). Priced as
+  // capacity-hours; carried here for reporting/reconciliation (not yet a JSONL metric).
+  totalProvisionedReadCapacityUnitTicks:  BigInt = 0,
+  totalProvisionedWriteCapacityUnitTicks: BigInt = 0,
+  // Requests throttled because their demand would exceed the per-tick provisioned capacity (0 on-demand).
+  totalThrottledRequests: Long = 0
 )
 
 /** The result of one Order-Tracking trial: the per-tick series and the summary totals. */

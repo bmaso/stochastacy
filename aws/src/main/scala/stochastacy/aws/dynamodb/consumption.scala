@@ -22,3 +22,8 @@ final case class WriteCapacityConsumed(units: BigDecimal, target: DynamoDbTarget
 
 /** The signed change in stored bytes on `target` produced by a write or delete (positive grows storage). */
 final case class StorageBytesDelta(bytesDelta: Long, target: DynamoDbTarget) extends DynamoDbConsumption
+
+/** A throttle marker (zero capacity): a provisioned request rejected because its demand would exceed the
+ *  per-tick provisioned capacity of `target` (the first over-budget target). Counted downstream; it moves
+ *  no capacity or storage. */
+final case class RequestThrottled(target: DynamoDbTarget) extends DynamoDbConsumption

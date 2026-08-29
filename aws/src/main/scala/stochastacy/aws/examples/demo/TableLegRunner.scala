@@ -30,11 +30,13 @@ object TableLegRunner:
     val framed   = TickFraming.frame(arrivals.iterator, simulationTicks).toVector
 
     val tableConfig = DynamoDbTable.Config(
-      initialState           = spec.initialTableState,
-      behavior               = spec.behavior,
-      latency                = spec.latency,
-      globalSecondaryIndexes = spec.globalSecondaryIndexes,
-      localSecondaryIndexes  = spec.localSecondaryIndexes
+      initialState            = spec.initialTableState,
+      behavior                = spec.behavior,
+      latency                 = spec.latency,
+      globalSecondaryIndexes  = spec.globalSecondaryIndexes,
+      localSecondaryIndexes   = spec.localSecondaryIndexes,
+      billingMode             = spec.billingMode,
+      reconfigurationSchedule = spec.reconfigurationSchedule
     )
 
     // A load-independent system-error gate on the table's inlet: rejected requests never reach the table,
@@ -53,7 +55,13 @@ object TableLegRunner:
     // only the running per-tick accounting (bounded by ticks × metrics).
     val accountingSink =
       Sink.fold[TrialAccountingState, TimedElement[Timed[DynamoDbConsumption]]](
-        new TrialAccountingState(spec.initialStorageBytesAllTargets, spec.rates)
+        new TrialAccountingState(
+          spec.initialStorageBytesAllTargets,
+          spec.rates,
+          spec.billingMode,
+          spec.globalSecondaryIndexes.map(_.indexName),
+          spec.reconfigurationSchedule
+        )
       ) { (state, element) => state.update(element); state }
 
     val graph = RunnableGraph.fromGraph(

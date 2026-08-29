@@ -210,6 +210,61 @@ Same flags as the single-region demo; the console summary shows a per-table tota
 
 ---
 
+## Mixed-mode (provisioned capacity + throttling + reconfiguration)
+
+A third scenario, `thermostat-fleet-mixed-mode`, runs the single-region telemetry workload through a
+**mid-run billing-mode change** — the legacy "right-sizing trap." It re-implements
+`ThermostatFleetMixedModeConfig`:
+
+- **starts on-demand** (uncapped);
+- **`SwitchBillingMode` → `Provisioned(250 RCU, 125 WCU)` at tick 400** — reserved capacity, billed by the
+  hour;
+- **`UpdateProvisionedCapacity` → `Provisioned(100 RCU, 333 WCU)` at tick 800** — right-sized *down*.
+
+Because the provisioned capacity is deliberately far below the telemetry write demand (and the morning/evening
+spikes and alert storms land in the provisioned window), a large fraction of writes **throttle** — the trap:
+provisioning to ~the mean throttles the bursts on-demand absorbed.
+
+### What it adds
+- **Provisioned billing** — a `BillingMode` (intrinsic table config) priced by **capacity-hours**
+  (`capacity-ticks ÷ 3600 × hourly rate`, consumption-independent). Only **explicitly provisioned** GSI
+  capacity is reserved (an unspecified GSI reserves nothing of its own, though it is still throttle-limited by
+  the base).
+- **Throttling** — an internal, **per-target** weighted budget (base + each GSI, reset each tick): a request
+  over any target's ceiling is rejected whole with a `ThrottledResponse`, consuming nothing.
+- **Scheduled reconfiguration** — a `ReconfigurationSchedule` applied at tick boundaries; the accounting bills
+  each tick by the mode in force, so a run that is on-demand for part of the horizon and provisioned for the
+  rest prices correctly.
+- **New reported metrics** (surfaced only for provisioned ensembles, so on-demand output is unchanged):
+  `TotalProvisioned{Read,Write}CapacityUnitTicks` and `TotalThrottledRequests`.
+
+### Reconciliation
+`ThermostatMixedModeReconciliationSpec` reconciles against the captured legacy `mixed-mode` baseline. The
+**simulation matches cleanly** — consumed RCU/WCU and final storage all within ~1 %:
+
+| metric | v2 vs legacy |
+|---|---|
+| consumed read capacity units  | +0.52% |
+| consumed write capacity units | −0.46% |
+| final storage bytes           | +0.10% |
+
+**Cost is a documented divergence** (v2 ≈ −8.6%). v2 uses a clean per-tick billing attribution (on-demand
+ticks by consumption, provisioned ticks by capacity-hours — never double-counted); the legacy's mixed-cost
+accounting is internally inconsistent (its per-tick capacity series does not sum to its own summary total), so
+it is not a clean cost reference — v2 correctly bills the throttled/provisioned window by *reserved* capacity
+rather than would-be consumption. As in phases 2–3, we keep the improved model and document the gap rather
+than reproduce the legacy's inconsistency.
+
+### Running it
+```bash
+sbt 'aws/runMain stochastacy.aws.examples.thermostatfleet.ThermostatMixedModeDemo --output /tmp/thermostat-fleet-mixed-mode.jsonl --trials 100 --seed 1'
+```
+The console summary shows consumed capacity, the provisioned reservation, the throttle count, and the cost.
+The tick horizon is fixed by the reconfiguration schedule (400 / 800 within 1200 ticks). To run the gate:
+`sbt 'aws/testOnly stochastacy.aws.examples.thermostatfleet.ThermostatMixedModeReconciliationSpec'`.
+
+---
+
 ## Source map
 
 | concern | file |

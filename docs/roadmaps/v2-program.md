@@ -41,33 +41,38 @@ sequence.
   (device-registry + device-telemetry) as a **clean per-table equivalence** (~2%). **Generalized the demo
   harness** — a per-table `TableSpec` + `MultiTable{Scenario,Trial,MonteCarlo}Runner` reuse the single-table
   accounting / aggregation / streaming primitives (single-table byte-identical). Roadmap: `v2-phase5.md`.
+- **v2/phase6** — **Provisioned capacity + throttling**: the first non-on-demand billing mode
+  (`BillingMode` as intrinsic config, priced by capacity-hours), **internal per-target throttling** (a
+  reusable weighted per-tick budget in `TableState` — capacity-unit throttling is intrinsic, not a gate), and
+  **scheduled reconfiguration** (`ReconfigurationSchedule` applied at tick boundaries). Reconciles the legacy
+  `mixed-mode` demo — **clean on the simulation** (~1 %) with the mixed **cost a documented divergence** (v2's
+  clean per-tick billing attribution vs the legacy's inconsistent mixed-cost accounting; provisioned pricing
+  reserves base + explicitly-provisioned GSIs). Auto-scaling deferred to phase 8. Roadmap: `v2-phase6.md`.
 
-At this point the entire legacy **`ordertracking`** demo (both phases) and the single-region + multi-table
-**thermostat** demos are ported and reconciled. The remaining legacy demos are the rest of the
+At this point the entire legacy **`ordertracking`** demo (both phases) and the single-region + multi-table +
+mixed-mode **thermostat** demos are ported and reconciled. The remaining legacy demos are the rest of the
 **thermostat-fleet** family (`examples/…/thermostatfleet`, driven by `ThermostatFleetBridge`) — feature-depth
-single-table capabilities and a 4-table multi-region capstone — all of which reuse the now-available
-thermostat domain and multi-table harness.
+single-table capabilities (TTL / transactions) and a 4-table multi-region capstone (with auto-scaling) — all
+reusing the now-available thermostat domain, multi-table harness, and provisioned/throttling machinery.
 
 ## Planned — to parity, then retirement
 
 Ordering is smallest-leap-first, and every phase keeps a **clean legacy reconcile**. The thermostat domain
-(a telemetry behavior + workload) led (phase 4) and multi-table composition followed (phase 5), because the
-remaining legacy demos are all *thermostat* scenarios; porting the single-table thermostat demo first gave
-every later phase a legacy scenario to reconcile against. Feature-depth phases (6–7) are largely
-independent and the capstone (8) integrates them, so their relative order can shift by priority.
+(a telemetry behavior + workload) led (phase 4), multi-table composition followed (phase 5), and provisioned
+capacity + throttling landed (phase 6); the remaining legacy demos are all *thermostat* scenarios. Feature-depth
+phase 7 is largely independent and the capstone (8) integrates everything, so their relative order can shift
+by priority.
 
-- **v2/phase6 — Provisioned capacity + throttling + auto-scaling.** Provisioned billing (capacity-hour
-  cost), **throttling** (requests over per-tick capacity are rejected), then auto-scaling (capacity tracks
-  utilization). **Central decision:** throttling via an `Interface.wrap` gate vs. internal admission — the
-  fork deferred since phase-2; the gate machinery was built for exactly this.
 - **v2/phase7 — TTL + transactions.** Item **TTL** expiry (frees storage over ticks) and **transactions**
   (`TransactWriteItems` / `TransactGetItems`, 2× capacity, atomic multi-item) — two mostly-independent
   single-table capability slices. Proves the Telemetry (TTL) and Commands (transaction) patterns.
-- **v2/phase8 — Thermostat-fleet capstone (single-region).** Assemble the full **4-table fleet** (Registry
-  on-demand+GSIs, Telemetry provisioned+auto-scaling+TTL, Commands transactions, Alerts spike) with a
-  **time-varying "polar-vortex" workload** (tick-varying rates are already expressible with the core
-  samplers — config, not engine). Proves `ThermostatFleetCapstoneConfig` (single-region) — the integration
-  proof.
+- **v2/phase8 — Thermostat-fleet capstone (single-region) + auto-scaling.** Assemble the full **4-table
+  fleet** (Registry on-demand+GSIs, Telemetry provisioned+auto-scaling+TTL, Commands transactions, Alerts
+  spike) with a **time-varying "polar-vortex" workload** (tick-varying rates are already expressible with the
+  core samplers — config, not engine). **Builds the reactive auto-scaler** here (deferred from phase 6: a
+  rolling-utilization control loop driving `UpdateProvisionedCapacity` with reaction-lag, scale-up-fast /
+  scale-down-slow) — the capstone's Telemetry table is its only legacy reconcile target. Proves
+  `ThermostatFleetCapstoneConfig` (single-region) — the integration proof.
 - **v2/phase9 — Multi-region / global tables.** Cross-region **replication** (global tables →
   `ReplicatedWriteCapacityConsumed`), cross-region **transfer** bytes/cost, per-region metrics. Proves the
   multi-region thermostat scenarios.

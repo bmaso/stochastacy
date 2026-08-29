@@ -32,7 +32,9 @@ object DynamoDbTable:
     behavior:               TableBehavior,
     latency:                StatelessSampler[Double], // per-op service latency, in fractional ticks
     globalSecondaryIndexes: Vector[GlobalSecondaryIndex] = Vector.empty,
-    localSecondaryIndexes:  Vector[LocalSecondaryIndex]  = Vector.empty
+    localSecondaryIndexes:  Vector[LocalSecondaryIndex]  = Vector.empty,
+    billingMode:            BillingMode                  = BillingMode.OnDemand, // the initial mode
+    reconfigurationSchedule: ReconfigurationSchedule     = ReconfigurationSchedule.empty
   ):
     def withGlobalSecondaryIndex(index: GlobalSecondaryIndex): Config =
       copy(globalSecondaryIndexes = globalSecondaryIndexes :+ index)
@@ -54,7 +56,7 @@ object DynamoDbTable:
 
     private val indexes: Vector[SecondaryIndex] = config.secondaryIndexes
 
-    def initialState: TableState = TableState.initial(config.initialState, indexes)
+    def initialState: TableState = TableState.initial(config.initialState, indexes, config.billingMode)
 
     def sample(
       in:    DynamoDbRequest,
@@ -82,14 +84,57 @@ object DynamoDbTable:
               (states.updated(idx.indexName, m.state), scheduled ++ m.consumption.map(c => Scheduled(c, idx.maintenanceDelay)))
           }
 
-      Emission(
-        newState    = state.copy(base = resolution.state, indexes = nextIndexes), // copy preserves currentTick
-        output      = Scheduled(resolution.response, math.max(0.0, latency)),
-        consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
-      )
+      // The operation's total capacity demand (base + index maintenance), grouped per budget target.
+      val allConsumption = resolution.consumption ++ indexScheduled.map(_.event)
+      val readDemand     = demandBy(allConsumption) { case ReadCapacityConsumed(u, _, t) => (ThrottleBudget.budgetKey(t), u) }
+      val writeDemand    = demandBy(allConsumption) { case WriteCapacityConsumed(u, t)   => (ThrottleBudget.budgetKey(t), u) }
 
-    /** Advance the current tick at each tick boundary, so a time-dependent behavior can read it. */
-    override def onTick(tick: Long, state: TableState): TableState = state.copy(currentTick = tick)
+      state.billingMode match
+        case p: BillingMode.Provisioned if state.perTickBudget.overBudget(readDemand, writeDemand, p) =>
+          // Throttle: reject the whole operation — no capacity consumed, no state mutated, budget untouched.
+          Emission(
+            newState    = state, // base / indexes / currentTick / budget all preserved
+            output      = Scheduled(ThrottledResponse, math.max(0.0, latency)),
+            consumption = List(Scheduled(RequestThrottled(firstOverTarget(allConsumption, state.perTickBudget, p)), 0.0))
+          )
+        case p: BillingMode.Provisioned =>
+          // Admit and charge the demand against this tick's provisioned budget.
+          Emission(
+            newState    = state.copy(base = resolution.state, indexes = nextIndexes, perTickBudget = state.perTickBudget.add(readDemand, writeDemand)),
+            output      = Scheduled(resolution.response, math.max(0.0, latency)),
+            consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
+          )
+        case BillingMode.OnDemand =>
+          // Uncapped: admit unchanged (no budget), exactly as before provisioned billing existed.
+          Emission(
+            newState    = state.copy(base = resolution.state, indexes = nextIndexes), // copy preserves currentTick
+            output      = Scheduled(resolution.response, math.max(0.0, latency)),
+            consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
+          )
+
+    /** Sum per-budget-target capacity demand from the operation's consumption facts. */
+    private def demandBy(
+      consumption: List[DynamoDbConsumption]
+    )(extract: PartialFunction[DynamoDbConsumption, (String, BigDecimal)]): Map[String, BigDecimal] =
+      consumption.collect(extract).groupMapReduce(_._1)(_._2)(_ + _)
+
+    /** The first budget target whose admitted-plus-demand exceeds its ceiling — labels the throttle marker. */
+    private def firstOverTarget(consumption: List[DynamoDbConsumption], budget: ThrottleBudget, p: BillingMode.Provisioned): DynamoDbTarget =
+      consumption.collectFirst {
+        case c if budget.overBudget(
+                    demandBy(List(c)) { case ReadCapacityConsumed(u, _, t) => (ThrottleBudget.budgetKey(t), u) },
+                    demandBy(List(c)) { case WriteCapacityConsumed(u, t)   => (ThrottleBudget.budgetKey(t), u) },
+                    p) => c.target
+      }.getOrElse(DynamoDbTarget.Table)
+
+    /** At each tick boundary: advance the tick, reset the per-tick provisioned budget, and apply any
+     *  scheduled reconfiguration — so the mode/capacity in force this tick reflects the schedule. */
+    override def onTick(tick: Long, state: TableState): TableState =
+      state.copy(
+        currentTick   = tick,
+        perTickBudget = ThrottleBudget.empty,
+        billingMode   = config.reconfigurationSchedule.billingModeAt(tick, config.billingMode)
+      )
 
     /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,
      *  the base summary for a table read and for every write/get. */

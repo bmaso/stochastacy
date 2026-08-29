@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, TableBehavior, TableSummaryState}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, ReconfigurationSchedule, TableBehavior, TableSummaryState}
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.{LogNormalSampler, StatelessSampler}
 
@@ -36,12 +36,23 @@ trait SingleTableScenario:
   /** Per-op service latency (fractional ticks); affects only response timing, never a total. */
   def latency: StatelessSampler[Double] = LogNormalSampler.constant(math.log(0.05), 0.5)
 
-  /** On-demand pricing rates. */
-  def rates: Rates = OnDemandPricing.phase1Default
+  /** Pricing rates (on-demand consumption + provisioned capacity-hour + storage). */
+  def rates: Rates = Pricing.phase1Default
 
   /** Load-independent per-request failure rate, applied by the harness as an inbound `ChaosGate` on the
    *  table's inlet (0.0 = no gate). A rejected request consumes no capacity and mutates no state. */
   def systemErrorRate: Double = 0.0
+
+  /** The table's initial billing mode — on-demand (default) or provisioned. Intrinsic table config. */
+  def billingMode: BillingMode = BillingMode.OnDemand
+
+  /** Scheduled billing-mode / capacity reconfiguration applied at tick boundaries (empty = static). */
+  def reconfigurationSchedule: ReconfigurationSchedule = ReconfigurationSchedule.empty
+
+  /** True if the table is (or becomes) provisioned — so provisioned-capacity and throttle metrics are worth
+   *  reporting. A purely on-demand scenario reports none of them (its output stays unchanged). */
+  def usesProvisioning: Boolean =
+    billingMode != BillingMode.OnDemand || reconfigurationSchedule.entries.nonEmpty
 
   /** This scenario as a single [[TableSpec]] — the per-table unit the shared harness runs. The table name
    *  defaults to the scenario id (single-table output is not table-prefixed, so it is not otherwise used). */
@@ -55,5 +66,7 @@ trait SingleTableScenario:
     latency                       = latency,
     rates                         = rates,
     systemErrorRate               = systemErrorRate,
+    billingMode                   = billingMode,
+    reconfigurationSchedule       = reconfigurationSchedule,
     arrivals                      = arrivals
   )
