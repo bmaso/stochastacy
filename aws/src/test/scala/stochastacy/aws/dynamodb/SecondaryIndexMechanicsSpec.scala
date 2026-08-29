@@ -60,3 +60,18 @@ class SecondaryIndexMechanicsSpec extends AnyWordSpec with should.Matchers:
       SecondaryIndexMechanics.maintain(keysOnly, Some(800L), Some(900L), start) shouldBe SecondaryIndexMechanics.Maintenance(Nil, start)
     }
   }
+
+  "SecondaryIndexMechanics.maintain — transactional" should {
+    "double an LSI's maintenance WCU but leave a GSI's at 1x" in {
+      // insert of an 800 B item (All projection: entry 800 -> 1 WCU); transactional -> LSI 2x, GSI 1x
+      val lm = SecondaryIndexMechanics.maintain(LocalSecondaryIndex("l"), Some(800L), None, TableSummaryState.empty, transactional = true)
+      lm.consumption should contain(WriteCapacityConsumed(BigDecimal(2), DynamoDbTarget.Lsi("l")))
+      val gm = SecondaryIndexMechanics.maintain(GlobalSecondaryIndex("g"), Some(800L), None, TableSummaryState.empty, transactional = true)
+      gm.consumption should contain(WriteCapacityConsumed(BigDecimal(1), DynamoDbTarget.Gsi("g")))
+    }
+
+    "leave a non-transactional write at 1x for an LSI" in {
+      val lm = SecondaryIndexMechanics.maintain(LocalSecondaryIndex("l"), Some(800L), None, TableSummaryState.empty) // default: not transactional
+      lm.consumption should contain(WriteCapacityConsumed(BigDecimal(1), DynamoDbTarget.Lsi("l")))
+    }
+  }

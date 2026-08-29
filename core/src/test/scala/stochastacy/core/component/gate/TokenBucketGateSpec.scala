@@ -18,7 +18,7 @@ class TokenBucketGateSpec extends AnyWordSpec with should.Matchers:
     var admitted = 0
     var rejected = 0
     arrivalsPerTick.zipWithIndex.foreach { case (n, i) =>
-      st = gate.onTick(i + 1L, st)
+      st = gate.onTick(i + 1L, st).newState
       (0 until n).foreach { _ =>
         val e = gate.sample(Req(0), st, rng)
         e.output.event match

@@ -43,9 +43,9 @@ class LatencyGateSpec extends AnyWordSpec with should.Matchers:
     "thread the current tick into the sampler via onTick (time-varying latency)" in {
       // Latency = tick * 0.1; onTick sets the state the sampler reads.
       val gate  = new LatencyGate[Req, Resp](Sampler.deterministic(tick => tick.toDouble * 0.1))
-      val atT5  = gate.onTick(5L, gate.initialState)
+      val atT5  = gate.onTick(5L, gate.initialState).newState
       gate.sample(Req(0), atT5, rng).output.delay shouldBe (0.5 +- 1e-9)
-      val atT12 = gate.onTick(12L, atT5)
+      val atT12 = gate.onTick(12L, atT5).newState
       gate.sample(Req(0), atT12, rng).output.delay shouldBe (1.2 +- 1e-9)
     }
 

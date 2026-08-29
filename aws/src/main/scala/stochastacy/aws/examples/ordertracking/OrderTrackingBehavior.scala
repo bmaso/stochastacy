@@ -51,6 +51,8 @@ final class OrderTrackingBehavior(config: OrderTrackingConfig) extends TableBeha
       case s: ScanRequest  => OperationOutcome.Scan(s.target, s.consistency, scanShape(state))
       case q: QueryRequest => OperationOutcome.Query(q.target, q.consistency, queryShape(state, rng))
 
+      case other => throw new IllegalArgumentException(s"the order-tracking workload uses get/put/update/delete/query/scan, not $other")
+
   /** A scan evaluates the entire target — its item count and (projected) total bytes. */
   private def scanShape(state: TableSummaryState): ReadShape =
     readShape(state, evaluatedItemCount = state.itemCount)

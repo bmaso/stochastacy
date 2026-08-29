@@ -50,7 +50,7 @@ class ThrottlingSpec extends AnyWordSpec with should.Matchers:
       st.base.itemCount shouldBe 3L // no state mutation on a throttle
 
       // the budget resets at the tick boundary → the next write admits again
-      st = s.onTick(1L, st)
+      st = s.onTick(1L, st).newState
       put().output.event shouldBe a[PutItemResponse]
       st.base.itemCount shouldBe 4L
     }

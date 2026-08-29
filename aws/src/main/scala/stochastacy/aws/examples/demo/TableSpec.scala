@@ -27,7 +27,8 @@ final case class TableSpec(
   systemErrorRate:               Double,
   billingMode:                   BillingMode,
   reconfigurationSchedule:       ReconfigurationSchedule,
-  arrivals:                      UniformRandomProvider => Vector[Timed[DynamoDbRequest]]
+  arrivals:                      UniformRandomProvider => Vector[Timed[DynamoDbRequest]],
+  ttlPeriodTicks:                Option[Int]                                            = None // item TTL in ticks (None = off)
 ):
   require(tableName.nonEmpty,               "tableName must be non-empty")
   require(systemErrorRate >= 0.0 && systemErrorRate < 1.0, "systemErrorRate must be in [0, 1)")

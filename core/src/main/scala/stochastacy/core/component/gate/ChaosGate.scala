@@ -1,7 +1,7 @@
 package stochastacy.core.component.gate
 
 import org.apache.commons.rng.UniformRandomProvider
-import stochastacy.core.component.{Admit, Emission, InterfaceSampler, Reject, Scheduled}
+import stochastacy.core.component.{Admit, Emission, InterfaceSampler, Reject, Scheduled, TickEmission}
 import stochastacy.core.sampler.{BernoulliSampler, StatelessSampler}
 
 /** A chaos-failure gate: an **independent per-request draw** decides whether to reject the request
@@ -21,7 +21,7 @@ final class ChaosGate[Req, Resp](
 
   def initialState: Long = 0L
 
-  override def onTick(tick: Long, state: Long): Long = tick
+  override def onTick(tick: Long, state: Long): TickEmission[Long, Nothing] = TickEmission(tick, Nil)
 
   def sample(req: Req, state: Long, rng: UniformRandomProvider) =
     val (failed, _) = fail.sample(state, rng, ())

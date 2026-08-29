@@ -20,6 +20,10 @@ object TableMechanics:
     returnedBytes:      Long
   )
 
+  /** One sub-write of a transactional write — a put/upsert of `writtenItemBytes`, with `previousItemBytes`
+   *  set when it replaced an existing item (its footprint, exactly like a single `Put`). */
+  final case class TransactWriteItem(writtenItemBytes: Long, previousItemBytes: Option[Long])
+
   /** What a domain behavior decided an operation did — the rng-free input to [[resolve]]. Every outcome
    *  carries whatever `resolve` needs, so `resolve` takes only the outcome and the state; reads carry
    *  their own consistency and (for query/scan) their target. */
@@ -36,6 +40,10 @@ object TableMechanics:
     case Query(target: DynamoDbTarget, consistency: ReadConsistency, shape: ReadShape)
     /** A scan against `target` at `consistency` with the given read shape. */
     case Scan(target: DynamoDbTarget, consistency: ReadConsistency, shape: ReadShape)
+    /** A transactional write of several items, applied all-or-nothing (base WCU billed 2× per item). */
+    case TransactWrite(items: Vector[TransactWriteItem])
+    /** A transactional read of several items (each's found size, `None` if absent) — 2× strong RCU each. */
+    case TransactGet(items: Vector[Option[Long]])
 
   /** The result of resolving one operation against the table state. */
   final case class Resolution(
@@ -93,6 +101,27 @@ object TableMechanics:
           response    = ScanResponse(shape.evaluatedItemCount, shape.evaluatedBytes, shape.returnedItemCount, shape.returnedBytes),
           consumption = List(ReadCapacityConsumed(ThroughputMath.readCapacityUnits(Some(shape.evaluatedBytes), consistency), consistency, target)),
           state       = state
+        )
+
+      case OperationOutcome.TransactWrite(items) =>
+        // Thread the base summary through every sub-write; bill each base write at 2× (two-phase commit)
+        // and emit its storage delta. Index maintenance (LSI 2×, GSI 1×) is applied by the sampler.
+        val (nextState, facts) = items.foldLeft((state, List.empty[DynamoDbConsumption])) {
+          case ((st, acc), TransactWriteItem(writtenItemBytes, previousItemBytes)) =>
+            val next = st.applyWrite(writtenItemBytes, previousItemBytes)
+            val wcu  = WriteCapacityConsumed(
+              ThroughputMath.writeCapacityUnits(writtenItemBytes) * ThroughputMath.transactionalWriteMultiplier(DynamoDbTarget.Table),
+              DynamoDbTarget.Table
+            )
+            (next, acc ++ (wcu :: storageDelta(st, next)))
+        }
+        Resolution(TransactWriteItemsResponse(items.size), facts, nextState)
+
+      case OperationOutcome.TransactGet(items) =>
+        Resolution(
+          response    = TransactGetItemsResponse(items),
+          consumption = items.map(b => ReadCapacityConsumed(ThroughputMath.transactionalReadCapacityUnits(b), ReadConsistency.StronglyConsistent, DynamoDbTarget.Table)).toList,
+          state       = state // reads do not change storage
         )
 
   /** Emit a `StorageBytesDelta` (on the base table) only when the write/delete actually moved the byte total. */

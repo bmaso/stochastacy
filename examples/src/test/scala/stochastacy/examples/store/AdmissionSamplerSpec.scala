@@ -55,7 +55,7 @@ class AdmissionSamplerSpec extends AnyWordSpec with should.Matchers:
       firstTick.count(_ == Throttled) shouldBe 2
 
       // Without the reset the next tick would stay saturated; onTick restores full capacity.
-      val opened = admission.onTick(2L, endOfFirst)
+      val opened = admission.onTick(2L, endOfFirst).newState
       opened shouldBe AdmissionState(0)
       val (secondTick, _) = feedTick(3, opened)
       secondTick shouldBe Vector(Admitted(Get()), Admitted(Get()), Admitted(Get()))

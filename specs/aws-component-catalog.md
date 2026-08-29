@@ -9,9 +9,9 @@ pieces compose — as distinct from the [demo guides](README.ordertracking-v2.md
 particular simulation *shows* and how to run it.
 
 Scope today is **DynamoDB** — a single table with **Query/Scan and secondary indexes**, **on-demand or
-provisioned billing** (with throttling and scheduled reconfiguration), composable into **multi-table**
-simulations. This catalog grows as the AWS line does; auto-scaling, TTL/transactions, and multi-region are
-expected with the thermostat-fleet capstone.
+provisioned billing** (with throttling and scheduled reconfiguration), **item TTL** (storage expiry), and
+**transactions** (2× capacity), composable into **multi-table** simulations. This catalog grows as the AWS
+line does; auto-scaling and multi-region are expected with the thermostat-fleet capstone.
 
 ## How to read an entry
 
@@ -117,17 +117,44 @@ limits. A `ReconfigurationSchedule` applies `SwitchBillingMode` / `UpdateProvisi
 boundaries (24 h switch cooldown); the mode-in-force is a pure `billingModeAt(tick)` fold shared by the table
 and the accounting. See the [mixed-mode demo](README.thermostat-v2.md#mixed-mode-provisioned-capacity--throttling--reconfiguration).
 
-**Scope.** On-demand or provisioned billing (with throttling + scheduled reconfiguration), a single table
-with Query/Scan + GSIs/LSIs, and none of the remaining advanced models (auto-scaling, hot-partition, burst, adaptive, PITR,
-TTL, replication). Those belong to later phases.
+**TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
+makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the
+expiry is deterministic, so no behavior hook is needed: an immutable `Vector`-backed `TtlRingBuffer`
+(`ttlPeriodTicks + 1` slots of `(count, bytes)`) threaded in `TableState` records each write (an overwrite
+re-ages the item; an explicit delete removes one from the soonest-to-expire slot), and `onTick` drains the
+cohort written `ttlPeriodTicks` ago — using the core's [tick-boundary consumption emission](component-catalog.md)
+to free **base and per-index** storage as negative, target-tagged `StorageBytesDelta` facts (projection-sized,
+the exact inverse of write-time index maintenance), **consuming no capacity**. Pre-loaded items carry no
+write tick, so they never TTL-expire. A table with no `ttlPeriodTicks` is byte-identical to one before TTL
+existed. See the [session-store demo](README.session-store-ttl.md).
+
+**Transactions** (`TransactWriteItems` / `TransactGetItems`). A transactional write carries several sub-item
+writes applied **all-or-nothing** (one `Emission`; under provisioned billing the whole transaction is
+throttled as a unit, mutating nothing); a transactional read groups several strongly-consistent gets. Capacity
+follows **AWS's two-phase-commit billing**, which is *target-dependent*: the base-table write and its
+**synchronous, co-located LSI** maintenance are billed **2×**, while a **GSI** back-fill — which propagates
+*asynchronously after* the commit — is billed at the standard **1×**; transactional reads are 2× strongly
+consistent per item. (This deliberately diverges from the legacy simulator, which billed both index types at
+1×.) Each sub-write flows through the same storage, per-index maintenance, and TTL machinery as a single write.
+See the [payments-ledger demo](README.payments-transactions.md).
+
+**Scope.** On-demand or provisioned billing (with throttling + scheduled reconfiguration), item TTL,
+transactions, a single table with Query/Scan + GSIs/LSIs, and none of the remaining advanced models
+(auto-scaling, hot-partition, burst, adaptive, PITR, replication). Those belong to later phases. Transaction
+conditional-checks / partial-failure (`TransactionCanceledException`) are out of scope.
 
 **Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md) (single table, then Query/Scan + two
 All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a growing fleet with **mixed
 index projections** — KeysOnly / Include / All — an **inbound `ChaosGate`**, a **multi-table** composition of
 two thermostat tables, and a **mixed-mode** run exercising provisioned billing + throttling + scheduled
-reconfiguration); `aws/…/DynamoDbTableSpec.scala`
+reconfiguration); the [session-store demo](README.session-store-ttl.md) (item **TTL** — storage plateaus as
+creations balance expiries); the [payments-ledger demo](README.payments-transactions.md) (**transactions** —
+the ≈2× capacity premium vs. equivalent single operations); `aws/…/DynamoDbTableSpec.scala`
 (timed response + execution-time consumption, state threading, GSI+LSI maintenance, read routing to a
-projected GSI, control-event preservation, determinism); the `OrderTrackingEquivalenceSpec.scala`,
+projected GSI, control-event preservation, determinism); `aws/…/DynamoDbTableTtlSpec.scala` and
+`aws/…/TtlRingBufferSpec.scala` (TTL expiry timing, base + per-index freeing, delete-vs-expire, TTL-off
+byte-identity); `aws/…/DynamoDbTableTransactionSpec.scala` (base/LSI 2× + GSI 1×, atomic all-or-nothing, TTL
+over sub-writes); the `OrderTrackingEquivalenceSpec.scala`,
 `OrderTrackingIndexedReconciliationSpec.scala`, and `ThermostatFleetReconciliationSpec.scala` (reconcile
 against the legacy demos).
 

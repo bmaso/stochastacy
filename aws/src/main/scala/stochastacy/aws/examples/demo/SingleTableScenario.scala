@@ -49,6 +49,10 @@ trait SingleTableScenario:
   /** Scheduled billing-mode / capacity reconfiguration applied at tick boundaries (empty = static). */
   def reconfigurationSchedule: ReconfigurationSchedule = ReconfigurationSchedule.empty
 
+  /** Item TTL in ticks (None = off). When set, written items expire this many ticks later, freeing base
+   *  and secondary-index storage at the tick boundary — intrinsic table config, not a graph component. */
+  def ttlPeriodTicks: Option[Int] = None
+
   /** True if the table is (or becomes) provisioned — so provisioned-capacity and throttle metrics are worth
    *  reporting. A purely on-demand scenario reports none of them (its output stays unchanged). */
   def usesProvisioning: Boolean =
@@ -68,5 +72,6 @@ trait SingleTableScenario:
     systemErrorRate               = systemErrorRate,
     billingMode                   = billingMode,
     reconfigurationSchedule       = reconfigurationSchedule,
-    arrivals                      = arrivals
+    arrivals                      = arrivals,
+    ttlPeriodTicks                = ttlPeriodTicks
   )

@@ -34,6 +34,16 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
     def sample(in: ToyReq, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
       Emission(state + 1, Scheduled(ToyResp(state), latency), List(Scheduled(ToyCons("work"), consDelay)))
 
+  /** Emits one `ToyCons("tick-<t>")` at each tick boundary (delay 0); its `sample` emits a response plus a
+   *  `ToyCons("req")` at delay 0. Lets us observe boundary facts landing in a tick's own window, ordered
+   *  ahead of that tick's request-driven facts. */
+  private final class ToyTickSampler extends ComponentSampler[Int, ToyReq, ToyResp, ToyCons]:
+    def initialState: Int = 0
+    def sample(in: ToyReq, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
+      Emission(state, Scheduled(ToyResp(state), 0.0), List(Scheduled(ToyCons("req"), 0.0)))
+    override def onTick(tick: Long, state: Int): TickEmission[Int, ToyCons] =
+      TickEmission(state, List(Scheduled(ToyCons(s"tick-$tick"), 0.0)))
+
   private def t(n: Long): SimTime = SimTime.of(n)
   private def req(tick: Long, intra: Double = 0.0, uc: Any = "uc"): Timed[ToyReq] =
     Timed(ToyReq(), t(tick), intra, uc)
@@ -82,6 +92,28 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
     Await.result(graph.run(), 5.seconds)
 
   "ScheduleReleaseTransducer" should {
+
+    "release a component's tick-boundary facts inside that tick's window, ordered ahead of request facts" in {
+      // Two real ticks (1, 2), each with a request at intraTick 0.5; framing adds the flush Tick(3).
+      val input = TickFraming.frame(Vector(req(1, 0.5), req(2, 0.5)).iterator, 2).toVector
+      val (resp, cons) = run(new ToyTickSampler, input)
+
+      // The boundary fact for tick t is stamped (t, 0); it lands in tick t's window (released at Tick(t+1)),
+      // ordered first (intraTick 0) ahead of the request's fact at intraTick 0.5.
+      val c = timedOnly(cons)
+      c.map(x => (x.event, x.eventTime.ticks, x.intraTick)) shouldBe Seq(
+        (ToyCons("tick-1"), 1L, 0.0), (ToyCons("req"), 1L, 0.5),
+        (ToyCons("tick-2"), 2L, 0.0), (ToyCons("req"), 2L, 0.5)
+      )
+      // the boundary fact is stamped with the tick-boundary usecase (no triggering request)
+      c.head.usecase shouldBe TickBoundaryUsecase
+      // request/response 1:1 is untouched — one response per request, no extra forward outputs
+      timedOnly(resp) should have size 2
+
+      // the flush tick's boundary fact (tick-3, beyond the horizon) is never released — it is residue
+      c.map(_.event) should not contain ToyCons("tick-3")
+      runResult(new ToyTickSampler, input).residue.consumptions shouldBe 1L
+    }
 
     "stamp a response's eventTime/intraTick from request time + delay via the rawOffset rule" in {
       // request at tick 5, intraTick 0.7, latency 2.0 → rawOffset 2.7 → eventTime 7, intraTick 0.7
@@ -168,7 +200,7 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
         def initialState: Int = 0
         def sample(in: ToyReq, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
           Emission(state + 1, Scheduled(ToyResp(state), 0.0), Nil)
-        override def onTick(tick: Long, state: Int): Int = 0
+        override def onTick(tick: Long, state: Int): TickEmission[Int, ToyCons] = TickEmission(0, Nil)
 
       val reqs  = Vector(req(1), req(1), req(1), req(2), req(2)) // 3 in tick 1, 2 in tick 2
       val input = TickFraming.frame(reqs.iterator, 3).toVector
