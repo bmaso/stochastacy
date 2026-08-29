@@ -52,15 +52,16 @@ sequence.
 At this point the entire legacy **`ordertracking`** demo (both phases) and the single-region + multi-table +
 mixed-mode **thermostat** demos are ported and reconciled. The remaining legacy demos are the rest of the
 **thermostat-fleet** family (`examples/…/thermostatfleet`, driven by `ThermostatFleetBridge`) — feature-depth
-single-table capabilities (TTL / transactions) and a 4-table multi-region capstone (with auto-scaling) — all
-reusing the now-available thermostat domain, multi-table harness, and provisioned/throttling machinery.
+single-table capabilities (TTL / transactions, then burst + auto-scaling, then hot-partition + adaptive) and a
+4-table single-region capstone, before multi-region — all reusing the now-available thermostat domain,
+multi-table harness, and provisioned/throttling machinery.
 
 ## Planned — to parity, then retirement
 
 Ordering is smallest-leap-first, and every phase keeps a **clean legacy reconcile**. The thermostat domain
 (a telemetry behavior + workload) led (phase 4), multi-table composition followed (phase 5), and provisioned
 capacity + throttling landed (phase 6); the remaining legacy demos are all *thermostat* scenarios. Feature-depth
-phase 7 is largely independent and the capstone (8) integrates everything, so their relative order can shift
+phase 7 is largely independent and the capstone (9) integrates everything, so their relative order can shift
 by priority.
 
 - **v2/phase7 — TTL + transactions (with a core enhancement: tick-boundary emission) — DONE.** Opened with a
@@ -78,7 +79,7 @@ by priority.
   accounting integrates unchanged (proves the Telemetry pattern); and **transactions** — `TransactWriteItems`
   / `TransactGetItems`, a new request type carrying multiple item bytes charged **2× capacity** and applied
   atomically, processed in `sample()` like any operation (proves the Commands pattern). Reconcile note: the
-  legacy sets TTL and transactions only in the **capstone** (phase 8), so phase 7 validates these with
+  legacy sets TTL and transactions only in the **capstone** (phase 9), so phase 7 validates these with
   focused single-region demos + unit tests, deferring the full multi-table reconcile to the capstone.
   **Delivered:** `onTick` needs **no `rng`** (TTL is deterministic — a ring buffer); TTL frees **base + GSI +
   LSI** storage (not just base-table), as generic table mechanics rather than a behavior hook; the transaction
@@ -87,31 +88,57 @@ by priority.
   and the two capabilities were proven by **bespoke session-store + payments-ledger demos** (the thermostat is
   a device registry / mixed-mode — neither fits an accumulate-then-expire or atomic-transfer story).
   Roadmap: `v2-phase7.md`.
-- **v2/phase8 — Thermostat-fleet capstone (single-region) + auto-scaling.** Assemble the full **4-table
-  fleet** (Registry on-demand+GSIs, Telemetry provisioned+auto-scaling+TTL, Commands transactions, Alerts
-  spike) with a **time-varying "polar-vortex" workload** (tick-varying rates are already expressible with the
-  core samplers — config, not engine). **Builds the reactive auto-scaler** here (deferred from phase 6: a
-  rolling-utilization control loop driving `UpdateProvisionedCapacity` with reaction-lag, scale-up-fast /
-  scale-down-slow) — the capstone's Telemetry table is its only legacy reconcile target. Proves
-  `ThermostatFleetCapstoneConfig` (single-region) — the integration proof.
-- **v2/phase9 — Multi-region / global tables.** Cross-region **replication** (global tables →
+- **v2/phase8 — Provisioned throughput dynamics: burst capacity + reactive auto-scaling.** Two coupled
+  **temporal** capacity mechanisms on the phase-6 provisioned/throttling foundation. **Burst capacity**
+  extends `ThrottleBudget` from a hard per-tick ceiling into a **carry-forward accumulator** — unused capacity
+  banks up to a cap (~300 s worth), so short spikes are absorbed before throttling; it is the spike-smoother
+  that sits *underneath* auto-scaling (a spike is drained from banked burst first, and only *sustained* load
+  drives a scale-up). **Reactive auto-scaling** (deferred from phase 6) is a rolling-utilization control loop
+  driving `UpdateProvisionedCapacity` with reaction-lag and scale-up-fast / scale-down-slow. Its **input**
+  signal — the per-tick admitted/consumed capacity — is already accumulated in `TableState` (the phase-6
+  `ThrottleBudget`, readable in `onTick` before reset); its **output** — the dynamic per-tick capacity it
+  chooses — must reach the accounting at runtime, since the static `billingModeAt` schedule fold no longer
+  describes the capacity in force (open design point: likely **emitted as a tick-boundary fact via the phase-7
+  `TickEmission`**, the second use of that core change). Validated by unit tests + a focused single-region
+  telemetry demo (spike → burst absorbs → sustained load → scale-up, with throttling where the reaction-lag
+  bites); full legacy reconcile **deferred to the capstone** (the phase-7 pattern).
+- **v2/phase9 — Thermostat-fleet capstone (single-region).** Assemble the full **4-table fleet** — Registry
+  (on-demand + GSIs), Telemetry (provisioned + burst + auto-scaling + TTL), Commands (transactions), Alerts
+  (spike) — under a **time-varying "polar-vortex" workload** (tick-varying rates are already expressible with
+  the core samplers — config, not engine). The **integration proof**, and where the deferred TTL /
+  auto-scaling reconciles land: the Telemetry table is the single legacy reconcile target
+  (`ThermostatFleetCapstoneConfig`, single-region), now **faithful** because burst + auto-scaling absorb the
+  spikes a bare per-tick ceiling would have over-throttled. Everything else composes already-reconciled
+  features, so the phase is mostly assembly + the Registry / Commands / Alerts behaviors and workloads.
+- **v2/phase10 — Hot-partition throttling + adaptive capacity.** The **spatial** capacity dimension — how a
+  table's provisioned capacity distributes across partitions — a coupled pair orthogonal to phase-8's temporal
+  auto-scaler. **Hot-partition throttling**: capacity is split across partitions, so load concentrated on one
+  partition throttles even while the table has aggregate spare, modeled as a **stochastic summary of
+  per-partition load skew** (a distribution, not per-key maps). **Adaptive capacity**: the mitigation —
+  DynamoDB isolates and boosts a hot partition, relieving the throttle after a lag. Validated by a focused
+  **hot-key scenario** + unit tests; its legacy reconcile target is whichever legacy demo exercises hot
+  partitions (**to confirm at planning**: if the capstone's Telemetry table itself hot-partitions, this phase
+  moves *ahead* of the capstone, → phase 9).
+- **v2/phase11 — Multi-region / global tables.** Cross-region **replication** (global tables →
   `ReplicatedWriteCapacityConsumed`), cross-region **transfer** bytes/cost, per-region metrics. Proves the
   multi-region thermostat scenarios.
-- **v2/phase10 — Grafana delivery + legacy retirement.** Port the `generate → stage → view` Postgres/Grafana
+- **v2/phase12 — Grafana delivery + legacy retirement.** Port the `generate → stage → view` Postgres/Grafana
   pipeline to the v2 demos (likely a separate `aws-grafana` bridge module — the `aws` module is
   deliberately JDBC-free); then **delete the legacy `stochastacy.aws` code and the legacy `examples`
   demos** once parity is confirmed everywhere.
 
 **Reorder notes.** The polar-vortex spike is not its own phase (workload config). Grafana delivery
-(phase 10) is orthogonal to the simulation features and can be pulled forward as a standalone bridge phase
-whenever visualization is wanted. Legacy retirement is the finish line — only after every legacy demo has a
-reconciled v2 counterpart.
+(phase 12) is orthogonal to the simulation features and can be pulled forward as a standalone bridge phase
+whenever visualization is wanted. Burst pairs with auto-scaling (phase 8) because it is what makes the
+auto-scaler's spike→lag→throttle story faithful; hot-partition + adaptive (phase 10) are a separable spatial
+pair that can shift *before* the capstone if the capstone's Telemetry table proves to hot-partition. Legacy
+retirement is the finish line — only after every legacy demo has a reconciled v2 counterpart.
 
 ## Modules at parity
 
 - `core/` — the v2 engine (`stochastacy.core`) + the frozen legacy `stochastacy.aws` / `stochastacy.workload`
-  (deleted at phase 9).
+  (deleted at phase 12).
 - `aws/` — the v2 AWS line (`stochastacy.aws.dynamodb` + `stochastacy.aws.examples.*`); grows each phase.
 - `examples/` — the store demos (v2) + the frozen legacy `ordertracking` / `thermostatfleet` (deleted at
-  phase 9).
-- (phase 9) a new `aws-grafana` bridge module, if the Grafana pipeline is ported.
+  phase 12).
+- (phase 12) a new `aws-grafana` bridge module, if the Grafana pipeline is ported.
