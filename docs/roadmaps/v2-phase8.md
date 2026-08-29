@@ -46,7 +46,7 @@ load-off triggers a slow scale-down. On-demand tables are unaffected (byte-ident
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | Burst capacity | Planned | `ThrottleBudget` banks unused capacity up to a cap; a spike within the bank does not throttle; provisioned-only (on-demand byte-identical); determinism |
+| 1 | Burst capacity | **Done** | `ThrottleBudget` banks unused capacity up to `ceiling × burstWindowTicks`; a spike within the bank does not throttle; sustained load drains then throttles; provisioned-only (on-demand + burst-off byte-identical) |
 | 2 | Auto-scaler mechanism | Planned | an `AutoScalingPolicy` + `onTick` control loop reads rolling utilization and moves capacity within `[min, max]` with lag / asymmetric cooldowns |
 | 3 | Dynamic capacity → accounting | Planned | the scaler's per-tick capacity reaches the accounting (via `TickEmission`); provisioned capacity-hour cost integrates the runtime trace, not the static schedule |
 | 4 | Demo + docs | Planned | focused single-region demo: spike → burst absorbs → sustained load → lagged scale-up (throttling in the lag) → slow scale-down; determinism; docs |
@@ -61,6 +61,16 @@ demand up to `ceiling + banked`. Provisioned-only; on-demand and the static-sche
 **Validated by:** unit tests — unused capacity banks and is capped; a spike that fits within `ceiling +
 banked` is admitted where a bare per-tick ceiling would throttle; a sustained over-ceiling load drains the
 bank and then throttles; on-demand tables and existing provisioned reconciles stay byte-identical.
+
+**Delivered.** `ThrottleBudget` gained `readBank` / `writeBank` (per target); `overBudget` admits up to
+`ceiling + bank`; `add` now `copy`s so banks survive mid-tick; new `rollForward(provisioned, gsiNames,
+burstWindowTicks)` banks each target's `ceiling − admitted` into `[0, ceiling × burstWindowTicks]` (idle GSIs
+bank their own ceiling) and clears the admitted tallies. `DynamoDbTable.Config.burstWindowTicks` (default 0);
+`onTick` rolls the budget forward using the just-completed tick's provisioned ceilings (before advancing the
+mode), falling back to a plain reset off / on-demand. New `BurstCapacitySpec` (9: pure rollForward bank/cap/
+drain + GSI, overBudget-with-bank + add-preserves-bank, sampler-level spike-admit / cap / drain-then-throttle
+/ burst-off byte-identical / on-demand ignores burst). **aws 209 green**; every phase-6 throttling and
+reconciliation spec byte-identical (burst defaults off).
 
 ### Slice 2 — Auto-scaler mechanism
 An `AutoScalingPolicy` (`min`, `max`, `targetUtilization`, window + cooldowns; `D-autoscale-config`,

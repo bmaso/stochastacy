@@ -117,6 +117,15 @@ limits. A `ReconfigurationSchedule` applies `SwitchBillingMode` / `UpdateProvisi
 boundaries (24 h switch cooldown); the mode-in-force is a pure `billingModeAt(tick)` fold shared by the table
 and the accounting. See the [mixed-mode demo](README.thermostat-v2.md#mixed-mode-provisioned-capacity--throttling--reconfiguration).
 
+**Burst capacity** (provisioned only). A `burstWindowTicks` on the `Config` turns the per-tick throttle
+budget from a hard reset into a **carry-forward bank**: at each tick boundary a target banks its unused
+capacity (`ceiling − admitted`) into `[0, ceiling × burstWindowTicks]`, and a tick may admit demand up to
+`ceiling + banked` — so a short spike is absorbed by banked capacity before throttling, and a sustained
+over-ceiling load drains the bank and then throttles (`ThrottleBudget.rollForward`). The window is expressed
+in **ticks** (DynamoDB's ~300 s of burst is `300 / tick-seconds` ticks); the bank is **table-level** (per
+budget target: base+LSI, each GSI), a per-partition refinement deferred to hot-partition modeling. `0` = off
+(the budget resets exactly as before, on-demand tables unaffected).
+
 **TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
 makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the
 expiry is deterministic, so no behavior hook is needed: an immutable `Vector`-backed `TtlRingBuffer`

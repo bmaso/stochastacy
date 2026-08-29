@@ -35,8 +35,11 @@ object DynamoDbTable:
     localSecondaryIndexes:  Vector[LocalSecondaryIndex]  = Vector.empty,
     billingMode:            BillingMode                  = BillingMode.OnDemand, // the initial mode
     reconfigurationSchedule: ReconfigurationSchedule     = ReconfigurationSchedule.empty,
-    ttlPeriodTicks:         Option[Int]                  = None // item TTL, in ticks (None = TTL off)
+    ttlPeriodTicks:         Option[Int]                  = None, // item TTL, in ticks (None = TTL off)
+    burstWindowTicks:       Int                          = 0 // ticks-of-ceiling of burst capacity to bank (0 = off)
   ):
+    require(burstWindowTicks >= 0, s"burstWindowTicks must be non-negative, got $burstWindowTicks")
+
     def withGlobalSecondaryIndex(index: GlobalSecondaryIndex): Config =
       copy(globalSecondaryIndexes = globalSecondaryIndexes :+ index)
 
@@ -154,9 +157,15 @@ object DynamoDbTable:
      *  (stamped at the boundary, released first in this tick's window) and consumes no capacity — TTL
      *  deletes are free. */
     override def onTick(tick: Long, state: TableState): TickEmission[TableState, DynamoDbConsumption] =
+      // Burst: bank the just-completed tick's unused capacity (using its provisioned ceilings, before we
+      // advance the mode). Off / on-demand → a plain reset, exactly as before.
+      val rolledBudget = state.billingMode match
+        case p: BillingMode.Provisioned if config.burstWindowTicks > 0 =>
+          state.perTickBudget.rollForward(p, config.globalSecondaryIndexes.map(_.indexName), config.burstWindowTicks)
+        case _ => ThrottleBudget.empty
       val advanced = state.copy(
         currentTick   = tick,
-        perTickBudget = ThrottleBudget.empty,
+        perTickBudget = rolledBudget,
         billingMode   = config.reconfigurationSchedule.billingModeAt(tick, config.billingMode)
       )
       state.ttl match
