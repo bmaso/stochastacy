@@ -136,6 +136,7 @@ follows **AWS's two-phase-commit billing**, which is *target-dependent*: the bas
 *asynchronously after* the commit — is billed at the standard **1×**; transactional reads are 2× strongly
 consistent per item. (This deliberately diverges from the legacy simulator, which billed both index types at
 1×.) Each sub-write flows through the same storage, per-index maintenance, and TTL machinery as a single write.
+See the [payments-ledger demo](README.payments-transactions.md).
 
 **Scope.** On-demand or provisioned billing (with throttling + scheduled reconfiguration), item TTL,
 transactions, a single table with Query/Scan + GSIs/LSIs, and none of the remaining advanced models
@@ -147,11 +148,13 @@ All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a gr
 index projections** — KeysOnly / Include / All — an **inbound `ChaosGate`**, a **multi-table** composition of
 two thermostat tables, and a **mixed-mode** run exercising provisioned billing + throttling + scheduled
 reconfiguration); the [session-store demo](README.session-store-ttl.md) (item **TTL** — storage plateaus as
-creations balance expiries); `aws/…/DynamoDbTableSpec.scala`
+creations balance expiries); the [payments-ledger demo](README.payments-transactions.md) (**transactions** —
+the ≈2× capacity premium vs. equivalent single operations); `aws/…/DynamoDbTableSpec.scala`
 (timed response + execution-time consumption, state threading, GSI+LSI maintenance, read routing to a
 projected GSI, control-event preservation, determinism); `aws/…/DynamoDbTableTtlSpec.scala` and
 `aws/…/TtlRingBufferSpec.scala` (TTL expiry timing, base + per-index freeing, delete-vs-expire, TTL-off
-byte-identity); the `OrderTrackingEquivalenceSpec.scala`,
+byte-identity); `aws/…/DynamoDbTableTransactionSpec.scala` (base/LSI 2× + GSI 1×, atomic all-or-nothing, TTL
+over sub-writes); the `OrderTrackingEquivalenceSpec.scala`,
 `OrderTrackingIndexedReconciliationSpec.scala`, and `ThermostatFleetReconciliationSpec.scala` (reconcile
 against the legacy demos).
 

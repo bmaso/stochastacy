@@ -41,7 +41,8 @@ the Commands pattern).
 | 2 | TTL mechanism | **Done** | items expire exactly `ttlPeriodTicks` after write; **base + GSI + LSI** bytes freed; byte-ticks reflect it; no capacity consumed; TTL-off byte-identical |
 | 3 | TTL demo (session-store) + delete/expire coverage + docs | **Done** | bespoke session-store demo: storage plateaus (creations ≈ expiries) vs unbounded no-TTL; delete-before-TTL freed exactly once; determinism; TTL doc note |
 | 4 | Transactions mechanism | **Done** | base+LSI 2× / GSI 1× (AWS-accurate) per item; atomic all-or-nothing; storage + per-index maintenance + TTL over sub-writes; determinism |
-| 5 | Transactions demo + docs + phase close-out | Planned | transactions bill 2× vs equivalent singles; determinism; phase COMPLETE |
+| 5 | Transactions demo (payments ledger) + docs | **Done** | transactions bill ≈2× vs equivalent singles (write + read); storage flat; determinism |
+| 5-coda | Phase close-out | Planned | roadmap COMPLETE header, CLAUDE.md, program roadmap, memory-complete |
 
 ## Slices
 
@@ -154,11 +155,25 @@ unsupported-op rejection (it enumerated request types without a catch-all). Test
 set; 2× strong txn-get; determinism). Catalog updated with the AWS-accurate rule. **aws 196 green**; single-op
 paths byte-identical. *(No `@main`/demo/scenario config — that is Slice 5, per DQ-txn-config-scope.)*
 
-### Slice 5 — Transactions demo + docs + phase close-out
-A single-region **commands** preset (a transaction flow) + a `@main` + end-to-end. Docs: catalog/README
-updates; roadmap + memory close-out.
+### Slice 5 — Transactions demo (payments ledger) + docs
+A bespoke **payments / double-entry ledger** scenario (not a thermostat "commands" preset — like TTL, the
+existing domains don't fit): each money transfer is an atomic `TransactWriteItems` of two balance writes
+(debit + credit), each balance check a `TransactGetItems`. A `useTransactions` toggle runs the *identical*
+workload as individual `UpdateItem` / `GetItem` operations, so billing both ways shows the exact premium.
 
-**Validated by:** transactions bill 2× vs equivalent single writes; determinism; phase COMPLETE.
+**Validated by:** transactional writes **and** reads bill ≈2× the equivalent single operations; storage flat
+(same-size overwrites); determinism.
+
+**Delivered.** New `examples/payments` package: `PaymentsLedgerConfig` (`SingleTableScenario`; pre-loaded
+account population, `transactWriteItemsPerItemBytes` = the Slice-4-deferred knob, `useTransactions` toggle,
+no indexes), `PaymentsLedgerBehavior` (transfer → `TransactWrite` of same-size overwrites / `Update`s;
+balance check → `TransactGet` / `Get`s), `PaymentsLedgerWorkload` (per-tick Poisson transfers + checks,
+emitted per the toggle), `PaymentsLedgerDemo` (`@main`; runs both modes, prints the premium ratios). Demo
+run (12 trials, 300 ticks): **write premium 1.99×, read premium 2.01×**, storage flat at 40 MB.
+`PaymentsLedgerSpec` (write ≈2×, read ≈2×, storage flat, determinism). Docs: new
+`specs/README.payments-transactions.md` + a `README.md` demo entry + catalog "Exercised by" cross-link.
+**aws 200 green.** *(Phase close-out — roadmap COMPLETE header, CLAUDE.md, program roadmap, memory-complete —
+is the separate Slice-5 coda.)*
 
 ## Scope boundary
 

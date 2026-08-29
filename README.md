@@ -184,6 +184,18 @@ table config (a deterministic ring-buffer expiry that frees base *and* secondary
 boundary, consuming no capacity), and an item deleted before its TTL is reclaimed exactly once. See the
 engineer's guide in [`specs/README.session-store-ttl.md`](specs/README.session-store-ttl.md).
 
+### Payments ledger — the transaction premium
+
+A **double-entry payments ledger**: each money transfer is an atomic `TransactWriteItems` of two writes — a
+debit and a credit — and each balance check reads accounts with `TransactGetItems`. This demo was built to
+show what DynamoDB **transactions** cost: because a transaction is a two-phase commit, every item is written
+(or read) twice. Running the *identical* workload both ways — as transactions and as individual
+`UpdateItem` / `GetItem` operations — the experiments show the transactional run billing **≈2×** the write
+and read capacity of the single-operation run (1.99× and 2.01× in a representative ensemble), with storage
+held flat by same-size balance overwrites so the comparison isolates the capacity premium. The 2× follows
+AWS's billing (base table and synchronous LSI maintenance double; asynchronous GSI back-fill does not). See
+the engineer's guide in [`specs/README.payments-transactions.md`](specs/README.payments-transactions.md).
+
 _More AWS demos — multi-table, multi-region — will be documented here as the AWS line grows._
 
 ---
