@@ -38,7 +38,7 @@ the Commands pattern).
 | # | slice | status | proof (target) |
 |---|---|---|---|
 | 1 | Core: tick-boundary consumption emission | **Done** | `onTick` returns `TickEmission[S, Cons]`; transducer stamps `(t,0)`/buffers/releases; ~6 sites migrated; boundary-fact test; every existing component/gate byte-identical |
-| 2 | TTL mechanism | Planned | items expire exactly `ttlPeriodTicks` after write; base bytes freed; byte-ticks reflect it; no capacity consumed; TTL-off byte-identical |
+| 2 | TTL mechanism | **Done** | items expire exactly `ttlPeriodTicks` after write; **base + GSI + LSI** bytes freed; byte-ticks reflect it; no capacity consumed; TTL-off byte-identical |
 | 3 | TTL demo + docs | Planned | storage plateaus (TTL caps growth) rather than rising unbounded; determinism; TTL doc note |
 | 4 | Transactions mechanism | Planned | 2× WCU/RCU per item; atomic all-or-nothing; storage + per-index maintenance; determinism |
 | 5 | Transactions demo + docs + phase close-out | Planned | transactions bill 2× vs equivalent singles; determinism; phase COMPLETE |
@@ -81,6 +81,26 @@ byte-ticks reflect the reduction; no capacity consumed; TTL-off (no `ttlPeriodTi
 *Design point:* pick a ring-buffer representation whose per-write copy cost stays acceptable at
 `ttlPeriodTicks = 720`.
 
+**Delivered.** A new immutable `TtlRingBuffer` (`aws/…/dynamodb/TtlRingBuffer.scala`) — the functional
+counterpart of the legacy mutable `SimpleTtlSampler`: `ttlPeriodTicks + 1` `Vector`-backed slots of
+`(count, bytes)`; `recordWrite` / `recordDelete` (soonest-to-expire approximation) / `expire` each return a
+new buffer. `Vector.updated` is ~O(log n), settling the copy-cost design point. It threads through the
+**immutable** `TableState` as `ttl: Option[TtlRingBuffer]` (`None` = off); `TableState.initial` gains
+`ttlPeriodTicks` (pre-loaded items carry no write tick, so they never TTL-expire — matching legacy).
+**TTL is generic table mechanics, not a behavior hook** (the expiry is deterministic): `DynamoDbTableSampler.sample`
+feeds the buffer from the write footprint it already computes (insert → write; overwrite → delete+write,
+re-aging; delete → delete) in the two admitted branches only (a throttle-reject touches nothing), and
+`onTick` drains the cohort written `ttlPeriodTicks` ago, shrinking `state.base` **and each index** and
+emitting negative, target-tagged `StorageBytesDelta` facts (base + GSI + LSI, projection-sized via
+`SecondaryIndexMechanics.projectedEntryBytes` — the exact inverse of write-time maintenance), consuming
+**no** capacity. `TableSummaryState.applyExpiry(count, bytes)` bulk-shrinks (bytes clamped ≥ 0). The
+accounting is untouched — it already folds target-tagged `StorageBytesDelta` into total storage, so the
+boundary-stamped freeing (released first in the tick's window) flows into byte-ticks and `finalStorageBytes`.
+Config threaded end-to-end (`DynamoDbTable.Config.ttlPeriodTicks`, `TableSpec.ttlPeriodTicks`,
+`TableLegRunner`). New `TtlRingBufferSpec` (7 pure cases) + `DynamoDbTableTtlSpec` (4 stream cases, incl.
+per-index freeing and TTL-off byte-identical). **core 512 / aws 181 green**; every existing reconciliation
+spec byte-identical (TTL defaults off).
+
 ### Slice 3 — TTL demo + docs
 A single-region thermostat **TTL** preset (the telemetry workload with `ttlPeriodTicks`) + a `@main` +
 end-to-end. Docs: a catalog/README TTL note. Reconcile deferred to the capstone (noted).
@@ -104,6 +124,6 @@ updates; roadmap + memory close-out.
 ## Scope boundary
 
 Single-region, single-table. No auto-scaling (phase 8), no multi-region (phase 9). TTL frees base-table
-storage (GSI/LSI freed-bytes modeled only if the capstone reconcile later needs it). Transactions are
+**and secondary-index** storage (the symmetric inverse of index maintenance). Transactions are
 `TransactWriteItems` / `TransactGetItems` only. Full legacy reconcile of TTL + transactions happens in the
 phase-8 capstone.

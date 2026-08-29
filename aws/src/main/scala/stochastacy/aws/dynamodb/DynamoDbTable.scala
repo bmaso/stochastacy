@@ -34,7 +34,8 @@ object DynamoDbTable:
     globalSecondaryIndexes: Vector[GlobalSecondaryIndex] = Vector.empty,
     localSecondaryIndexes:  Vector[LocalSecondaryIndex]  = Vector.empty,
     billingMode:            BillingMode                  = BillingMode.OnDemand, // the initial mode
-    reconfigurationSchedule: ReconfigurationSchedule     = ReconfigurationSchedule.empty
+    reconfigurationSchedule: ReconfigurationSchedule     = ReconfigurationSchedule.empty,
+    ttlPeriodTicks:         Option[Int]                  = None // item TTL, in ticks (None = TTL off)
   ):
     def withGlobalSecondaryIndex(index: GlobalSecondaryIndex): Config =
       copy(globalSecondaryIndexes = globalSecondaryIndexes :+ index)
@@ -56,7 +57,7 @@ object DynamoDbTable:
 
     private val indexes: Vector[SecondaryIndex] = config.secondaryIndexes
 
-    def initialState: TableState = TableState.initial(config.initialState, indexes, config.billingMode)
+    def initialState: TableState = TableState.initial(config.initialState, indexes, config.billingMode, config.ttlPeriodTicks)
 
     def sample(
       in:    DynamoDbRequest,
@@ -84,6 +85,17 @@ object DynamoDbTable:
               (states.updated(idx.indexName, m.state), scheduled ++ m.consumption.map(c => Scheduled(c, idx.maintenanceDelay)))
           }
 
+      // Record the write into the TTL ring buffer (if TTL is on) so it expires `ttlPeriodTicks` later. An
+      // insert records a write; an overwrite re-ages the item (delete the old, write the new); a delete
+      // removes one; reads and delete-of-absent leave it untouched. Applied only when the op is admitted.
+      val nextTtl: Option[TtlRingBuffer] = state.ttl.map { rb =>
+        writeFootprint match
+          case Some((Some(nb), None))    => rb.recordWrite(nb, state.currentTick)
+          case Some((Some(nb), Some(_))) => rb.recordDelete(state.currentTick).recordWrite(nb, state.currentTick)
+          case Some((None, Some(_)))     => rb.recordDelete(state.currentTick)
+          case _                         => rb
+      }
+
       // The operation's total capacity demand (base + index maintenance), grouped per budget target.
       val allConsumption = resolution.consumption ++ indexScheduled.map(_.event)
       val readDemand     = demandBy(allConsumption) { case ReadCapacityConsumed(u, _, t) => (ThrottleBudget.budgetKey(t), u) }
@@ -100,14 +112,14 @@ object DynamoDbTable:
         case p: BillingMode.Provisioned =>
           // Admit and charge the demand against this tick's provisioned budget.
           Emission(
-            newState    = state.copy(base = resolution.state, indexes = nextIndexes, perTickBudget = state.perTickBudget.add(readDemand, writeDemand)),
+            newState    = state.copy(base = resolution.state, indexes = nextIndexes, perTickBudget = state.perTickBudget.add(readDemand, writeDemand), ttl = nextTtl),
             output      = Scheduled(resolution.response, math.max(0.0, latency)),
             consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
           )
         case BillingMode.OnDemand =>
           // Uncapped: admit unchanged (no budget), exactly as before provisioned billing existed.
           Emission(
-            newState    = state.copy(base = resolution.state, indexes = nextIndexes), // copy preserves currentTick
+            newState    = state.copy(base = resolution.state, indexes = nextIndexes, ttl = nextTtl), // copy preserves currentTick
             output      = Scheduled(resolution.response, math.max(0.0, latency)),
             consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
           )
@@ -127,17 +139,39 @@ object DynamoDbTable:
                     p) => c.target
       }.getOrElse(DynamoDbTarget.Table)
 
-    /** At each tick boundary: advance the tick, reset the per-tick provisioned budget, and apply any
-     *  scheduled reconfiguration — so the mode/capacity in force this tick reflects the schedule. */
+    /** At each tick boundary: advance the tick, reset the per-tick provisioned budget, apply any scheduled
+     *  reconfiguration, and — when TTL is on — expire the cohort written `ttlPeriodTicks` ago, freeing base
+     *  and per-index storage. The freeing is emitted as negative, target-tagged `StorageBytesDelta` facts
+     *  (stamped at the boundary, released first in this tick's window) and consumes no capacity — TTL
+     *  deletes are free. */
     override def onTick(tick: Long, state: TableState): TickEmission[TableState, DynamoDbConsumption] =
-      TickEmission(
-        state.copy(
-          currentTick   = tick,
-          perTickBudget = ThrottleBudget.empty,
-          billingMode   = config.reconfigurationSchedule.billingModeAt(tick, config.billingMode)
-        ),
-        Nil
+      val advanced = state.copy(
+        currentTick   = tick,
+        perTickBudget = ThrottleBudget.empty,
+        billingMode   = config.reconfigurationSchedule.billingModeAt(tick, config.billingMode)
       )
+      state.ttl match
+        case None => TickEmission(advanced, Nil)
+        case Some(rb) =>
+          val (count, freedBase, nextRb) = rb.expire(tick)
+          val withRb                     = advanced.copy(ttl = Some(nextRb))
+          if count <= 0L then TickEmission(withRb, Nil)
+          else
+            // The expired cohort's average item size drives each index's projected freed bytes — the exact
+            // inverse of the maintenance a write performs.
+            val avgBytes = freedBase / count
+            val (shrunkIndexes, indexFacts) =
+              indexes.foldLeft((withRb.indexes, List.empty[DynamoDbConsumption])) {
+                case ((states, facts), idx) =>
+                  val freed = count * SecondaryIndexMechanics.projectedEntryBytes(Some(avgBytes), idx.projection).getOrElse(0L)
+                  val cur   = states.getOrElse(idx.indexName, TableSummaryState.empty)
+                  val next  = cur.applyExpiry(count, freed)
+                  val facts2 = if freed != 0L then facts :+ StorageBytesDelta(-freed, idx.target) else facts
+                  (states.updated(idx.indexName, next), facts2)
+              }
+            val nextState = withRb.copy(base = withRb.base.applyExpiry(count, freedBase), indexes = shrunkIndexes)
+            val allFacts  = StorageBytesDelta(-freedBase, DynamoDbTarget.Table) :: indexFacts
+            TickEmission(nextState, allFacts.map(Scheduled(_, 0.0)))
 
     /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,
      *  the base summary for a table read and for every write/get. */

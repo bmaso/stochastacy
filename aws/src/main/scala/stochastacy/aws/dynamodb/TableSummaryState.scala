@@ -33,6 +33,15 @@ final case class TableSummaryState(itemCount: Long, totalItemBytes: Long):
       case Some(bytes) => TableSummaryState(itemCount - 1L, totalItemBytes - bytes)
       case None        => this
 
+  /**
+   * Apply a bulk TTL expiry: remove `count` items totalling `freedBytes`. Used at a tick boundary when a
+   * cohort of items reaches its TTL. `freedBytes` is clamped so stored bytes never go negative (the ring
+   * buffer's approximate per-item averages can otherwise drift a few bytes past the summary); the count is
+   * exact, since the ring buffer's counts stay in lockstep with this summary by construction.
+   */
+  def applyExpiry(count: Long, freedBytes: Long): TableSummaryState =
+    TableSummaryState(itemCount - count, math.max(0L, totalItemBytes - freedBytes))
+
 object TableSummaryState:
   /** An empty table. */
   val empty: TableSummaryState = TableSummaryState(0L, 0L)
@@ -50,9 +59,10 @@ object TableSummaryState:
 final case class TableState(
   base:          TableSummaryState,
   indexes:       Map[String, TableSummaryState],
-  currentTick:   Long           = 0L,
-  perTickBudget: ThrottleBudget = ThrottleBudget.empty, // provisioned capacity admitted this tick; reset each tick
-  billingMode:   BillingMode    = BillingMode.OnDemand  // the mode in force this tick (may change via a schedule)
+  currentTick:   Long                  = 0L,
+  perTickBudget: ThrottleBudget        = ThrottleBudget.empty, // provisioned capacity admitted this tick; reset each tick
+  billingMode:   BillingMode           = BillingMode.OnDemand, // the mode in force this tick (may change via a schedule)
+  ttl:           Option[TtlRingBuffer] = None                  // per-tick write history for TTL expiry (None = TTL off)
 ):
   /** The summary of the index named `indexName` (empty if unknown). */
   def index(indexName: String): TableSummaryState = indexes.getOrElse(indexName, TableSummaryState.empty)
@@ -61,12 +71,19 @@ object TableState:
   /**
    * The initial whole-table state: the given base summary, with each secondary index seeded from the
    * base's pre-loaded items projected through the index — the entries a freshly-created index over an
-   * existing table already holds.
+   * existing table already holds. When `ttlPeriodTicks` is set, an empty TTL ring buffer is attached;
+   * pre-loaded items are **not** seeded into it (they carry no write tick), so they never TTL-expire —
+   * matching the legacy model.
    */
-  def initial(base: TableSummaryState, indexes: Vector[SecondaryIndex], billingMode: BillingMode = BillingMode.OnDemand): TableState =
+  def initial(
+    base:           TableSummaryState,
+    indexes:        Vector[SecondaryIndex],
+    billingMode:    BillingMode    = BillingMode.OnDemand,
+    ttlPeriodTicks: Option[Int]    = None
+  ): TableState =
     val avgBytes = base.averageItemBytes.getOrElse(0L)
     val seeded = indexes.map { idx =>
       val perEntry = SecondaryIndexMechanics.projectedEntryBytes(Some(avgBytes), idx.projection).getOrElse(0L)
       idx.indexName -> TableSummaryState(base.itemCount, base.itemCount * perEntry)
     }.toMap
-    TableState(base, seeded, billingMode = billingMode)
+    TableState(base, seeded, billingMode = billingMode, ttl = ttlPeriodTicks.map(TtlRingBuffer.empty))
