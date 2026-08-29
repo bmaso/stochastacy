@@ -41,7 +41,7 @@ class FlatThrottleGateSpec extends AnyWordSpec with should.Matchers:
       val (_, endOfFirst) = feedTick(5, gate.initialState)
       endOfFirst.admittedThisTick shouldBe 3
 
-      val opened = gate.onTick(2L, endOfFirst)
+      val opened = gate.onTick(2L, endOfFirst).newState
       opened shouldBe FlatThrottleGate.State(0)
       val (secondTick, _) = feedTick(3, opened)
       secondTick shouldBe Vector(Admit(Req(0)), Admit(Req(1)), Admit(Req(2)))

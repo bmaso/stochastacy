@@ -20,6 +20,15 @@ final case class Emission[S, Out, Cons](
   consumption: List[Scheduled[Cons]]
 )
 
+/** What a component produces at a **tick boundary**: the advanced state plus zero or more scheduled
+ *  consumption facts. Consumption **only** — a tick boundary has no request to answer, so it never emits a
+ *  forward output, and the 1:1 request/response invariant holds by construction. Used e.g. by a table that
+ *  frees storage on TTL expiry. */
+final case class TickEmission[S, Cons](newState: S, consumption: List[Scheduled[Cons]])
+
+/** The `usecase` stamped on a fact a component emits at a tick boundary — there is no triggering request. */
+case object TickBoundaryUsecase
+
 /** A component's behavior: given one timeless input payload and current state, produce an
  *  `Emission` — the updated state plus a scheduled forward output and consumption facts. This is
  *  the domain-specific production function; the schedule-and-release transducer is the generic
@@ -35,7 +44,9 @@ trait ComponentSampler[S, In, Out, Cons]:
   def initialState: S
   def sample(in: In, state: S, rng: UniformRandomProvider): Emission[S, Out, Cons]
 
-  /** Advance state at a tick boundary, before that tick's inputs are sampled. The default is a
-   *  no-op; load- or time-dependent components (e.g. admission with a per-tick capacity) override it
-   *  to reset or decay accumulated state. Called once per `Tick`, including empty ticks. */
-  def onTick(tick: Long, state: S): S = state
+  /** Advance state at a tick boundary, before that tick's inputs are sampled, and optionally emit
+   *  consumption facts produced by the boundary itself (e.g. a storage delta for TTL expiry). The default
+   *  advances nothing and emits nothing; load- or time-dependent components override it to reset/decay
+   *  accumulated state, and boundary-effecting components additionally return scheduled facts. Called once
+   *  per `Tick`, including empty ticks. The emitted facts are released in the tick's own window. */
+  def onTick(tick: Long, state: S): TickEmission[S, Cons] = TickEmission(state, Nil)

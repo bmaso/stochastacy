@@ -6,7 +6,7 @@ import org.apache.commons.rng.UniformRandomProvider
 import org.apache.pekko.stream.{FanOutShape2, Graph}
 
 import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
-import stochastacy.core.component.{ComponentResult, ComponentSampler, Emission, Scheduled, ScheduleReleaseTransducer, Timed}
+import stochastacy.core.component.{ComponentResult, ComponentSampler, Emission, Scheduled, ScheduleReleaseTransducer, TickEmission, Timed}
 import stochastacy.core.sampler.StatelessSampler
 import stochastacy.sim.TimedElement
 
@@ -129,11 +129,14 @@ object DynamoDbTable:
 
     /** At each tick boundary: advance the tick, reset the per-tick provisioned budget, and apply any
      *  scheduled reconfiguration — so the mode/capacity in force this tick reflects the schedule. */
-    override def onTick(tick: Long, state: TableState): TableState =
-      state.copy(
-        currentTick   = tick,
-        perTickBudget = ThrottleBudget.empty,
-        billingMode   = config.reconfigurationSchedule.billingModeAt(tick, config.billingMode)
+    override def onTick(tick: Long, state: TableState): TickEmission[TableState, DynamoDbConsumption] =
+      TickEmission(
+        state.copy(
+          currentTick   = tick,
+          perTickBudget = ThrottleBudget.empty,
+          billingMode   = config.reconfigurationSchedule.billingModeAt(tick, config.billingMode)
+        ),
+        Nil
       )
 
     /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,

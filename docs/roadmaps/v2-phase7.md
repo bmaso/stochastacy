@@ -37,7 +37,7 @@ the Commands pattern).
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | Core: tick-boundary consumption emission | Planned | a sampler emits a tick-boundary fact on the consumption plane in the right window; invariants hold; every existing component/gate byte-identical |
+| 1 | Core: tick-boundary consumption emission | **Done** | `onTick` returns `TickEmission[S, Cons]`; transducer stamps `(t,0)`/buffers/releases; ~6 sites migrated; boundary-fact test; every existing component/gate byte-identical |
 | 2 | TTL mechanism | Planned | items expire exactly `ttlPeriodTicks` after write; base bytes freed; byte-ticks reflect it; no capacity consumed; TTL-off byte-identical |
 | 3 | TTL demo + docs | Planned | storage plateaus (TTL caps growth) rather than rising unbounded; determinism; TTL doc note |
 | 4 | Transactions mechanism | Planned | 2× WCU/RCU per item; atomic all-or-nothing; storage + per-index maintenance; determinism |
@@ -55,6 +55,18 @@ one-line wrap of its `state` result — plus the transducer's one call site.
 **Validated by:** a core test (a sampler that emits a tick-boundary consumption fact — it lands on the
 consumption plane in tick `t`'s window, ordered first; framing/ordering/`EndOfTime` intact); every existing
 `core` and `aws` test and gate stays green and byte-identical (existing components emit nothing on tick).
+
+**Delivered.** `core/…/component/SamplerContract.scala`: new `TickEmission[S, Cons](newState, consumption)`
+(+ `TickBoundaryUsecase` sentinel); `ComponentSampler.onTick` now returns `TickEmission[S, Cons]` (default
+`TickEmission(state, Nil)`), no `rng`. The transducer's `Tick(t)` handler runs `onTick`, sets state, and
+**stamps each boundary fact at `(t, 0) + delay`, buffers it** in the same `pending` queue — so it is not in
+`drainBelow(t)`, is released at `Tick(t+1)`, and sorts first (intraTick 0) in tick `t`'s window; post-horizon
+boundary facts fall into the existing residue summary. Migrated the 5 `onTick` overrides
+(`DynamoDbTable` + `TokenBucket`/`FlatThrottle`/`Chaos`/`Latency` gates — each a one-line `TickEmission(_, Nil)`
+wrap, `Cons = Nothing` for gates) and 7 test call sites (`.onTick(…)` → `.onTick(…).newState`, plus one test
+sampler's override). New `ScheduleReleaseTransducerSpec` case proves a boundary fact lands in-window ordered
+first, carries `TickBoundaryUsecase`, keeps request/response 1:1, and that a post-horizon boundary fact is
+residue. No domain features (TTL/txn are Slices 2–5).
 
 ### Slice 2 — TTL mechanism
 A deterministic ring-buffer expiry model — writes-per-tick tracked in a `ttlPeriodTicks + 1`-slot history

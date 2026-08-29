@@ -108,8 +108,16 @@ object ScheduleReleaseTransducer:
               case c: TimedControlEvent =>
                 c match
                   case TimedControlEvent.Tick(t) =>
-                    val (os, cs) = drainBelow(t.ticks)
-                    state = sampler.onTick(t.ticks, state) // advance state for the opening tick
+                    val (os, cs) = drainBelow(t.ticks)     // close the just-ended window
+                    val te = sampler.onTick(t.ticks, state) // advance state for the opening tick, with any boundary facts
+                    state = te.newState
+                    // Stamp each boundary fact at (t, 0) + its delay and buffer it — eventTime == t, so it is not
+                    // in this drain; it is released at the next boundary, ordered first in tick t's own window.
+                    te.consumption.foreach { csch =>
+                      val (ct, ci) = stamp(SimTime.of(t.ticks), 0.0, csch.delay)
+                      pending.enqueue(Pending(ct, ci, seq, Right(Timed(csch.event, SimTime.of(ct), ci, TickBoundaryUsecase))))
+                      seq += 1
+                    }
                     emitMultiple(fwdOut, os :+ c)
                     emitMultiple(consOut, cs :+ c)
                   case TimedControlEvent.EndOfTime =>

@@ -37,9 +37,9 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
     "thread the current tick into the sampler via onTick (time-varying failure rate)" in {
       // Fails only from tick 10 onward.
       val gate  = new ChaosGate[Req, Resp](BernoulliSampler(t => if t >= 10L then 1.0 else 0.0), fail503)
-      val atT5  = gate.onTick(5L, gate.initialState)
+      val atT5  = gate.onTick(5L, gate.initialState).newState
       gate.sample(Req(0), atT5, rng).output.event shouldBe Admit(Req(0))
-      val atT10 = gate.onTick(10L, atT5)
+      val atT10 = gate.onTick(10L, atT5).newState
       gate.sample(Req(0), atT10, rng).output.event shouldBe Reject(fail503)
     }
   }
@@ -56,8 +56,8 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
       var si = inner.initialState
       var served, outerRej, innerRej = 0
       arrivalsPerTick.zipWithIndex.foreach { case (n, i) =>
-        so = outer.onTick(i + 1L, so)
-        si = inner.onTick(i + 1L, si)
+        so = outer.onTick(i + 1L, so).newState
+        si = inner.onTick(i + 1L, si).newState
         (0 until n).foreach { _ =>
           val eo = outer.sample(Req(0), so, rng); so = eo.newState
           eo.output.event match
