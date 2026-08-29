@@ -171,6 +171,19 @@ while *fixing* a legacy bug that never billed a table's pre-loaded storage. See 
 [`specs/README.ordertracking-v2.md`](specs/README.ordertracking-v2.md), and the reusable table component
 in [`specs/aws-component-catalog.md`](specs/aws-component-catalog.md).
 
+### Session-Store TTL — storage that plateaus
+
+A **login service** backed by one on-demand DynamoDB table: each sign-in inserts a new session item, and
+every session carries a fixed idle-timeout **TTL**. This demo was built to explore what item TTL does to a
+table's storage and cost — the canonical *accumulate-then-expire* pattern, where writes pile up unbounded
+unless something reclaims them. Its Monte Carlo experiments show the effect directly: with TTL on, mean
+stored bytes climb for the TTL period and then **plateau** as creations and expiries balance (≈12.7 MB flat
+from tick 600 onward under the shipped preset), where an otherwise identical no-TTL run keeps climbing to
+roughly three times that — turning unbounded growth into a bounded, steady-state cost. TTL is intrinsic
+table config (a deterministic ring-buffer expiry that frees base *and* secondary-index storage at each tick
+boundary, consuming no capacity), and an item deleted before its TTL is reclaimed exactly once. See the
+engineer's guide in [`specs/README.session-store-ttl.md`](specs/README.session-store-ttl.md).
+
 _More AWS demos — multi-table, multi-region — will be documented here as the AWS line grows._
 
 ---

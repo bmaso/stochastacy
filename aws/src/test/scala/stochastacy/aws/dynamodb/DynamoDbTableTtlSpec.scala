@@ -139,6 +139,30 @@ class DynamoDbTableTtlSpec extends AnyWordSpec with should.Matchers with BeforeA
       result.finalState.index("l") shouldBe TableSummaryState(10L, 10L * 768L)
     }
 
+    "free an item deleted before its TTL exactly once — the expiring cohort shrinks, no double-free" in {
+      // Three items inserted at tick 1 (300 B each); one explicitly deleted at tick 2. With a 2-tick TTL
+      // the tick-1 cohort expires at tick 3 — but only the two survivors, so 600 B is freed, not 900 B.
+      val script = Seq(
+        OperationOutcome.Put(writtenItemBytes = 300L, previousItemBytes = None),
+        OperationOutcome.Put(writtenItemBytes = 300L, previousItemBytes = None),
+        OperationOutcome.Put(writtenItemBytes = 300L, previousItemBytes = None),
+        OperationOutcome.Delete(deletedItemBytes = Some(300L)) // explicit early delete (e.g. logout)
+      )
+      def cfg = config(ScriptedBehavior(script), ttlPeriodTicks = Some(2), initialState = TableSummaryState.empty)
+      val input = Vector(
+        req(1L, PutItemRequest(300L)), req(1L, PutItemRequest(300L)), req(1L, PutItemRequest(300L)),
+        req(2L, DeleteItemRequest)
+      )
+
+      val cons = consumptions(runPlanes(cfg, input, ticks = 5L))
+      // the early delete frees 300 B at tick 2; the expiry frees the remaining 600 B at tick 3 (not 900)
+      cons.filter(_.eventTime.ticks == 2L).map(_.event) should contain (StorageBytesDelta(-300L, Table))
+      cons.filter(_.eventTime.ticks == 3L).map(_.event) shouldBe Seq(StorageBytesDelta(-600L, Table))
+
+      // net: 3 inserted, 1 deleted early, 2 expired → the table returns to empty (nothing double-freed)
+      runResult(cfg, input, ticks = 5L).finalState.base shouldBe TableSummaryState.empty
+    }
+
     "leave a TTL-off table byte-identical — no expiry facts, the item persists" in {
       val cons = consumptions(runPlanes(
         config(ScriptedBehavior(Seq(OperationOutcome.Put(writtenItemBytes = 800L, previousItemBytes = None))), ttlPeriodTicks = None),

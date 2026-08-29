@@ -39,7 +39,7 @@ the Commands pattern).
 |---|---|---|---|
 | 1 | Core: tick-boundary consumption emission | **Done** | `onTick` returns `TickEmission[S, Cons]`; transducer stamps `(t,0)`/buffers/releases; ~6 sites migrated; boundary-fact test; every existing component/gate byte-identical |
 | 2 | TTL mechanism | **Done** | items expire exactly `ttlPeriodTicks` after write; **base + GSI + LSI** bytes freed; byte-ticks reflect it; no capacity consumed; TTL-off byte-identical |
-| 3 | TTL demo + docs | Planned | storage plateaus (TTL caps growth) rather than rising unbounded; determinism; TTL doc note |
+| 3 | TTL demo (session-store) + delete/expire coverage + docs | **Done** | bespoke session-store demo: storage plateaus (creations ≈ expiries) vs unbounded no-TTL; delete-before-TTL freed exactly once; determinism; TTL doc note |
 | 4 | Transactions mechanism | Planned | 2× WCU/RCU per item; atomic all-or-nothing; storage + per-index maintenance; determinism |
 | 5 | Transactions demo + docs + phase close-out | Planned | transactions bill 2× vs equivalent singles; determinism; phase COMPLETE |
 
@@ -101,11 +101,28 @@ Config threaded end-to-end (`DynamoDbTable.Config.ttlPeriodTicks`, `TableSpec.tt
 per-index freeing and TTL-off byte-identical). **core 512 / aws 181 green**; every existing reconciliation
 spec byte-identical (TTL defaults off).
 
-### Slice 3 — TTL demo + docs
-A single-region thermostat **TTL** preset (the telemetry workload with `ttlPeriodTicks`) + a `@main` +
-end-to-end. Docs: a catalog/README TTL note. Reconcile deferred to the capstone (noted).
+### Slice 3 — TTL demo (session-store) + delete/expire coverage + docs
+A **bespoke session-store** scenario (not the thermostat — that is a *device registry* bounded by fleet
+size, where writes overwrite and items never accumulate, so TTL has nothing to cap). A session store is the
+canonical **accumulate-then-expire** shape: each sign-in inserts a new session that expires after a fixed
+idle timeout, so storage plateaus. Plus a **delete-vs-expire** mechanism test (the OTP/early-logout case) —
+an item deleted before its TTL must be freed exactly once.
 
-**Validated by:** storage **plateaus** (TTL caps growth) rather than rising unbounded; determinism.
+**Validated by:** storage **plateaus** (creations ≈ expiries once the TTL horizon is reached) far below an
+identical no-TTL run; a pre-TTL delete shrinks the expiring cohort (no double-free); determinism.
+
+**Delivered.** New `examples/sessionstore` package: `SessionStoreConfig` (`SingleTableScenario`:
+`sessionsPerTick`/`validationsPerTick`/`sessionBytes`/`ttlPeriodTicks`, empty table, one KeysOnly
+`user-sessions` GSI so base **and** index freeing are exercised), `SessionStoreBehavior` (writes always
+insert; validate = strong `GetItem`), `SessionStoreWorkload` (per-tick Poisson create/validate),
+`SessionStoreDemo` (`@main`, JSONL + console incl. a three-tick storage-plateau sample). The only harness
+change: `SingleTableScenario` gained `ttlPeriodTicks: Option[Int] = None`, passed through `tableSpec` — the
+thermostat is **untouched**. Tests: `SessionStoreSpec` (plateau climbs then flattens; no-TTL caps far
+higher; determinism) + a delete-vs-expire case in `DynamoDbTableTtlSpec` (3 inserts, 1 deleted early, TTL=2
+→ expiry frees the 2 survivors, not all 3; table returns to empty). Docs: new
+`specs/README.session-store-ttl.md` + TTL entry/scope in `specs/aws-component-catalog.md`. Demo run
+(20 trials, 1800 ticks, TTL 600): storage 6.3 M @300 → 12.7 M @600 → 12.7 M @1800 (flat). **aws 185 green**,
+every existing reconciliation spec byte-identical.
 
 ### Slice 4 — Transactions mechanism
 `TransactWriteItems` / `TransactGetItems` protocol variants (carrying multiple item bytes); behavior/mechanics
