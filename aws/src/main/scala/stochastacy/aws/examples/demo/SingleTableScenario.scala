@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, ReconfigurationSchedule, TableBehavior, TableSummaryState}
+import stochastacy.aws.dynamodb.{AutoScalingPolicy, BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, ReconfigurationSchedule, TableBehavior, TableSummaryState}
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.{LogNormalSampler, StatelessSampler}
 
@@ -53,6 +53,14 @@ trait SingleTableScenario:
    *  and secondary-index storage at the tick boundary — intrinsic table config, not a graph component. */
   def ttlPeriodTicks: Option[Int] = None
 
+  /** Burst capacity window in ticks (0 = off): a provisioned table banks up to `ceiling × burstWindowTicks`
+   *  of unused capacity to absorb short spikes before throttling. */
+  def burstWindowTicks: Int = 0
+
+  /** Reactive auto-scaling policy (None = off): drives the base provisioned capacity toward a target
+   *  utilization. Mutually exclusive with a reconfiguration schedule. */
+  def autoScalingPolicy: Option[AutoScalingPolicy] = None
+
   /** True if the table is (or becomes) provisioned — so provisioned-capacity and throttle metrics are worth
    *  reporting. A purely on-demand scenario reports none of them (its output stays unchanged). */
   def usesProvisioning: Boolean =
@@ -73,5 +81,7 @@ trait SingleTableScenario:
     billingMode                   = billingMode,
     reconfigurationSchedule       = reconfigurationSchedule,
     arrivals                      = arrivals,
-    ttlPeriodTicks                = ttlPeriodTicks
+    ttlPeriodTicks                = ttlPeriodTicks,
+    burstWindowTicks              = burstWindowTicks,
+    autoScalingPolicy             = autoScalingPolicy
   )

@@ -35,8 +35,18 @@ object DynamoDbTable:
     localSecondaryIndexes:  Vector[LocalSecondaryIndex]  = Vector.empty,
     billingMode:            BillingMode                  = BillingMode.OnDemand, // the initial mode
     reconfigurationSchedule: ReconfigurationSchedule     = ReconfigurationSchedule.empty,
-    ttlPeriodTicks:         Option[Int]                  = None // item TTL, in ticks (None = TTL off)
+    ttlPeriodTicks:         Option[Int]                  = None, // item TTL, in ticks (None = TTL off)
+    burstWindowTicks:       Int                          = 0, // ticks-of-ceiling of burst capacity to bank (0 = off)
+    autoScalingPolicy:      Option[AutoScalingPolicy]    = None // reactive auto-scaling (None = off)
   ):
+    require(burstWindowTicks >= 0, s"burstWindowTicks must be non-negative, got $burstWindowTicks")
+    // Auto-scaling drives capacity reactively, so it is mutually exclusive with a static reconfiguration
+    // schedule and requires the table to start provisioned.
+    require(autoScalingPolicy.isEmpty || billingMode.isInstanceOf[BillingMode.Provisioned],
+            "autoScalingPolicy requires an initial Provisioned billing mode")
+    require(autoScalingPolicy.isEmpty || reconfigurationSchedule.entries.isEmpty,
+            "autoScalingPolicy and a reconfigurationSchedule are mutually exclusive")
+
     def withGlobalSecondaryIndex(index: GlobalSecondaryIndex): Config =
       copy(globalSecondaryIndexes = globalSecondaryIndexes :+ index)
 
@@ -154,17 +164,42 @@ object DynamoDbTable:
      *  (stamped at the boundary, released first in this tick's window) and consumes no capacity — TTL
      *  deletes are free. */
     override def onTick(tick: Long, state: TableState): TickEmission[TableState, DynamoDbConsumption] =
+      // Reactive auto-scaling drives the new tick's capacity from the just-completed tick's utilization
+      // (read from the budget + the capacity that was in force); otherwise the static schedule applies.
+      val (nextBillingMode, nextAutoScaling) = (config.autoScalingPolicy, state.billingMode) match
+        case (Some(policy), p: BillingMode.Provisioned) =>
+          AutoScaler.step(policy, tick, p, state.perTickBudget, state.autoScaling)
+        case _ =>
+          (config.reconfigurationSchedule.billingModeAt(tick, config.billingMode), state.autoScaling)
+
+      // Burst: bank the just-completed tick's unused capacity (using its provisioned ceilings, before we
+      // advance the mode). Off / on-demand → a plain reset, exactly as before.
+      val rolledBudget = state.billingMode match
+        case p: BillingMode.Provisioned if config.burstWindowTicks > 0 =>
+          state.perTickBudget.rollForward(p, config.globalSecondaryIndexes.map(_.indexName), config.burstWindowTicks)
+        case _ => ThrottleBudget.empty
       val advanced = state.copy(
         currentTick   = tick,
-        perTickBudget = ThrottleBudget.empty,
-        billingMode   = config.reconfigurationSchedule.billingModeAt(tick, config.billingMode)
+        perTickBudget = rolledBudget,
+        billingMode   = nextBillingMode,
+        autoScaling   = nextAutoScaling
       )
+
+      // When auto-scaling drives the capacity, emit the tick's reserved capacity so the accounting bills the
+      // runtime trace instead of the static schedule. No policy → nothing emitted (byte-identical).
+      val snapshotFacts: List[Scheduled[DynamoDbConsumption]] =
+        if config.autoScalingPolicy.isDefined then
+          nextBillingMode match
+            case p: BillingMode.Provisioned => List(Scheduled(ProvisionedCapacitySnapshot(p.totalReadCapacity, p.totalWriteCapacity), 0.0))
+            case _                          => Nil
+        else Nil
+
       state.ttl match
-        case None => TickEmission(advanced, Nil)
+        case None => TickEmission(advanced, snapshotFacts)
         case Some(rb) =>
           val (count, freedBase, nextRb) = rb.expire(tick)
           val withRb                     = advanced.copy(ttl = Some(nextRb))
-          if count <= 0L then TickEmission(withRb, Nil)
+          if count <= 0L then TickEmission(withRb, snapshotFacts)
           else
             // The expired cohort's average item size drives each index's projected freed bytes — the exact
             // inverse of the maintenance a write performs.
@@ -180,7 +215,7 @@ object DynamoDbTable:
               }
             val nextState = withRb.copy(base = withRb.base.applyExpiry(count, freedBase), indexes = shrunkIndexes)
             val allFacts  = StorageBytesDelta(-freedBase, DynamoDbTarget.Table) :: indexFacts
-            TickEmission(nextState, allFacts.map(Scheduled(_, 0.0)))
+            TickEmission(nextState, snapshotFacts ++ allFacts.map(Scheduled(_, 0.0)))
 
     /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,
      *  the base summary for a table read and for every write/get. */

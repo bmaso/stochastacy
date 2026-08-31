@@ -117,6 +117,29 @@ limits. A `ReconfigurationSchedule` applies `SwitchBillingMode` / `UpdateProvisi
 boundaries (24 h switch cooldown); the mode-in-force is a pure `billingModeAt(tick)` fold shared by the table
 and the accounting. See the [mixed-mode demo](README.thermostat-v2.md#mixed-mode-provisioned-capacity--throttling--reconfiguration).
 
+**Burst capacity** (provisioned only). A `burstWindowTicks` on the `Config` turns the per-tick throttle
+budget from a hard reset into a **carry-forward bank**: at each tick boundary a target banks its unused
+capacity (`ceiling − admitted`) into `[0, ceiling × burstWindowTicks]`, and a tick may admit demand up to
+`ceiling + banked` — so a short spike is absorbed by banked capacity before throttling, and a sustained
+over-ceiling load drains the bank and then throttles (`ThrottleBudget.rollForward`). The window is expressed
+in **ticks** (DynamoDB's ~300 s of burst is `300 / tick-seconds` ticks); the bank is **table-level** (per
+budget target: base+LSI, each GSI), a per-partition refinement deferred to hot-partition modeling. `0` = off
+(the budget resets exactly as before, on-demand tables unaffected).
+
+**Reactive auto-scaling** (provisioned only). An `AutoScalingPolicy` on the `Config` makes the table's
+**base** read/write capacity track a target utilization (default 0.70): `onTick` reads the just-completed
+tick's utilization (admitted base capacity ÷ current ceiling), keeps a rolling `evaluationWindowTicks`
+window, and when the average crosses the scale-up (`> target`) or scale-down (`< target ×
+scaleDownThresholdFactor`) threshold — and the direction's cooldown has elapsed — schedules a target-tracking
+change (`ceil(consumed / target)`, clamped to `[min, max]`) that applies after a reaction delay
+(scale-up-fast / scale-down-slow). A faithful port of the legacy auto-scaler's logic, but as pure `onTick`
+mechanics (state threaded in `TableState`), **mutually exclusive** with a `ReconfigurationSchedule`. Base-table
+only (per-GSI auto-scaling is out of scope). The scaled capacity drives both throttling *and* cost: because it
+is chosen at runtime rather than from a static schedule, `onTick` emits the tick's reserved capacity as a
+`ProvisionedCapacitySnapshot` (via tick-boundary emission), which the accounting integrates in place of the
+`billingModeAt` fold — so provisioned capacity-hour cost tracks the actual per-tick capacity. See the
+[auto-scaling telemetry demo](README.thermostat-v2.md#auto-scaling--burst-capacity-provisioned-throughput-dynamics).
+
 **TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
 makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the
 expiry is deterministic, so no behavior hook is needed: an immutable `Vector`-backed `TtlRingBuffer`

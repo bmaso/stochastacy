@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import scala.collection.mutable
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ReadCapacityConsumed, ReconfigurationSchedule, RequestThrottled, StorageBytesDelta, WriteCapacityConsumed}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ProvisionedCapacitySnapshot, ReadCapacityConsumed, ReconfigurationSchedule, RequestThrottled, StorageBytesDelta, WriteCapacityConsumed}
 import stochastacy.core.component.Timed
 import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
 
@@ -81,13 +81,15 @@ final class TrialAccountingState(
   private var cumProvWcuTicks = BigInt(0)
   private var cumByteTicks    = BigInt(0)
 
-  private var bucketOpen   = false
-  private var bucketTick   = 0L
-  private var bucketRcu    = BigDecimal(0)
-  private var bucketWcu    = BigDecimal(0)
-  private var bucketGsiRcu = mutable.Map.empty[String, BigDecimal]
-  private var bucketGsiWcu = mutable.Map.empty[String, BigDecimal]
-  private val points       = Vector.newBuilder[TrialTimeSeriesPoint]
+  private var bucketOpen        = false
+  private var bucketTick        = 0L
+  private var bucketRcu         = BigDecimal(0)
+  private var bucketWcu         = BigDecimal(0)
+  private var bucketGsiRcu      = mutable.Map.empty[String, BigDecimal]
+  private var bucketGsiWcu      = mutable.Map.empty[String, BigDecimal]
+  // The reserved capacity an auto-scaling table emits for this tick; overrides the static schedule when present.
+  private var bucketProvisioned = Option.empty[(BigInt, BigInt)]
+  private val points            = Vector.newBuilder[TrialTimeSeriesPoint]
 
   private def bump(m: mutable.Map[String, BigDecimal], key: String, v: BigDecimal): Unit =
     m.update(key, m.getOrElse(key, BigDecimal(0)) + v)
@@ -95,8 +97,9 @@ final class TrialAccountingState(
   private def finalizeBucket(): Unit =
     if bucketOpen then
       // Attribute this tick to its billing mode: provisioned → accrue reserved capacity-ticks; on-demand →
-      // accrue the consumed capacity that gets billed.
-      provisionedPerTick(bucketTick) match
+      // accrue the consumed capacity that gets billed. An auto-scaling table's per-tick snapshot (runtime
+      // capacity) takes precedence over the static schedule.
+      bucketProvisioned.orElse(provisionedPerTick(bucketTick)) match
         case Some((r, w)) =>
           provRcuTicks += r; cumProvRcuTicks += r
           provWcuTicks += w; cumProvWcuTicks += w
@@ -121,12 +124,13 @@ final class TrialAccountingState(
     element match
       case tick: TimedControlEvent.Tick =>
         finalizeBucket()
-        bucketTick   = tick.eventTime.ticks
-        bucketRcu    = BigDecimal(0)
-        bucketWcu    = BigDecimal(0)
-        bucketGsiRcu = mutable.Map.empty
-        bucketGsiWcu = mutable.Map.empty
-        bucketOpen   = true
+        bucketTick        = tick.eventTime.ticks
+        bucketRcu         = BigDecimal(0)
+        bucketWcu         = BigDecimal(0)
+        bucketGsiRcu      = mutable.Map.empty
+        bucketGsiWcu      = mutable.Map.empty
+        bucketProvisioned = None
+        bucketOpen        = true
 
       case TimedControlEvent.EndOfTime =>
         () // discard the unclosed flush-window bucket
@@ -144,6 +148,8 @@ final class TrialAccountingState(
             currentBytes += d
           case RequestThrottled(_) =>
             throttledReqs += 1L
+          case ProvisionedCapacitySnapshot(r, w) =>
+            bucketProvisioned = Some((BigInt(r), BigInt(w)))
 
   def result(): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
     val summary = TrialSummary(
