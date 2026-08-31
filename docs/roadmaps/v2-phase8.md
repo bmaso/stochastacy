@@ -48,7 +48,7 @@ load-off triggers a slow scale-down. On-demand tables are unaffected (byte-ident
 |---|---|---|---|
 | 1 | Burst capacity | **Done** | `ThrottleBudget` banks unused capacity up to `ceiling × burstWindowTicks`; a spike within the bank does not throttle; sustained load drains then throttles; provisioned-only (on-demand + burst-off byte-identical) |
 | 2 | Auto-scaler mechanism | **Done** | an `AutoScalingPolicy` + `onTick` control loop reads rolling utilization and moves base capacity within `[min, max]` with reaction lag / asymmetric cooldowns; no-policy byte-identical |
-| 3 | Dynamic capacity → accounting | Planned | the scaler's per-tick capacity reaches the accounting (via `TickEmission`); provisioned capacity-hour cost integrates the runtime trace, not the static schedule |
+| 3 | Dynamic capacity → accounting | **Done** | `onTick` emits a `ProvisionedCapacitySnapshot` per tick (via `TickEmission`); the accounting bills the runtime trace, not the static schedule; no-policy byte-identical |
 | 4 | Demo + docs | Planned | focused single-region demo: spike → burst absorbs → sustained load → lagged scale-up (throttling in the lag) → slow scale-down; determinism; docs |
 
 ## Slices
@@ -105,6 +105,18 @@ trace** for provisioned capacity-hour cost instead of folding the static `billin
 **Validated by:** unit tests — the reported provisioned capacity-unit-ticks / cost track the scaler's actual
 per-tick capacity (not the initial or scheduled value); a non-auto-scaling provisioned table is byte-identical
 to phase 6.
+
+**Delivered.** New `ProvisionedCapacitySnapshot(readCapacityUnits, writeCapacityUnits)` consumption fact
+(base target). `DynamoDbTable.onTick` emits it (via `TickEmission`, the phase-7 change's second use) from
+`nextBillingMode.total{Read,Write}Capacity` **only when an `autoScalingPolicy` is set** — threaded into all
+three emission paths → non-auto-scaling tables emit nothing (byte-identical). `TrialAccountingState` gained a
+`bucketProvisioned` (reset on `Tick`, set on the snapshot); `finalizeBucket` uses
+`bucketProvisioned.orElse(provisionedPerTick(bucketTick))`, so the runtime trace wins and the static
+`billingModeAt` fallback serves scheduled/static + on-demand tables unchanged. New `AutoScalingAccountingSpec`
+(5: snapshots bill the trace not the initial; no-snapshot fallback; end-to-end emission grows / no-policy
+emits none / accounting bills the scaled — write up, read down under zero read load). Adding a
+`DynamoDbConsumption` case is a shared-contract change — gated on **full `sbt test`**: core 512 / examples 244
+/ aws 221 green, every prior spec byte-identical. Auto-scaling now drives **both** throttling and cost.
 
 ### Slice 4 — Demo + docs
 A focused single-region provisioned **telemetry** demo (extending the phase-6 mixed-mode "right-sizing trap"

@@ -134,8 +134,10 @@ scaleDownThresholdFactor`) threshold — and the direction's cooldown has elapse
 change (`ceil(consumed / target)`, clamped to `[min, max]`) that applies after a reaction delay
 (scale-up-fast / scale-down-slow). A faithful port of the legacy auto-scaler's logic, but as pure `onTick`
 mechanics (state threaded in `TableState`), **mutually exclusive** with a `ReconfigurationSchedule`. Base-table
-only (per-GSI auto-scaling is out of scope). *(As of Slice 2 this drives throttling; provisioned-cost
-accounting picks up the dynamic capacity in Slice 3.)*
+only (per-GSI auto-scaling is out of scope). The scaled capacity drives both throttling *and* cost: because it
+is chosen at runtime rather than from a static schedule, `onTick` emits the tick's reserved capacity as a
+`ProvisionedCapacitySnapshot` (via tick-boundary emission), which the accounting integrates in place of the
+`billingModeAt` fold — so provisioned capacity-hour cost tracks the actual per-tick capacity.
 
 **TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
 makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the

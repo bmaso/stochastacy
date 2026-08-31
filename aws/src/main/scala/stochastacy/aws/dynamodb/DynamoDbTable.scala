@@ -184,12 +184,22 @@ object DynamoDbTable:
         billingMode   = nextBillingMode,
         autoScaling   = nextAutoScaling
       )
+
+      // When auto-scaling drives the capacity, emit the tick's reserved capacity so the accounting bills the
+      // runtime trace instead of the static schedule. No policy → nothing emitted (byte-identical).
+      val snapshotFacts: List[Scheduled[DynamoDbConsumption]] =
+        if config.autoScalingPolicy.isDefined then
+          nextBillingMode match
+            case p: BillingMode.Provisioned => List(Scheduled(ProvisionedCapacitySnapshot(p.totalReadCapacity, p.totalWriteCapacity), 0.0))
+            case _                          => Nil
+        else Nil
+
       state.ttl match
-        case None => TickEmission(advanced, Nil)
+        case None => TickEmission(advanced, snapshotFacts)
         case Some(rb) =>
           val (count, freedBase, nextRb) = rb.expire(tick)
           val withRb                     = advanced.copy(ttl = Some(nextRb))
-          if count <= 0L then TickEmission(withRb, Nil)
+          if count <= 0L then TickEmission(withRb, snapshotFacts)
           else
             // The expired cohort's average item size drives each index's projected freed bytes — the exact
             // inverse of the maintenance a write performs.
@@ -205,7 +215,7 @@ object DynamoDbTable:
               }
             val nextState = withRb.copy(base = withRb.base.applyExpiry(count, freedBase), indexes = shrunkIndexes)
             val allFacts  = StorageBytesDelta(-freedBase, DynamoDbTarget.Table) :: indexFacts
-            TickEmission(nextState, allFacts.map(Scheduled(_, 0.0)))
+            TickEmission(nextState, snapshotFacts ++ allFacts.map(Scheduled(_, 0.0)))
 
     /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,
      *  the base summary for a table read and for every write/get. */

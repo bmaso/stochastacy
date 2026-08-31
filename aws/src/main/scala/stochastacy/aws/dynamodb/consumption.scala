@@ -27,3 +27,9 @@ final case class StorageBytesDelta(bytesDelta: Long, target: DynamoDbTarget) ext
  *  per-tick provisioned capacity of `target` (the first over-budget target). Counted downstream; it moves
  *  no capacity or storage. */
 final case class RequestThrottled(target: DynamoDbTarget) extends DynamoDbConsumption
+
+/** The reserved provisioned capacity in force for a tick — emitted at the tick boundary by an auto-scaling
+ *  table (whose capacity is chosen at runtime, not from a static schedule) so the accounting can bill the
+ *  actual per-tick capacity trace. A metric-plane marker on the base table; it moves no capacity or storage. */
+final case class ProvisionedCapacitySnapshot(readCapacityUnits: Long, writeCapacityUnits: Long) extends DynamoDbConsumption:
+  def target: DynamoDbTarget = DynamoDbTarget.Table
