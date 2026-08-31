@@ -126,6 +126,17 @@ in **ticks** (DynamoDB's ~300 s of burst is `300 / tick-seconds` ticks); the ban
 budget target: base+LSI, each GSI), a per-partition refinement deferred to hot-partition modeling. `0` = off
 (the budget resets exactly as before, on-demand tables unaffected).
 
+**Reactive auto-scaling** (provisioned only). An `AutoScalingPolicy` on the `Config` makes the table's
+**base** read/write capacity track a target utilization (default 0.70): `onTick` reads the just-completed
+tick's utilization (admitted base capacity ÷ current ceiling), keeps a rolling `evaluationWindowTicks`
+window, and when the average crosses the scale-up (`> target`) or scale-down (`< target ×
+scaleDownThresholdFactor`) threshold — and the direction's cooldown has elapsed — schedules a target-tracking
+change (`ceil(consumed / target)`, clamped to `[min, max]`) that applies after a reaction delay
+(scale-up-fast / scale-down-slow). A faithful port of the legacy auto-scaler's logic, but as pure `onTick`
+mechanics (state threaded in `TableState`), **mutually exclusive** with a `ReconfigurationSchedule`. Base-table
+only (per-GSI auto-scaling is out of scope). *(As of Slice 2 this drives throttling; provisioned-cost
+accounting picks up the dynamic capacity in Slice 3.)*
+
 **TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
 makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the
 expiry is deterministic, so no behavior hook is needed: an immutable `Vector`-backed `TtlRingBuffer`

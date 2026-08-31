@@ -62,7 +62,8 @@ final case class TableState(
   currentTick:   Long                  = 0L,
   perTickBudget: ThrottleBudget        = ThrottleBudget.empty, // provisioned capacity admitted this tick; reset each tick
   billingMode:   BillingMode           = BillingMode.OnDemand, // the mode in force this tick (may change via a schedule)
-  ttl:           Option[TtlRingBuffer] = None                  // per-tick write history for TTL expiry (None = TTL off)
+  ttl:           Option[TtlRingBuffer] = None,                 // per-tick write history for TTL expiry (None = TTL off)
+  autoScaling:   AutoScalingState      = AutoScalingState.initial // reactive auto-scaling state (idle when no policy)
 ):
   /** The summary of the index named `indexName` (empty if unknown). */
   def index(indexName: String): TableSummaryState = indexes.getOrElse(indexName, TableSummaryState.empty)

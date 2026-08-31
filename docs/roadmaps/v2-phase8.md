@@ -47,7 +47,7 @@ load-off triggers a slow scale-down. On-demand tables are unaffected (byte-ident
 | # | slice | status | proof (target) |
 |---|---|---|---|
 | 1 | Burst capacity | **Done** | `ThrottleBudget` banks unused capacity up to `ceiling × burstWindowTicks`; a spike within the bank does not throttle; sustained load drains then throttles; provisioned-only (on-demand + burst-off byte-identical) |
-| 2 | Auto-scaler mechanism | Planned | an `AutoScalingPolicy` + `onTick` control loop reads rolling utilization and moves capacity within `[min, max]` with lag / asymmetric cooldowns |
+| 2 | Auto-scaler mechanism | **Done** | an `AutoScalingPolicy` + `onTick` control loop reads rolling utilization and moves base capacity within `[min, max]` with reaction lag / asymmetric cooldowns; no-policy byte-identical |
 | 3 | Dynamic capacity → accounting | Planned | the scaler's per-tick capacity reaches the accounting (via `TickEmission`); provisioned capacity-hour cost integrates the runtime trace, not the static schedule |
 | 4 | Demo + docs | Planned | focused single-region demo: spike → burst absorbs → sustained load → lagged scale-up (throttling in the lag) → slow scale-down; determinism; docs |
 
@@ -82,6 +82,20 @@ scale-down-slow (long cooldown) when it falls well below.
 **Validated by:** unit tests — sustained high utilization scales capacity up within bounds after the reaction
 lag; sustained low utilization scales down after the longer cooldown; capacity never leaves `[min, max]`;
 determinism.
+
+**Delivered.** New `AutoScaling.scala`: `AutoScalingPolicy` (mirrors the legacy `DynamoDbAutoScaler.Policy`
+field-for-field — target, window, up/down reaction delays, up/down cooldowns, `scaleDownThresholdFactor`,
+min/max read+write), `AutoScalingState` / `AutoScalingDimensionState` (window + pending `(fireTick, newCap)` +
+`lastScaleTick`, per dimension), and a pure `AutoScaler.step(policy, tick, current, budget, state)` that
+records utilization (`consumed = budget base tally`, `consumed / currentCap`), applies a due pending change,
+then target-tracks (`ceil(consumed / target)`, clamped) with the cooldown/window/pending guards — read and
+write independently, base target only. `TableState` gained `autoScaling`; `DynamoDbTable.Config` gained
+`autoScalingPolicy` (require: Provisioned + no reconfiguration schedule); `onTick` runs `AutoScaler.step` when
+a policy is set (else the static `billingModeAt`), before the Slice-1 burst roll. **State-only** — it drives
+the throttle ceiling now; provisioned-cost accounting picks up the dynamic capacity in Slice 3. New
+`AutoScalingSpec` (7: pure scale-up/target-tracking + reaction delay, clamp max, scale-down + clamp min,
+hold-at-target, single-transition-while-pending; sampler-level scale-up + no-policy byte-identical). **aws 216
+green**; every phase-6 / Slice-1 spec byte-identical (`autoScalingPolicy` defaults off).
 
 ### Slice 3 — Dynamic capacity → accounting
 Carry the scaler's chosen per-tick capacity to the accounting (`D-autoscale-accounting`): emit it as a
