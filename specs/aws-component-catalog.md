@@ -137,7 +137,8 @@ mechanics (state threaded in `TableState`), **mutually exclusive** with a `Recon
 only (per-GSI auto-scaling is out of scope). The scaled capacity drives both throttling *and* cost: because it
 is chosen at runtime rather than from a static schedule, `onTick` emits the tick's reserved capacity as a
 `ProvisionedCapacitySnapshot` (via tick-boundary emission), which the accounting integrates in place of the
-`billingModeAt` fold — so provisioned capacity-hour cost tracks the actual per-tick capacity.
+`billingModeAt` fold — so provisioned capacity-hour cost tracks the actual per-tick capacity. See the
+[auto-scaling telemetry demo](README.thermostat-v2.md#auto-scaling--burst-capacity-provisioned-throughput-dynamics).
 
 **TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
 makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the

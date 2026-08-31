@@ -37,7 +37,9 @@ object TableLegRunner:
       localSecondaryIndexes   = spec.localSecondaryIndexes,
       billingMode             = spec.billingMode,
       reconfigurationSchedule = spec.reconfigurationSchedule,
-      ttlPeriodTicks          = spec.ttlPeriodTicks
+      ttlPeriodTicks          = spec.ttlPeriodTicks,
+      burstWindowTicks        = spec.burstWindowTicks,
+      autoScalingPolicy       = spec.autoScalingPolicy
     )
 
     // A load-independent system-error gate on the table's inlet: rejected requests never reach the table,

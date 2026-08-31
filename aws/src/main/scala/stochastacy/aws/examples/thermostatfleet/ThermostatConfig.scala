@@ -2,7 +2,7 @@ package stochastacy.aws.examples.thermostatfleet
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, IndexProjection, LocalSecondaryIndex, ReconfigurationEvent, ReconfigurationSchedule, ScheduledReconfiguration, TableBehavior, TableSummaryState}
+import stochastacy.aws.dynamodb.{AutoScalingPolicy, BillingMode, DynamoDbRequest, GlobalSecondaryIndex, IndexProjection, LocalSecondaryIndex, ReconfigurationEvent, ReconfigurationSchedule, ScheduledReconfiguration, TableBehavior, TableSummaryState}
 import stochastacy.aws.examples.demo.SingleTableScenario
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.{RandomBurstSampler, Sampler, StatelessSampler, TemporalShapeFunctions}
@@ -53,7 +53,10 @@ final case class ThermostatConfig(
   polarVortexAffectedFraction:      Double        = 0.5,
   polarVortexTickRange:             (Long, Long)  = (0L, 0L),
   override val systemErrorRate:     Double        = 0.001,
-  override val reconfigurationSchedule: ReconfigurationSchedule = ReconfigurationSchedule.empty
+  override val reconfigurationSchedule: ReconfigurationSchedule = ReconfigurationSchedule.empty,
+  override val billingMode:         BillingMode                 = BillingMode.OnDemand,
+  override val burstWindowTicks:    Int                         = 0,
+  override val autoScalingPolicy:   Option[AutoScalingPolicy]   = None
 ) extends SingleTableScenario:
   require(scenarioId.nonEmpty,                          "scenarioId must be non-empty")
   require(simulationTicks >= 1L,                        "simulationTicks must be at least 1")
@@ -151,4 +154,26 @@ object ThermostatConfig:
       ScheduledReconfiguration(400L, ReconfigurationEvent.SwitchBillingMode(BillingMode.Provisioned(250L, 125L))),
       ScheduledReconfiguration(800L, ReconfigurationEvent.UpdateProvisionedCapacity(BillingMode.Provisioned(100L, 333L)))
     ))
+  )
+
+  /** The auto-scaling policy for the telemetry table — the legacy capstone's values (target 70 %,
+   *  60-tick window, 2-min scale-up / 15-min scale-down at a 1-second tick). */
+  val telemetryAutoScalingPolicy: AutoScalingPolicy = AutoScalingPolicy(
+    targetUtilization = 0.70, evaluationWindowTicks = 60,
+    scaleUpReactionDelayTicks = 120, scaleDownReactionDelayTicks = 900,
+    scaleUpCooldownTicks = 120, scaleDownCooldownTicks = 900,
+    minReadCapacityUnits = 50L, maxReadCapacityUnits = 2000L,
+    minWriteCapacityUnits = 50L, maxWriteCapacityUnits = 5000L
+  )
+
+  /** A **provisioned + auto-scaling + burst** telemetry scenario: the single-region workload starting
+   *  provisioned with a deliberately modest reservation, so the growing fleet and telemetry spikes are
+   *  first absorbed by banked **burst** capacity and then met by reactive **auto-scaling** (base capacity
+   *  only). Compared against a same-reservation *fixed* table, it throttles far less. No reconfiguration
+   *  schedule (mutually exclusive with auto-scaling). */
+  val autoScalingDefault: ThermostatConfig = singleRegionDefault.copy(
+    scenarioId        = "thermostat-fleet-autoscaling",
+    billingMode       = BillingMode.Provisioned(readCapacityUnits = 100L, writeCapacityUnits = 150L),
+    autoScalingPolicy = Some(telemetryAutoScalingPolicy),
+    burstWindowTicks  = 300 // ~300 s of burst at a 1-second tick
   )

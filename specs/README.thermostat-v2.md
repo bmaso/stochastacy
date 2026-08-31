@@ -265,6 +265,42 @@ The tick horizon is fixed by the reconfiguration schedule (400 / 800 within 1200
 
 ---
 
+## Auto-scaling + burst capacity (provisioned throughput dynamics)
+
+A fourth scenario, `thermostat-fleet-autoscaling` (`ThermostatConfig.autoScalingDefault`), runs the telemetry
+workload on a provisioned table with a deliberately **modest initial reservation** — `Provisioned(read 100,
+write 150)` — plus the two mechanisms that decide whether a spike actually throttles:
+
+- **Burst capacity** (`burstWindowTicks = 300`): the per-tick throttle budget banks up to `ceiling × 300` of
+  unused capacity, so a short spike is absorbed from the bank before it throttles.
+- **Reactive auto-scaling** (`autoScalingPolicy`, the legacy capstone's values — target 70 %, 60-tick window,
+  2-min scale-up / 15-min scale-down, base write in `[50, 5000]`): `onTick` tracks rolling utilization and
+  moves the **base** write capacity toward `consumed / target` after a reaction lag. The scaled capacity is
+  emitted each tick as a `ProvisionedCapacitySnapshot`, so the cost accounting bills the actual trace.
+
+### What it adds
+
+- The first **runtime-dynamic** provisioned capacity — capacity chosen by a control loop, not a schedule.
+- A `useTransactions`-style **comparison**: the demo also runs a *fixed* table at the same reservation (burst
+  and auto-scaling off) on the identical workload. Burst + auto-scaling throttles **far less** (in a 1200-tick
+  ensemble, ≈16 k vs ≈73 k throttled requests — a ~57 k reduction) by scaling write capacity up to meet the
+  growing fleet and its spikes — at higher provisioned cost, the throttle-vs-cost trade-off made explicit.
+  Residual throttling in the auto-scaling arm is the reaction-lag window, exactly as on real DynamoDB.
+
+Scope: **base-table** auto-scaling only (per-GSI auto-scaling is out of scope; the GSIs ride the base
+ceiling), **table-level** burst (per-partition burst arrives with hot-partition modeling). The full legacy
+reconcile of the auto-scaling telemetry table is the phase-9 capstone.
+
+### Running it
+```bash
+sbt 'aws/runMain stochastacy.aws.examples.thermostatfleet.ThermostatAutoScalingDemo --output /tmp/thermostat-fleet-autoscaling.jsonl --trials 100 --seed 1'
+```
+The console prints the throttle count, provisioned write capacity-ticks, and cost for both the auto-scaling
+and the fixed-reservation runs, plus the throttle reduction. End-to-end gate:
+`sbt 'aws/testOnly stochastacy.aws.examples.thermostatfleet.ThermostatAutoScalingSpec'`.
+
+---
+
 ## Source map
 
 | concern | file |

@@ -1,6 +1,6 @@
 # v2/phase8 — Provisioned throughput dynamics: burst capacity + reactive auto-scaling
 
-**Status: PLANNED** — four slices. Two coupled **temporal** capacity mechanisms on the phase-6
+**Status: COMPLETE** — four slices. Two coupled **temporal** capacity mechanisms on the phase-6
 provisioned/throttling foundation: **burst capacity** (banked unused capacity smooths short spikes) and
 **reactive auto-scaling** (a rolling-utilization control loop that adjusts provisioned capacity). Burst is
 built first — it is what makes the auto-scaler's *spike → lag → throttle* story faithful.
@@ -8,6 +8,19 @@ built first — it is what makes the auto-scaler's *spike → lag → throttle* 
 Follows `v2/phase7` (TTL + transactions). Single-region, single-table focus; the full **legacy reconcile is
 deferred to the phase-9 capstone** (the phase-7 pattern), whose Telemetry table is the one place burst +
 auto-scaling + TTL converge against the legacy.
+
+## Outcome
+
+Phase 8 added the two temporal throughput-dynamics mechanisms as intrinsic table mechanics: **burst capacity**
+(`ThrottleBudget` carry-forward bank, capped at `ceiling × burstWindowTicks`) and **reactive auto-scaling** (a
+pure `onTick` port of the legacy target-tracking control loop — rolling window, reaction lag, asymmetric
+cooldowns — driving the base capacity within `[min, max]`). The scaler's runtime capacity reaches the
+accounting through a `ProvisionedCapacitySnapshot` emitted each tick (the phase-7 `TickEmission`'s second use),
+so cost tracks the actual trace. Proven by the **`thermostat-fleet-autoscaling`** demo, which throttles ~57 k
+fewer requests than the same reservation held fixed (≈16 k vs ≈73 k over a 1200-tick ensemble) by scaling write
+capacity up — at higher provisioned cost, the throttle-vs-cost trade-off made explicit. Every prior scenario is
+byte-identical (all three knobs default off). Full legacy reconcile of the auto-scaling telemetry table is the
+phase-9 capstone. **aws 224 green.**
 
 ## Goal
 
@@ -49,7 +62,7 @@ load-off triggers a slow scale-down. On-demand tables are unaffected (byte-ident
 | 1 | Burst capacity | **Done** | `ThrottleBudget` banks unused capacity up to `ceiling × burstWindowTicks`; a spike within the bank does not throttle; sustained load drains then throttles; provisioned-only (on-demand + burst-off byte-identical) |
 | 2 | Auto-scaler mechanism | **Done** | an `AutoScalingPolicy` + `onTick` control loop reads rolling utilization and moves base capacity within `[min, max]` with reaction lag / asymmetric cooldowns; no-policy byte-identical |
 | 3 | Dynamic capacity → accounting | **Done** | `onTick` emits a `ProvisionedCapacitySnapshot` per tick (via `TickEmission`); the accounting bills the runtime trace, not the static schedule; no-policy byte-identical |
-| 4 | Demo + docs | Planned | focused single-region demo: spike → burst absorbs → sustained load → lagged scale-up (throttling in the lag) → slow scale-down; determinism; docs |
+| 4 | Demo + docs | **Done** | `thermostat-fleet-autoscaling` demo throttles far less than a fixed reservation (burst + scale-up); scenario plumbing; determinism; docs |
 
 ## Slices
 
@@ -126,6 +139,17 @@ slow scale-down after load-off. Docs: catalog/README notes.
 
 **Validated by:** the demo exhibits burst absorption then lagged auto-scaling (fewer throttles than the
 bare-ceiling phase-6 run under the same spike); determinism. Full legacy reconcile deferred to the capstone.
+
+**Delivered.** Scenario plumbing: `SingleTableScenario` / `TableSpec` / `TableLegRunner` thread
+`burstWindowTicks` + `autoScalingPolicy` into `DynamoDbTable.Config` (both default off → every existing
+scenario byte-identical — the wiring the mechanism slices deferred). `ThermostatConfig` gained
+`billingMode` / `burstWindowTicks` / `autoScalingPolicy` params and the **`autoScalingDefault`** preset
+(`Provisioned(100, 150)` + the legacy capstone policy + `burstWindowTicks = 300`, no schedule). New
+`ThermostatAutoScalingDemo` (`@main`) runs it against a fixed-reservation baseline and prints the throttle
+reduction (~57 k over a 1200-tick / 8-trial run: ≈16 k vs ≈73 k, cost $0.091 vs $0.037 — the trade-off).
+`ThermostatAutoScalingSpec` (3, small/fast, write-only): fewer throttles than fixed, more write capacity-ticks
+(scaled up), determinism. Docs: thermostat guide auto-scaling section + README entry + catalog cross-link.
+**aws 224 green**; every existing scenario byte-identical.
 
 ## Scope boundary
 

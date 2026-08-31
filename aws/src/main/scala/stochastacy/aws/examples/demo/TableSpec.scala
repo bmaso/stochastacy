@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, ReconfigurationSchedule, TableBehavior, TableSummaryState}
+import stochastacy.aws.dynamodb.{AutoScalingPolicy, BillingMode, DynamoDbRequest, GlobalSecondaryIndex, LocalSecondaryIndex, ReconfigurationSchedule, TableBehavior, TableSummaryState}
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.StatelessSampler
 
@@ -28,7 +28,9 @@ final case class TableSpec(
   billingMode:                   BillingMode,
   reconfigurationSchedule:       ReconfigurationSchedule,
   arrivals:                      UniformRandomProvider => Vector[Timed[DynamoDbRequest]],
-  ttlPeriodTicks:                Option[Int]                                            = None // item TTL in ticks (None = off)
+  ttlPeriodTicks:                Option[Int]                = None, // item TTL in ticks (None = off)
+  burstWindowTicks:              Int                        = 0,    // burst-capacity window in ticks (0 = off)
+  autoScalingPolicy:             Option[AutoScalingPolicy]  = None  // reactive auto-scaling (None = off)
 ):
   require(tableName.nonEmpty,               "tableName must be non-empty")
   require(systemErrorRate >= 0.0 && systemErrorRate < 1.0, "systemErrorRate must be in [0, 1)")

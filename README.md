@@ -196,6 +196,19 @@ held flat by same-size balance overwrites so the comparison isolates the capacit
 AWS's billing (base table and synchronous LSI maintenance double; asynchronous GSI back-fill does not). See
 the engineer's guide in [`specs/README.payments-transactions.md`](specs/README.payments-transactions.md).
 
+### Thermostat auto-scaling — burst + reactive capacity
+
+The thermostat telemetry table again, now **provisioned** with the two mechanisms that govern whether a spike
+throttles: **burst capacity** (unused capacity banks up to a cap and is spent on short spikes) and **reactive
+auto-scaling** (a rolling-utilization control loop that moves the base write capacity toward a target). This
+demo was built to show what those dynamics do to throttling and cost. Running the identical growing-fleet
+workload two ways — with burst + auto-scaling, and with the same reservation held *fixed* — the experiments
+show the dynamic table throttling far less (≈16 k vs ≈73 k throttled requests in a 1200-tick ensemble, a ~57 k
+reduction) by scaling write capacity up to meet demand, at a higher provisioned cost: the throttle-vs-cost
+trade-off made explicit, with the residual throttling confined to the scale-up reaction lag. See the
+auto-scaling section of the thermostat guide in
+[`specs/README.thermostat-v2.md`](specs/README.thermostat-v2.md).
+
 _More AWS demos — multi-table, multi-region — will be documented here as the AWS line grows._
 
 ---
