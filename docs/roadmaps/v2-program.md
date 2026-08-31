@@ -88,7 +88,7 @@ by priority.
   and the two capabilities were proven by **bespoke session-store + payments-ledger demos** (the thermostat is
   a device registry / mixed-mode — neither fits an accumulate-then-expire or atomic-transfer story).
   Roadmap: `v2-phase7.md`.
-- **v2/phase8 — Provisioned throughput dynamics: burst capacity + reactive auto-scaling.** Two coupled
+- **v2/phase8 — Provisioned throughput dynamics: burst capacity + reactive auto-scaling — DONE.** Two coupled
   **temporal** capacity mechanisms on the phase-6 provisioned/throttling foundation. **Burst capacity**
   extends `ThrottleBudget` from a hard per-tick ceiling into a **carry-forward accumulator** — unused capacity
   banks up to a cap (~300 s worth), so short spikes are absorbed before throttling; it is the spike-smoother
@@ -101,7 +101,13 @@ by priority.
   describes the capacity in force (open design point: likely **emitted as a tick-boundary fact via the phase-7
   `TickEmission`**, the second use of that core change). Validated by unit tests + a focused single-region
   telemetry demo (spike → burst absorbs → sustained load → scale-up, with throttling where the reaction-lag
-  bites); full legacy reconcile **deferred to the capstone** (the phase-7 pattern).
+  bites); full legacy reconcile **deferred to the capstone** (the phase-7 pattern). **Delivered:** burst as a
+  `ThrottleBudget` carry-forward bank (`burstWindowTicks`, capped at `ceiling × window`); auto-scaling as a
+  pure `onTick` port of the legacy `DynamoDbAutoScaler` control loop (target-tracking, reaction lag, asymmetric
+  cooldowns, base target only) via an `AutoScalingPolicy`; dynamic capacity → accounting through a
+  per-tick `ProvisionedCapacitySnapshot` (the `TickEmission`'s second use); proven by the
+  `thermostat-fleet-autoscaling` demo (~57 k fewer throttles than a fixed reservation, at higher cost). Roadmap:
+  `v2-phase8.md`.
 - **v2/phase9 — Thermostat-fleet capstone (single-region).** Assemble the full **4-table fleet** — Registry
   (on-demand + GSIs), Telemetry (provisioned + burst + auto-scaling + TTL), Commands (transactions), Alerts
   (spike) — under a **time-varying "polar-vortex" workload** (tick-varying rates are already expressible with
