@@ -1,0 +1,95 @@
+# v2/phase9 — Thermostat-fleet capstone (single-region)
+
+**Status: PLANNED** — four slices (+ a close-out coda). The **integration proof** of the v2 AWS line: the full
+**4-table thermostat fleet** on one region, reconciled against the legacy `ThermostatFleetCapstoneConfig`. It
+opens with the last **missing legacy feature** (PITR), then assembles the fleet and lands the **two** reconciles
+phase 7 deferred here (TTL and transactions), plus the phase-8 auto-scaling/burst reconcile.
+
+Follows `v2/phase8` (burst + auto-scaling). Single-region; multi-region is phase 11. This is where the phase-6/7/8
+deferred reconciles converge on one scenario.
+
+## Goal
+
+Reproduce the legacy 4-table capstone (`ThermostatFleetCapstoneConfig`, single-region) on the v2 core and
+reconcile it per table:
+
+- **Registry** — on-demand + GSIs, read-heavy (composes already-reconciled features);
+- **Telemetry** — provisioned + **burst + auto-scaling + TTL(720) + PITR**, under the polar-vortex + alert-storm
+  workload (the reconcile-heavy table);
+- **Commands** — on-demand, **transactions** (`TransactWriteItems`, command dispatch + audit) — its *first*
+  legacy reconcile (the payments demo was bespoke);
+- **Alerts** — on-demand, storm + vortex spike (composes already-reconciled features).
+
+The fleet is **fixed at 50 000 devices** (`deviceGrowthPerTick = 0`), so auto-scaling is driven by the
+**polar-vortex** (5× writes on 40 % of the fleet, ticks 600–700) and alert storms — a different regime from the
+phase-8 growth-driven demo. Full run: 100 trials × 1440 ticks.
+
+## Confirmed decisions
+
+- **D-pitr-mechanism (opening slice).** The legacy telemetry table sets `pointInTimeRecoveryEnabled = true`;
+  v2 does not model PITR, so the Telemetry **cost** reconcile would otherwise diverge by the continuous-backup
+  cost. PITR is the last missing legacy throughput/durability feature — modeled here as a contained
+  storage-cost dimension (byte-ticks × a PITR GB-month rate), not deferred.
+- **D-two-reconcile-targets.** **Telemetry** (TTL + auto-scaling + burst + PITR) **and Commands** (transactions)
+  are both first-time reconcile targets; Registry and Alerts compose already-reconciled features. "Mostly
+  assembly" would undersell it — two of four tables carry unreconciled features.
+- **D-burst-on-telemetry.** Telemetry sets `burstWindowTicks = 300` to match the legacy's always-on provisioned
+  burst (its absence did not perturb the phase-6 mixed-mode reconcile, but it is enabled here for fidelity).
+- **D-autoscale-reconcile-risk.** The v2 auto-scaler is a pure `onTick` port of the legacy actor/stream; the
+  **capacity-trajectory match** under the vortex is the phase's key reconcile risk. Where v2 is more correct,
+  keep it and document the divergence (the phase-2/6 posture — do not reproduce legacy bugs).
+
+## Slice status
+
+| # | slice | status | proof (target) |
+|---|---|---|---|
+| 1 | PITR mechanism | Planned | continuous-backup cost = storage byte-ticks × PITR rate when enabled; PITR-off byte-identical |
+| 2 | Commands: transactions in the thermostat domain | Planned | a thermostat commands table bills the 2× transaction premium (dispatch + audit); determinism |
+| 3 | 4-table capstone scenario + demo | Planned | `ThermostatCapstoneConfig` (multi-table) + `@main` + per-table metrics + smoke test |
+| 4 | Legacy reconcile + phase close-out | Planned | per-table reconcile vs `ThermostatFleetCapstoneConfig`; Telemetry + Commands within tolerance / documented divergence; phase COMPLETE |
+
+## Slices
+
+### Slice 1 — PITR (Point-In-Time Recovery)
+The last missing legacy feature. A `pointInTimeRecoveryEnabled` flag (intrinsic table config: `DynamoDbTable.Config`
++ `TableSpec` + `SingleTableScenario`); a `pitrGbMonthPrice` on `Rates`/`Pricing`; the accounting accrues a
+**continuous-backup** cost = the table's storage byte-ticks × the PITR rate (PITR backs up base + indexes, which
+the existing byte-ticks already total), added to `TotalEstimatedCost` and surfaced as its own metric. No capacity
+consumed. `false` = off = byte-identical.
+
+**Validated by:** unit tests — PITR cost = byte-ticks × rate; a table with PITR off is byte-identical; the cost
+surfaces only when enabled.
+
+### Slice 2 — Commands: transactions in the thermostat domain
+Model the Commands table's workload: a device-command **dispatch + audit** written as a 2-item
+`TransactWriteItems` (`transactWriteItemsPerItemBytes = Vector(200, 150)`), reusing the phase-7 transaction
+mechanics. Extend the thermostat behavior/workload to emit transactional commands (Registry and Alerts reuse the
+existing telemetry-style put/query/scan behavior with per-table config — no new behavior).
+
+**Validated by:** unit/end-to-end tests — the commands table bills the ≈2× transaction premium over equivalent
+singles; determinism.
+
+### Slice 3 — 4-table capstone scenario + demo
+Assemble **`ThermostatCapstoneConfig`** as a `MultiTableScenario` (phase-5 harness) with the four tables — each a
+`TableSpec` carrying its billing mode, indexes, features (Telemetry: provisioned + `burstWindowTicks = 300` +
+`autoScalingPolicy` + `ttlPeriodTicks = 720` + PITR + vortex; Commands: transactions; Registry/Alerts: on-demand),
+behavior, and workload. A `@main` capstone demo → per-table JSONL + a console summary; an end-to-end smoke test
+(the ensemble runs, per-table metrics present, determinism).
+
+**Validated by:** the 4-table ensemble runs to completion with per-table (`Table:<name>:…`) metrics; determinism.
+
+### Slice 4 — Legacy reconcile + phase close-out
+Reconcile the v2 capstone against the captured legacy `ThermostatFleetCapstoneConfig` baseline, **per table**:
+Telemetry (TTL + auto-scaling + burst + PITR — the auto-scaling capacity trajectory is the risk), Commands
+(transactions), Registry + Alerts (expected clean). Document any deliberate divergences (the phase-2/6 posture).
+Then the phase close-out (roadmap COMPLETE, CLAUDE.md, program roadmap, memory, full `sbt test`).
+
+**Validated by:** each table reconciles within tolerance or with a documented divergence; determinism; phase
+COMPLETE.
+
+## Scope boundary
+
+Single-region (multi-region is phase 11). No hot-partition / adaptive capacity (phase 10) — the capstone telemetry
+is device-keyed and well-distributed, so it does not exercise hot partitions. PITR is modeled as a cost dimension
+only (no restore/backup operations). The capstone is the single-region integration proof; the cross-region
+capstone is phase 11.
