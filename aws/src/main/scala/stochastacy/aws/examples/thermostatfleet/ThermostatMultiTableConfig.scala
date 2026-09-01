@@ -1,5 +1,6 @@
 package stochastacy.aws.examples.thermostatfleet
 
+import stochastacy.aws.dynamodb.BillingMode
 import stochastacy.aws.examples.demo.{MultiTableScenario, TableSpec}
 
 /**
@@ -67,3 +68,53 @@ object ThermostatMultiTableConfig:
       )
     )
   )
+
+  /** The full **4-table capstone** matching the legacy `ThermostatFleetCapstoneConfig` (single-region): a
+   *  fixed 50 k-device fleet across a Registry (on-demand, read-heavy), a Telemetry table (provisioned +
+   *  burst + auto-scaling + TTL + PITR, under a polar-vortex + alert-storm workload), a Commands table
+   *  (transactional command dispatch), and an Alerts table (storm + vortex). The integration proof. */
+  val capstoneDefault: ThermostatMultiTableConfig =
+    val ticks = 1440L
+    def base(name: String) = ThermostatConfig(
+      scenarioId = "thermostat-fleet-capstone", simulationTicks = ticks, trialCount = 1, parallelism = 1,
+      initialDeviceCount = 50000L, deviceGrowthPerTick = 0.0,
+      morningSpikePeakMultiplier = 1.0, eveningSpikePeakMultiplier = 1.0,
+      systemErrorRate = 0.001
+    )
+    ThermostatMultiTableConfig(
+      scenarioId = "thermostat-fleet-capstone", simulationTicks = ticks, trialCount = 100, parallelism = 4,
+      tableConfigs = Vector(
+        // Registry: on-demand, lightly written, heavily queried.
+        "device-registry" -> base("device-registry").copy(
+          telemetryReportsPerDevicePerTick = 0.001,
+          customerSupportQueryRatePerTick  = 3.0, fleetDashboardScanRatePerTick = 0.2,
+          alertStormProbabilityPerTick     = 0.0
+        ),
+        // Telemetry: provisioned + burst + auto-scaling + TTL + PITR + polar-vortex + alert-storm.
+        "device-telemetry" -> base("device-telemetry").copy(
+          telemetryReportsPerDevicePerTick = 0.033,
+          customerSupportQueryRatePerTick  = 0.1, fleetDashboardScanRatePerTick = 0.05,
+          alertStormProbabilityPerTick     = 0.002, alertStormWriteMultiplier = 5.0,
+          polarVortexWriteMultiplier       = 5.0, polarVortexAffectedFraction = 0.40, polarVortexTickRange = (600L, 700L),
+          billingMode                      = BillingMode.Provisioned(200L, 200L),
+          burstWindowTicks                 = 300,
+          autoScalingPolicy                = Some(ThermostatConfig.telemetryAutoScalingPolicy),
+          ttlPeriodTicks                   = Some(720),
+          pointInTimeRecoveryEnabled       = true
+        ),
+        // Commands: on-demand; each dispatch is a 2-item transaction (status update + audit).
+        "device-commands" -> base("device-commands").copy(
+          telemetryReportsPerDevicePerTick = 0.001,
+          customerSupportQueryRatePerTick  = 5.0, fleetDashboardScanRatePerTick = 0.0,
+          alertStormProbabilityPerTick     = 0.0,
+          transactWriteItemsPerItemBytes   = Some(Vector(200L, 150L))
+        ),
+        // Alerts: on-demand, storm-heavy + polar-vortex spike.
+        "device-alerts" -> base("device-alerts").copy(
+          telemetryReportsPerDevicePerTick = 0.005,
+          customerSupportQueryRatePerTick  = 0.5, fleetDashboardScanRatePerTick = 0.1,
+          alertStormProbabilityPerTick     = 0.01, alertStormWriteMultiplier = 5.0,
+          polarVortexWriteMultiplier       = 5.0, polarVortexAffectedFraction = 0.40, polarVortexTickRange = (600L, 700L)
+        )
+      )
+    )

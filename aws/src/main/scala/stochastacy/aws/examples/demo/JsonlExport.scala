@@ -56,13 +56,14 @@ object JsonlExport:
 
   /** The per-trial records for ONE table of a multi-table trial: the **base** metrics only (no per-GSI
    *  breakout), each named `Table:<tableName>:<metric>` — the legacy multi-table record shape. */
-  def tableTrialRecords(scenarioId: String, tableName: String, trial: TrialResult): Vector[DemoRecord] =
+  def tableTrialRecords(scenarioId: String, tableName: String, trial: TrialResult,
+                        gsiNames: Vector[String] = Vector.empty, provisioned: Boolean = false, pitr: Boolean = false): Vector[DemoRecord] =
     val ts = trial.timeSeries.flatMap { point =>
-      MonteCarloAggregation.timeSeriesMetrics(Vector.empty).map { (name, extract) =>
+      MonteCarloAggregation.timeSeriesMetrics(gsiNames).map { (name, extract) =>
         DemoRecord.TrialTimeSeries(scenarioId, trial.trialId, point.tick, s"Table:$tableName:$name", extract(point))
       }
     }
-    val summary = MonteCarloAggregation.summaryMetrics(Vector.empty).map { (name, extract) =>
+    val summary = MonteCarloAggregation.summaryMetrics(gsiNames, provisioned, pitr).map { (name, extract) =>
       DemoRecord.TrialSummary(scenarioId, trial.trialId, s"Table:$tableName:$name", extract(trial.summary))
     }
     ts ++ summary

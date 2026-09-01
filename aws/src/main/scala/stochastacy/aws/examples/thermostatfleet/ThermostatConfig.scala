@@ -57,6 +57,8 @@ final case class ThermostatConfig(
   override val billingMode:         BillingMode                 = BillingMode.OnDemand,
   override val burstWindowTicks:    Int                         = 0,
   override val autoScalingPolicy:   Option[AutoScalingPolicy]   = None,
+  override val ttlPeriodTicks:      Option[Int]                 = None,
+  override val pointInTimeRecoveryEnabled: Boolean              = false,
   transactWriteItemsPerItemBytes:   Option[Vector[Long]]        = None,
   useTransactions:                  Boolean                     = true
 ) extends SingleTableScenario:

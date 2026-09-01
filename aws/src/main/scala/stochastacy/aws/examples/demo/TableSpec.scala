@@ -35,3 +35,14 @@ final case class TableSpec(
 ):
   require(tableName.nonEmpty,               "tableName must be non-empty")
   require(systemErrorRate >= 0.0 && systemErrorRate < 1.0, "systemErrorRate must be in [0, 1)")
+
+  /** This table's GSI names — for the per-GSI metric breakout. */
+  def gsiNames: Vector[String] = globalSecondaryIndexes.map(_.indexName)
+
+  /** Whether this table uses provisioned billing (so its capacity-tick / throttle metrics are worth
+   *  reporting) — fixed, scheduled, or auto-scaled. */
+  def usesProvisioning: Boolean =
+    billingMode != BillingMode.OnDemand || autoScalingPolicy.isDefined || reconfigurationSchedule.entries.nonEmpty
+
+  /** Whether this table incurs PITR cost (so its `TotalPitrCost` metric is worth reporting). */
+  def usesPitr: Boolean = pointInTimeRecoveryEnabled

@@ -45,7 +45,7 @@ phase-8 growth-driven demo. Full run: 100 trials × 1440 ticks.
 |---|---|---|---|
 | 1 | PITR mechanism | **Done** | continuous-backup cost = storage byte-ticks × PITR rate when enabled; `TotalPitrCost` surfaced only when on; PITR-off byte-identical |
 | 2 | Commands: transactions in the thermostat domain | **Done** | a thermostat commands table bills the 2× premium on base+LSI (GSI 1×) vs equivalent singles; determinism |
-| 3 | 4-table capstone scenario + demo | Planned | `ThermostatCapstoneConfig` (multi-table) + `@main` + per-table metrics + smoke test |
+| 3 | 4-table capstone scenario + demo | **Done** | `ThermostatMultiTableConfig.capstoneDefault` (4 tables) + `@main` + per-table provisioned/PITR/GSI surfacing + smoke test |
 | 4 | Legacy reconcile + phase close-out | Planned | per-table reconcile vs `ThermostatFleetCapstoneConfig`; Telemetry + Commands within tolerance / documented divergence; phase COMPLETE |
 
 ## Slices
@@ -101,6 +101,19 @@ behavior, and workload. A `@main` capstone demo → per-table JSONL + a console 
 (the ensemble runs, per-table metrics present, determinism).
 
 **Validated by:** the 4-table ensemble runs to completion with per-table (`Table:<name>:…`) metrics; determinism.
+
+**Delivered.** The **substantive fix** — per-table metric surfacing: `TableSpec` gained `gsiNames` /
+`usesProvisioning` / `usesPitr` helpers; `MultiTableMonteCarloRunner` builds each table's aggregator metrics
+from *its own* spec (per-GSI breakout + provisioned + PITR) instead of a shared base-only `Vector.empty`; and
+`JsonlExport.tableTrialRecords` gained the per-table flags (fed from a `name → spec` map in `runToFile`). So the
+provisioned + PITR Telemetry table reports its full metrics alongside its on-demand siblings. `ThermostatConfig`
+gained a settable `ttlPeriodTicks` (+ `pointInTimeRecoveryEnabled`). New `ThermostatMultiTableConfig.capstoneDefault`
+(4 tables tuned to the legacy: Registry on-demand read-heavy; Telemetry `Provisioned(200,200)` + burst 300 +
+auto-scaling + TTL 720 + PITR + vortex + storm; Commands transactions; Alerts storm + vortex). New
+`ThermostatCapstoneDemo` (`@main`, per-table console + JSONL) and `ThermostatCapstoneSpec` (smoke: 4 tables run,
+Telemetry surfaces provisioned/throttle/PITR/GSI, on-demand tables do not, determinism). One phase-5 test that
+asserted the *old* "no per-GSI" limitation was updated to the enriched behavior. Full `sbt test` green: **core 512
+/ aws 237 / examples 244**.
 
 ### Slice 4 — Legacy reconcile + phase close-out
 Reconcile the v2 capstone against the captured legacy `ThermostatFleetCapstoneConfig` baseline, **per table**:
