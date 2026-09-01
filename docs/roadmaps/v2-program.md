@@ -127,13 +127,20 @@ by priority.
   50 k → 5 k, and a latent legacy rollup bug (unregistered PITR metric) was fixed. Roadmap: `v2-phase9.md`.
 - **v2/phase10 — Hot-partition throttling + adaptive capacity.** The **spatial** capacity dimension — how a
   table's provisioned capacity distributes across partitions — a coupled pair orthogonal to phase-8's temporal
-  auto-scaler. **Hot-partition throttling**: capacity is split across partitions, so load concentrated on one
-  partition throttles even while the table has aggregate spare, modeled as a **stochastic summary of
-  per-partition load skew** (a distribution, not per-key maps). **Adaptive capacity**: the mitigation —
-  DynamoDB isolates and boosts a hot partition, relieving the throttle after a lag. Validated by a focused
-  **hot-key scenario** + unit tests; its legacy reconcile target is whichever legacy demo exercises hot
-  partitions (**to confirm at planning**: if the capstone's Telemetry table itself hot-partitions, this phase
-  moves *ahead* of the capstone, → phase 9).
+  auto-scaler. **Hot-partition throttling**: capacity is split across `partitionCount` physical partitions
+  (~3000 RCU / 1000 WCU / 10 GB each), so load concentrated on one partition throttles even while the table has
+  aggregate spare. **Adaptive capacity**: the mitigation — DynamoDB isolates and boosts a hot partition,
+  relieving the throttle after a lag. **Modeling (decision A, confirmed).** Port the legacy mechanism: the
+  behavior emits a per-request **partition access** (a key token), which is **hashed to one of `partitionCount`
+  physical partitions**, and the `ThrottleBudget` gains a per-partition sub-dimension checked against the
+  per-partition ceiling — this is a **bounded** per-partition summary (`O(partitions × targets)`, **not**
+  per-key maps: keys are transient, only partition demand accumulates), so it stays cheap even at large fleet
+  sizes and reconciles directly with the legacy `HotPartitionModel` / `AdaptiveCapacityModel`. `partitionCount`
+  is **derived** from the table's capacity + storage (an evolving topology, matching the legacy's versioned
+  `PartitionTopologySnapshot`). This is also where phase-8's **table-level burst is refined to per-partition**.
+  No existing thermostat demo hot-partitions (device-keyed → well-distributed, confirmed for the capstone), so
+  it is validated by a **bespoke hot-key scenario** (concentrated key access) reconciled against the legacy on
+  the same scenario, plus unit tests — confirming this phase correctly follows the capstone (phase 9).
 - **v2/phase11 — Multi-region / global tables.** Cross-region **replication** (global tables →
   `ReplicatedWriteCapacityConsumed`), cross-region **transfer** bytes/cost, per-region metrics. Proves the
   multi-region thermostat scenarios.
