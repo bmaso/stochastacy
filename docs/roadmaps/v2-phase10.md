@@ -15,7 +15,7 @@ Model the per-partition capacity structure DynamoDB actually has: provisioned ca
 `partitionCount` physical partitions (~3000 RCU / 1000 WCU / 10 GB each), so a **hot partition** throttles when
 its share exceeds the per-partition ceiling *even while the table has aggregate spare*; **adaptive capacity**
 then *instantly* relieves that throttle (a hot partition may use up to the physical max, bounded by the table
-total), and **split-for-heat** isolates a sustained-hot key onto its own partition.
+total), and **split-for-heat** splits a sustained-hot partition's key range across more partitions.
 
 **Modeling approach — decision A (confirmed).** Port the legacy mechanism as a **bounded per-partition
 summary**: the workload/behavior emits a per-request **partition access** (a key token), the model **hashes it
@@ -42,8 +42,9 @@ the legacy's structure (`resolve` + per-partition ceilings + adaptive max) so th
   **physical max**. So Slice 1's *fair-share* ceiling (`capacity/count`) is the **without-adaptive** behavior
   (a comparison baseline, not real DynamoDB); the realistic default (Slice 2) is the physical-max ceiling. A
   toggle disables adaptive → back to fair-share, for the Slice-4 demo comparison. **Split-for-heat** — the
-  slower, separate mechanism that *isolates* a sustained-hot item onto its own partition (full 3000/1000;
-  blocked by an LSI) — is Slice 2b.
+  slower, separate mechanism that splits a sustained-hot partition's key range across more partitions
+  (permanent; single-item isolation is only the limit case; the LSI limitation governs sort-key splits below
+  our partition-key granularity, so it is documented, not gated) — is Slice 2b.
 - **D-per-partition-burst.** Phase-8 burst was *table-level*; here it is refined so each partition banks its
   own unused capacity — the refinement phase 8 explicitly deferred to this phase.
 - **D-reconcile-bespoke.** Reconcile a **bespoke hot-key scenario** against the legacy model run on the same
@@ -55,7 +56,7 @@ the legacy's structure (`resolve` + per-partition ceilings + adaptive max) so th
 |---|---|---|---|
 | 1 | Partition topology + per-partition throttle | **Done** | derived `partitionCount`; per-request partition access hashed to a bounded partition set; a concentrated key throttles at `capacity/count` while the table has aggregate spare; no-access byte-identical |
 | 2 | Instant adaptive capacity | **Done** | per-partition ceiling = physical max (3000/1000), instant + always-on, bounded by the table check; a hot partition is relieved to the physical max; a toggle → fair-share (adaptive-off) baseline |
-| 2b | Split-for-heat | Planned | a sustained-hot single key is isolated onto its own partition (full 3000/1000), increasing effective capacity for that key; blocked by an LSI |
+| 2b | Split-for-heat | **Done** | a partition sustained-hot for `windowTicks` splits (permanent effective-count bump, capped), re-hashing a hot key range across more partitions so it escapes a single partition's physical max toward the table total; a lone key can't spread |
 | 3 | Per-partition burst refinement | Planned | each partition banks its own unused capacity; a per-partition spike is absorbed before throttling; table-level-only configs unchanged |
 | 4 | Hot-key demo + legacy reconcile | Planned | bespoke concentrated-key scenario; per-partition throttle + adaptive relief reconcile vs the legacy `HotPartitionModel`/`AdaptiveCapacityModel` (documented divergences) |
 
@@ -109,16 +110,33 @@ the ceiling as a parameter — doc generalized). `HotPartitionSpec` restructured
 `partitionAccessFor = None`, so the default flip is inert). *(Threading `adaptiveCapacity` into `TableSpec` +
 the hot-key demo is Slice 4; split-for-heat is Slice 2b.)*
 
-### Slice 2b — Split-for-heat (isolate frequently accessed items)
-The slower, *separate* mechanism: a **sustained-hot single key** is isolated onto its own physical partition, so
-its effective ceiling is the full physical max even as the table's `partitionCount` (and thus the fair share)
-would otherwise shrink its share — modeled as a bounded per-key "hot set" promoted after a sustained-hotness
-window. **Blocked by an LSI** (DynamoDB will not split an item collection when the table has an LSI). Bounded
-state (a small hot-key set, not per-key maps).
+### Slice 2b — Split-for-heat (partition splitting on sustained heat)
+The slower, *separate* mechanism, verified against the AWS docs: DynamoDB splits a **hot partition's key
+range** into child partitions, redistributing a *subset of items* into each, so the heat spreads across more
+partitions (each still capped at the physical max). Single-key isolation is only the *limit* case, and splits
+are **permanent** (never merged). Modeled at partition-key granularity as a **permanent bump to the effective
+partition count**: on `windowTicks` consecutive ticks of a partition at/above the physical-max trigger, grow
+the effective count by one (capped), so a hot range of many keys re-hashes across the split-created partitions
+and escapes a single partition's physical-max ceiling toward the table total; a lone super-hot key can't spread
+(the AWS single-item limit). A faithful analogue of the legacy `maybeGrowTopology` (`partitionCount += 1` on
+`consecutiveHotTicks ≥ window`) → a clean Slice-4 reconcile. **LSI limitation** — AWS blocks splits *within an
+item collection* (sort-key granularity) under an LSI; that is *below* this partition-key-granularity model, so
+it is documented as a scope boundary, **not** gated.
 
-**Validated by:** unit tests — a key hot for the sustained window is isolated (its ceiling reaches the physical
-max independent of `partitionCount`); it de-promotes when it cools; a table with an LSI does not split
-(byte-identical to Slice 2); the hot set stays bounded.
+**Validated by:** unit tests — a partition saturated for the window splits (permanent count bump); it keeps
+splitting under sustained heat, capped at `maxPartitionCount`; a cool tick resets the counter; a table-level
+(not partition) bottleneck does not split; with more partitions a hot key range admits beyond a single
+partition's physical max; no policy is byte-identical to Slice 2; a policy without adaptive capacity is rejected.
+
+**Delivered.** New `HeatSplit.scala`: `HeatSplitPolicy(windowTicks, maxPartitionCount, read/writeTriggerPerPartition
+= physical max)`, threaded `HeatSplitState(bump, consecutiveRead/WriteHotTicks)`, and the pure `HeatSplit.step`
+tick-boundary transition (reads the completed tick's max per-partition admitted demand → increments/resets the
+sustained counters → splits, capped, resetting the window). `TableState` gained `heatSplit: HeatSplitState`;
+`DynamoDbTable.Config` gained `heatSplitPolicy: Option[HeatSplitPolicy] = None` + `require(heatSplitPolicy.isEmpty
+|| adaptiveCapacity)`. `sample` uses the effective count `min(derive + bump, cap)` for `partitionOf`; `onTick`
+calls `HeatSplit.step` (provisioned + policy). `HeatSplitSpec` (9 tests) proves the above. **aws 261 green**; every
+existing scenario byte-identical (`heatSplitPolicy = None`, no real behavior emits partition access). *(Threading
+into `TableSpec` + the hot-key demo + a topology-change metric is Slice 4.)*
 
 ### Slice 3 — Per-partition burst refinement
 Refine the phase-8 burst bank so each partition carries its own `[0, per-partition-ceiling × burstWindowTicks]`

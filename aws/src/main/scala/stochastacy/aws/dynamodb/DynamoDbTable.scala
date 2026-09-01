@@ -38,11 +38,18 @@ object DynamoDbTable:
     ttlPeriodTicks:         Option[Int]                  = None, // item TTL, in ticks (None = TTL off)
     burstWindowTicks:       Int                          = 0, // ticks-of-ceiling of burst capacity to bank (0 = off)
     autoScalingPolicy:      Option[AutoScalingPolicy]    = None, // reactive auto-scaling (None = off)
-    adaptiveCapacity:       Boolean                      = true // instant, always-on adaptive capacity (the DynamoDB
-                                                                // default): a hot partition's ceiling is the physical
-                                                                // max. false → the fair-share (without-adaptive) baseline
+    adaptiveCapacity:       Boolean                      = true, // instant, always-on adaptive capacity (the DynamoDB
+                                                                 // default): a hot partition's ceiling is the physical
+                                                                 // max. false → the fair-share (without-adaptive) baseline
+    heatSplitPolicy:        Option[HeatSplitPolicy]      = None  // split-for-heat: grow the partition count on
+                                                                 // sustained per-partition heat (None = off)
   ):
     require(burstWindowTicks >= 0, s"burstWindowTicks must be non-negative, got $burstWindowTicks")
+    // Split-for-heat grows the partition count to spread a hot range; that only relieves throttling under
+    // adaptive capacity (physical-max ceiling). With adaptive off the ceiling is the fair share
+    // (capacity / count), which growing the count merely shrinks — so split-for-heat requires adaptive.
+    require(heatSplitPolicy.isEmpty || adaptiveCapacity,
+            "heatSplitPolicy requires adaptiveCapacity")
     // Auto-scaling drives capacity reactively, so it is mutually exclusive with a static reconfiguration
     // schedule and requires the table to start provisioned.
     require(autoScalingPolicy.isEmpty || billingMode.isInstanceOf[BillingMode.Provisioned],
@@ -132,7 +139,10 @@ object DynamoDbTable:
       val hotPartition: Option[(Int, BigDecimal, BigDecimal)] = state.billingMode match
         case p: BillingMode.Provisioned =>
           config.behavior.partitionAccessFor(in, rng).map { key =>
-            val count = PartitionTopology.derive(p.readCapacityUnits, p.writeCapacityUnits, state.base.totalItemBytes)
+            // The effective partition count: the derived (capacity + storage) base, grown by any accumulated
+            // split-for-heat bump, capped by the policy. More partitions spread a hot range across the hash.
+            val baseCount = PartitionTopology.derive(p.readCapacityUnits, p.writeCapacityUnits, state.base.totalItemBytes)
+            val count     = config.heatSplitPolicy.fold(baseCount)(pol => math.min(baseCount + state.heatSplit.bump, pol.maxPartitionCount))
             val (rCeiling, wCeiling) =
               if config.adaptiveCapacity then (BigDecimal(PartitionTopology.RcuPerPartition), BigDecimal(PartitionTopology.WcuPerPartition))
               else                            (BigDecimal(p.readCapacityUnits) / count, BigDecimal(p.writeCapacityUnits) / count)
@@ -204,11 +214,20 @@ object DynamoDbTable:
         case p: BillingMode.Provisioned if config.burstWindowTicks > 0 =>
           state.perTickBudget.rollForward(p, config.globalSecondaryIndexes.map(_.indexName), config.burstWindowTicks)
         case _ => ThrottleBudget.empty
+
+      // Split-for-heat: from the just-completed tick's per-partition tallies (before they are cleared), grow
+      // the effective partition count on sustained per-partition heat. No policy / on-demand → unchanged.
+      val nextHeatSplit = (config.heatSplitPolicy, state.billingMode) match
+        case (Some(policy), p: BillingMode.Provisioned) =>
+          HeatSplit.step(policy, p, state.base.totalItemBytes, state.perTickBudget, state.heatSplit)
+        case _ => state.heatSplit
+
       val advanced = state.copy(
         currentTick   = tick,
         perTickBudget = rolledBudget,
         billingMode   = nextBillingMode,
-        autoScaling   = nextAutoScaling
+        autoScaling   = nextAutoScaling,
+        heatSplit     = nextHeatSplit
       )
 
       // When auto-scaling drives the capacity, emit the tick's reserved capacity so the accounting bills the

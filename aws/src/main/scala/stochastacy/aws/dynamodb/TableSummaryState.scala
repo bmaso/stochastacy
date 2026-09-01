@@ -63,7 +63,8 @@ final case class TableState(
   perTickBudget: ThrottleBudget        = ThrottleBudget.empty, // provisioned capacity admitted this tick; reset each tick
   billingMode:   BillingMode           = BillingMode.OnDemand, // the mode in force this tick (may change via a schedule)
   ttl:           Option[TtlRingBuffer] = None,                 // per-tick write history for TTL expiry (None = TTL off)
-  autoScaling:   AutoScalingState      = AutoScalingState.initial // reactive auto-scaling state (idle when no policy)
+  autoScaling:   AutoScalingState      = AutoScalingState.initial, // reactive auto-scaling state (idle when no policy)
+  heatSplit:     HeatSplitState        = HeatSplitState.initial  // evolving split-for-heat topology (idle when no policy)
 ):
   /** The summary of the index named `indexName` (empty if unknown). */
   def index(indexName: String): TableSummaryState = indexes.getOrElse(indexName, TableSummaryState.empty)
