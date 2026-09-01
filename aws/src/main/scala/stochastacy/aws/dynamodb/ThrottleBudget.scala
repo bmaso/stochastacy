@@ -13,10 +13,12 @@ package stochastacy.aws.dynamodb
  * the accumulator is reset to empty at each tick boundary, exactly as before.
  */
 final case class ThrottleBudget(
-  read:      Map[String, BigDecimal] = Map.empty,
-  write:     Map[String, BigDecimal] = Map.empty,
-  readBank:  Map[String, BigDecimal] = Map.empty,
-  writeBank: Map[String, BigDecimal] = Map.empty
+  read:          Map[String, BigDecimal] = Map.empty,
+  write:         Map[String, BigDecimal] = Map.empty,
+  readBank:      Map[String, BigDecimal] = Map.empty,
+  writeBank:     Map[String, BigDecimal] = Map.empty,
+  readPartition: Map[Int, BigDecimal]    = Map.empty, // base-target read admitted per physical partition, this tick
+  writePartition: Map[Int, BigDecimal]   = Map.empty  // base-target write admitted per physical partition, this tick
 ):
   /** Would admitting `readDemand` / `writeDemand` push any target past its provisioned ceiling *plus its
    *  banked burst capacity*? */
@@ -33,6 +35,20 @@ final case class ThrottleBudget(
    *  construction) — the bank is drained at the tick boundary in [[rollForward]], not mid-tick. */
   def add(readDemand: Map[String, BigDecimal], writeDemand: Map[String, BigDecimal]): ThrottleBudget =
     copy(read = bump(read, readDemand), write = bump(write, writeDemand))
+
+  /** Would admitting this request's base-target demand push its physical partition past its fair-share
+   *  ceiling (`capacity / partitionCount`)? An additional constraint over [[overBudget]]: a partition can
+   *  throttle while the table has aggregate spare. */
+  def partitionOverBudget(partitionId: Int, readDemand: BigDecimal, writeDemand: BigDecimal, readCeiling: BigDecimal, writeCeiling: BigDecimal): Boolean =
+    readPartition.getOrElse(partitionId, BigDecimal(0)) + readDemand > readCeiling ||
+      writePartition.getOrElse(partitionId, BigDecimal(0)) + writeDemand > writeCeiling
+
+  /** Charge the (admitted) base-target demand against its physical partition's tally. */
+  def addPartition(partitionId: Int, readDemand: BigDecimal, writeDemand: BigDecimal): ThrottleBudget =
+    copy(
+      readPartition  = readPartition.updated(partitionId, readPartition.getOrElse(partitionId, BigDecimal(0)) + readDemand),
+      writePartition = writePartition.updated(partitionId, writePartition.getOrElse(partitionId, BigDecimal(0)) + writeDemand)
+    )
 
   /**
    * The tick-boundary transition **with burst capacity**: bank each target's unused capacity

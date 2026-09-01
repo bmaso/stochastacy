@@ -120,8 +120,23 @@ object DynamoDbTable:
       val readDemand     = demandBy(allConsumption) { case ReadCapacityConsumed(u, _, t) => (ThrottleBudget.budgetKey(t), u) }
       val writeDemand    = demandBy(allConsumption) { case WriteCapacityConsumed(u, t)   => (ThrottleBudget.budgetKey(t), u) }
 
+      // Hot partition: attribute the base-target demand to a physical partition (derived topology) and check
+      // it against the partition's fair-share ceiling. Absent partition access (the default), no per-partition
+      // throttling applies. Provisioned only.
+      val hotPartition: Option[(Int, BigDecimal, BigDecimal)] = state.billingMode match
+        case p: BillingMode.Provisioned =>
+          config.behavior.partitionAccessFor(in, rng).map { key =>
+            val count = PartitionTopology.derive(p.readCapacityUnits, p.writeCapacityUnits, state.base.totalItemBytes)
+            (PartitionTopology.partitionOf(key, count), BigDecimal(p.readCapacityUnits) / count, BigDecimal(p.writeCapacityUnits) / count)
+          }
+        case _ => None
+      val baseRead  = readDemand.getOrElse(ThrottleBudget.BaseKey, BigDecimal(0))
+      val baseWrite = writeDemand.getOrElse(ThrottleBudget.BaseKey, BigDecimal(0))
+
       state.billingMode match
-        case p: BillingMode.Provisioned if state.perTickBudget.overBudget(readDemand, writeDemand, p) =>
+        case p: BillingMode.Provisioned
+            if state.perTickBudget.overBudget(readDemand, writeDemand, p) ||
+               hotPartition.exists((pid, rc, wc) => state.perTickBudget.partitionOverBudget(pid, baseRead, baseWrite, rc, wc)) =>
           // Throttle: reject the whole operation — no capacity consumed, no state mutated, budget untouched.
           Emission(
             newState    = state, // base / indexes / currentTick / budget all preserved
@@ -129,9 +144,11 @@ object DynamoDbTable:
             consumption = List(Scheduled(RequestThrottled(firstOverTarget(allConsumption, state.perTickBudget, p)), 0.0))
           )
         case p: BillingMode.Provisioned =>
-          // Admit and charge the demand against this tick's provisioned budget.
+          // Admit and charge the demand against this tick's provisioned budget (table target and partition).
+          val charged = state.perTickBudget.add(readDemand, writeDemand)
+          val budget  = hotPartition.fold(charged)((pid, _, _) => charged.addPartition(pid, baseRead, baseWrite))
           Emission(
-            newState    = state.copy(base = resolution.state, indexes = nextIndexes, perTickBudget = state.perTickBudget.add(readDemand, writeDemand), ttl = nextTtl),
+            newState    = state.copy(base = resolution.state, indexes = nextIndexes, perTickBudget = budget, ttl = nextTtl),
             output      = Scheduled(resolution.response, math.max(0.0, latency)),
             consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
           )

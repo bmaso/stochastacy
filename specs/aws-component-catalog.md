@@ -140,6 +140,14 @@ is chosen at runtime rather than from a static schedule, `onTick` emits the tick
 `billingModeAt` fold — so provisioned capacity-hour cost tracks the actual per-tick capacity. See the
 [auto-scaling telemetry demo](README.thermostat-v2.md#auto-scaling--burst-capacity-provisioned-throughput-dynamics).
 
+**Hot-partition throttling** (provisioned only). Provisioned capacity is split across physical partitions —
+their count **derived** from the table's capacity + storage (~3000 RCU / 1000 WCU / 10 GiB per partition,
+`PartitionTopology.derive`) — so a partition's fair-share ceiling is `capacity / partitionCount`. A behavior
+that opts in emits a per-request key (`partitionAccessFor`), hashed to a partition; the `ThrottleBudget`
+tracks base-target demand **per partition** and throttles a request whose partition would exceed its ceiling
+*even while the table has aggregate spare*. The state is bounded by the partition count, never the key space.
+Behaviors that emit no partition access (the default) keep the table-level-only throttle path, byte-identical.
+
 **TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
 makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the
 expiry is deterministic, so no behavior hook is needed: an immutable `Vector`-backed `TtlRingBuffer`

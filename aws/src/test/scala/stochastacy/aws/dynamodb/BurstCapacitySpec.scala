@@ -42,6 +42,24 @@ class BurstCapacitySpec extends AnyWordSpec with should.Matchers:
     }
   }
 
+  "ThrottleBudget per-partition tallies" should {
+    "throttle a partition at its ceiling and accumulate admitted demand" in {
+      val b = ThrottleBudget().addPartition(partitionId = 2, readDemand = BigDecimal(0), writeDemand = BigDecimal(600))
+      b.writePartition(2) shouldBe BigDecimal(600)
+      // ceiling 800: another 200 fits (600+200), 300 does not
+      b.partitionOverBudget(2, BigDecimal(0), BigDecimal(200), BigDecimal(1000), BigDecimal(800)) shouldBe false
+      b.partitionOverBudget(2, BigDecimal(0), BigDecimal(300), BigDecimal(1000), BigDecimal(800)) shouldBe true
+      // a different partition is unaffected
+      b.partitionOverBudget(3, BigDecimal(0), BigDecimal(300), BigDecimal(1000), BigDecimal(800)) shouldBe false
+    }
+
+    "clear the per-partition tallies at the tick boundary (rollForward)" in {
+      val p = BillingMode.Provisioned(readCapacityUnits = 100, writeCapacityUnits = 4000)
+      val spent = ThrottleBudget().addPartition(1, BigDecimal(0), BigDecimal(800))
+      spent.rollForward(p, Nil, burstWindowTicks = 5).writePartition shouldBe empty // reset next tick
+    }
+  }
+
   "ThrottleBudget.overBudget with a bank" should {
     "admit demand up to ceiling + bank, and preserve the bank across add" in {
       val p = BillingMode.Provisioned(readCapacityUnits = 100, writeCapacityUnits = 3)

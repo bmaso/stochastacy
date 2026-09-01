@@ -21,3 +21,12 @@ trait TableBehavior:
     rng:     UniformRandomProvider,
     tick:    Long
   ): OperationOutcome
+
+  /**
+   * The base-table **partition access** for a request: a key token, hashed to a physical partition for
+   * hot-partition throttling. `None` (the default) means the domain does not model key access, so no
+   * per-partition throttling applies — every existing behavior stays byte-identical. A hot-key workload
+   * overrides this to draw a key from a (possibly skewed) access distribution. The default must not consume
+   * `rng` (so it does not perturb existing scenarios).
+   */
+  def partitionAccessFor(request: DynamoDbRequest, rng: UniformRandomProvider): Option[String] = None

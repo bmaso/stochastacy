@@ -45,7 +45,7 @@ the legacy's structure (`resolve` + per-partition ceilings + adaptive max) so th
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | Partition topology + per-partition throttle | Planned | derived `partitionCount`; per-request partition access hashed to a bounded partition set; a concentrated key throttles while the table has aggregate spare; well-distributed load byte-identical |
+| 1 | Partition topology + per-partition throttle | **Done** | derived `partitionCount`; per-request partition access hashed to a bounded partition set; a concentrated key throttles at `capacity/count` while the table has aggregate spare; no-access byte-identical |
 | 2 | Adaptive capacity relief | Planned | a sustained-hot partition's ceiling is boosted after a lag, relieving the throttle; relaxes when load subsides |
 | 3 | Per-partition burst refinement | Planned | each partition banks its own unused capacity; a per-partition spike is absorbed before throttling; table-level-only configs unchanged |
 | 4 | Hot-key demo + legacy reconcile | Planned | bespoke concentrated-key scenario; per-partition throttle + adaptive relief reconcile vs the legacy `HotPartitionModel`/`AdaptiveCapacityModel` (documented divergences) |
@@ -61,6 +61,18 @@ ceiling — even with table-level headroom.
 **Validated by:** unit tests — a concentrated key (many requests → one partition) throttles while the table has
 aggregate spare; a well-distributed workload does not; state stays `O(partitions)`; a config with no
 hot-partition ceilings is byte-identical (the phase-6/8 table-level throttle path unchanged).
+
+**Delivered.** New `PartitionTopology` (`derive(readCap, writeCap, storageBytes)` = `max(⌈RCU/3000 + WCU/1000⌉,
+⌈storage/10 GiB⌉, 1)`; `partitionOf(key, count)` = `floorMod(hash, count)`). `TableBehavior` gained a defaulted
+`partitionAccessFor(request, rng): Option[String] = None` (default ignores `rng` → existing behaviors
+byte-identical). `ThrottleBudget` gained `readPartition` / `writePartition` (base-target, per partition) +
+`partitionOverBudget` (fair-share ceiling `capacity / count`) + `addPartition`; they clear each tick via the
+existing `rollForward` / `empty`. `DynamoDbTable.sample` derives the topology per request (provisioned + partition
+access present), attributes the base demand to its partition, and adds the per-partition check as an *additional*
+throttle constraint (admit charges the partition tally too). Tests: `PartitionTopologySpec` (5), `HotPartitionSpec`
+(3, sampler-level: concentrated throttles at 800 = 4000/5 while table has 4000 spare / uniform admits more /
+no-access at 4000), `BurstCapacitySpec` +2 (per-partition tally + tick reset). **aws 251 green**; every existing
+scenario byte-identical. *(Base target only; adaptive relief = Slice 2, per-partition burst = Slice 3.)*
 
 ### Slice 2 — Adaptive capacity relief
 Detect a sustained-hot partition (a per-partition hotness window) and raise its ceiling toward an adaptive max
