@@ -1,6 +1,6 @@
 # v2/phase10 — Hot-partition throttling + adaptive capacity
 
-**Status: PLANNED** — four slices (+ a close-out coda). The **spatial** capacity dimension: how a table's
+**Status: IN PROGRESS** — slices 1 / 2 / 2b done, Slice 3 dropped, Slice 4 next (+ a close-out coda). The **spatial** capacity dimension: how a table's
 provisioned capacity distributes across physical partitions. A coupled pair — **hot-partition throttling** (the
 problem) and **adaptive capacity** (the mitigation) — orthogonal to phase-8's *temporal* auto-scaler. The last
 of the three missing legacy throughput features (after burst and auto-scaling).
@@ -57,8 +57,10 @@ the legacy's structure (`resolve` + per-partition ceilings + adaptive max) so th
 | 1 | Partition topology + per-partition throttle | **Done** | derived `partitionCount`; per-request partition access hashed to a bounded partition set; a concentrated key throttles at `capacity/count` while the table has aggregate spare; no-access byte-identical |
 | 2 | Instant adaptive capacity | **Done** | per-partition ceiling = physical max (3000/1000), instant + always-on, bounded by the table check; a hot partition is relieved to the physical max; a toggle → fair-share (adaptive-off) baseline |
 | 2b | Split-for-heat | **Done** | a partition sustained-hot for `windowTicks` splits (permanent effective-count bump, capped), re-hashing a hot key range across more partitions so it escapes a single partition's physical max toward the table total; a lone key can't spread |
-| 3 | Per-partition burst refinement | Planned | each partition banks its own unused capacity; a per-partition spike is absorbed before throttling; table-level-only configs unchanged |
-| 4 | Hot-key demo + legacy reconcile | Planned | bespoke concentrated-key scenario; per-partition throttle + adaptive relief reconcile vs the legacy `HotPartitionModel`/`AdaptiveCapacityModel` (documented divergences) |
+| 3 | Per-partition burst refinement | **Dropped** | subsumed by the corrected instant-adaptive model (per-partition ceiling already = physical max); table-level burst (phase 8) already covers table-total spikes — see below |
+| 4a | Hot-key demo | **Done** | bespoke standalone concentrated-key scenario + `@main`; three arms (hot adaptive-on / hot adaptive-off / well-distributed control) showing per-partition throttle, adaptive relief, split-for-heat growth; `HotKeySpec` (5) |
+| 4b | Hot-key hybrid reconcile | **Done** | control arm tight vs the table-level-only path (transitive to the phase-6/8 legacy reconcile); hot arm directional (on ≪ off, count grows) + documented analytical comparison to the legacy lagged model; `HotKeyReconciliationSpec` (3) |
+| 4c | Docs | **Done** | `aws-component-catalog` hot-partition/adaptive/split entries + burst-dropped + scope; `README.hot-key`; CLAUDE.md workflow entry |
 
 ## Slices
 
@@ -138,20 +140,75 @@ calls `HeatSplit.step` (provisioned + policy). `HeatSplitSpec` (9 tests) proves 
 existing scenario byte-identical (`heatSplitPolicy = None`, no real behavior emits partition access). *(Threading
 into `TableSpec` + the hot-key demo + a topology-change metric is Slice 4.)*
 
-### Slice 3 — Per-partition burst refinement
-Refine the phase-8 burst bank so each partition carries its own `[0, per-partition-ceiling × burstWindowTicks]`
-bank; a per-partition spike is absorbed from that partition's bank before it throttles.
+### Slice 3 — Per-partition burst refinement — **DROPPED**
+Originally: refine the phase-8 (table-level) burst bank so each partition banks its own unused capacity and a
+per-partition spike is absorbed before it throttles.
 
-**Validated by:** unit tests — a partition banks and spends its own unused capacity; a table-level-only config
-(no hot-partition model) is byte-identical to phase 8.
+**Why dropped.** Verified against the AWS burst/adaptive docs. Per AWS, burst capacity is banked unused
+capacity that lets a partition briefly exceed its *allocation*, but **never the per-partition physical max
+(3000 RCU / 1000 WCU)**; the doc's own example shows a hot partition first spending burst, then having its
+ceiling raised by adaptive capacity. This slice was scoped in phase 8 under the *old, lagged* adaptive
+assumption (a partition sat at its fair-share ceiling until adaptive reacted minutes later, and per-partition
+burst filled that gap). Our corrected Slice 2 makes adaptive **instant and always-on**, so the per-partition
+ceiling is *already* the physical max — the fair-share → physical-max gap that burst filled is closed
+instantly, and burst cannot raise a partition past the physical max. So at the per-partition level burst is
+**subsumed by instant adaptive**; table-total spikes remain covered by the **table-level** burst bank shipped
+in phase 8. Per-partition burst would bite only in the *adaptive-off* baseline (a teaching configuration, not
+real DynamoDB), which does not justify the machinery. The phase therefore models the complete, accurate
+picture with slices 1 / 2 / 2b + phase-8 table-level burst, proven by the Slice-4 demo.
 
-### Slice 4 — Hot-key demo + legacy reconcile
-A bespoke **hot-key** scenario (a workload concentrating access on a small key set) + a `@main` + an end-to-end
-reconcile against the legacy `HotPartitionModel` / `AdaptiveCapacityModel` on the same scenario. Document
-divergences (the phase-2/6 posture). Docs.
+### Slice 4 — Hot-key demo + hybrid reconcile + docs
+Split into three committed sub-slices (as Slice 2/2b were). A **bespoke standalone** hot-key demo (its own
+`Config`/`Behavior`/`Workload`/runner — *not* the `SingleTableScenario`/`TableSpec` harness, which is fat and
+adds nothing here), then a hybrid reconcile, then docs. The legacy is **unreferenceable** from this module and
+hashes differently (`MurmurHash3` vs `String.hashCode`), so the reconcile is internal + transitive + documented,
+not a live legacy run.
 
-**Validated by:** the hot-key scenario throttles on hot partitions and is relieved by adaptive capacity;
-reconciles with the legacy within tolerance / documented divergence; determinism.
+#### Slice 4a — Hot-key demo
+Package `stochastacy.aws.examples.hotkey`: `HotKeyConfig` (provisioned; a hot-key skew via `hotFraction`/
+`hotKeyCount`; `adaptiveCapacity` + `heatSplitPolicy` set directly on `DynamoDbTable.Config`), `HotKeyBehavior`
+(`partitionAccessFor` draws the skewed key token), `HotKeyWorkload` (Poisson arrivals), a **standalone**
+`HotKeyTrialRunner` (bespoke graph — folds the response plane to throttled/admitted counts and captures the final
+`ComponentResult[TableState]` for the effective partition count), `HotKeyMonteCarloRunner`, and `@main HotKeyDemo`
+running three arms (hot adaptive-on / hot adaptive-off / well-distributed control) with per-tick streaming JSONL.
+
+**Validated by:** `HotKeySpec` — the hot arm throttles while the table has aggregate spare; the well-distributed
+control throttles far less; adaptive-on admits more than adaptive-off; the effective partition count grows under
+sustained heat; determinism (a fixed seed reproduces the run).
+
+**Delivered.** Package `stochastacy.aws.examples.hotkey`: `HotKeyConfig` / `HotKeyBehavior` / `HotKeyWorkload`, a
+standalone `HotKeyTrialRunner` (bespoke Pekko graph combining two mat values — per-tick response counts + final
+`TableState`), `HotKeyMonteCarloRunner` (across-trial means + per-tick JSONL), `@main HotKeyDemo` (three arms).
+`HotKeySpec` (5 tests). A representative run (20 trials × 100 ticks, single hot key): adaptive-on **29.5 %** vs
+adaptive-off **41.3 %** throttle rate (**28.6 % relief**), well-distributed **0 %**, effective partition count
+**5 → 20** (split-for-heat; a lone key is the AWS single-item limit — grows without further relief). Two fixes
+surfaced: the adaptive-off arm must clear `heatSplitPolicy` (the Config `require`), and the default is a single
+concentrated hot key (a spread-out default throttled nothing).
+
+#### Slice 4b — Hot-key hybrid reconcile
+`HotKeyReconciliationSpec`: the **control arm** reconciles *tight* against the same config with
+`partitionAccessFor = None` (the table-level-only path — transitively the phase-6/8 legacy reconcile), proving the
+per-partition machinery doesn't perturb a well-distributed workload; the **hot arm** asserts the expected
+*direction* (adaptive-on throttles strictly fewer than adaptive-off; the effective count grows) with the legacy
+lagged-adaptive comparison **documented** (it lands between v2-off and v2-on; legacy configures the partition
+count v2 derives).
+
+**Delivered.** `HotKeyConfig` gained `partitionAccessEnabled: Boolean = true` (honored by `HotKeyBehavior` →
+`None` when off, the table-level-only path). `HotKeyReconciliationSpec` (3 tests): the control arm (distributed,
+table-saturating) reconciles access-on vs access-off within ~2 %; the hot arm asserts adaptive-on throttled <
+adaptive-off and effective count > base; a documented header records the divergences (instant-vs-lagged adaptive,
+derived-vs-configured topology, split as topology growth). **aws 269 green**; existing scenarios byte-identical.
+
+#### Slice 4c — Docs
+`specs/aws-component-catalog.md` entries (per-partition throttle, instant adaptive, split-for-heat, incl. the
+LSI-granularity boundary); `specs/README.hot-key.md`; a CLAUDE.md "Demo workflows" entry.
+
+**Delivered.** Catalog: rewrote the "Hot-partition throttling" paragraph for instant adaptive (physical-max
+ceiling; `adaptiveCapacity` toggle), added a "Split-for-heat" paragraph (permanent count growth, single-item
+limit, LSI sort-key boundary documented-not-gated), corrected the burst paragraph's stale "deferred" note to
+**dropped**, updated Scope + Exercised-by + Quick-reference. New `specs/README.hot-key.md` (three arms, the
+representative run, the mechanisms, the single-key nuance, the hybrid reconcile, running it). CLAUDE.md gained a
+hot-key "Demo workflows" entry. Docs-only — no code, aws still 269 green.
 
 ## Scope boundary
 
