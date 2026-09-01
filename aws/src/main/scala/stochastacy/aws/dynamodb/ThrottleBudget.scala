@@ -36,9 +36,10 @@ final case class ThrottleBudget(
   def add(readDemand: Map[String, BigDecimal], writeDemand: Map[String, BigDecimal]): ThrottleBudget =
     copy(read = bump(read, readDemand), write = bump(write, writeDemand))
 
-  /** Would admitting this request's base-target demand push its physical partition past its fair-share
-   *  ceiling (`capacity / partitionCount`)? An additional constraint over [[overBudget]]: a partition can
-   *  throttle while the table has aggregate spare. */
+  /** Would admitting this request's base-target demand push its physical partition past its per-partition
+   *  ceiling — the fair share (`capacity / partitionCount`), or the physical max under adaptive capacity —
+   *  supplied by the caller? An additional constraint over [[overBudget]]: a partition can throttle while
+   *  the table has aggregate spare. */
   def partitionOverBudget(partitionId: Int, readDemand: BigDecimal, writeDemand: BigDecimal, readCeiling: BigDecimal, writeCeiling: BigDecimal): Boolean =
     readPartition.getOrElse(partitionId, BigDecimal(0)) + readDemand > readCeiling ||
       writePartition.getOrElse(partitionId, BigDecimal(0)) + writeDemand > writeCeiling

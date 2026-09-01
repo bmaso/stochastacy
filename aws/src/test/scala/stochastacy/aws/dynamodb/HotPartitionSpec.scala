@@ -9,13 +9,15 @@ import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
 import stochastacy.core.component.Emission
 import stochastacy.core.sampler.LogNormalSampler
 
-/** Hot-partition throttling (Slice 1): provisioned capacity is split across derived physical partitions, so
- *  load concentrated on one partition throttles at its fair-share ceiling while the table has aggregate spare;
- *  a well-distributed workload does not, and a behavior with no partition access is byte-identical. */
+/** Hot-partition throttling (Slice 1) + instant adaptive capacity (Slice 2): provisioned capacity is split
+ *  across derived physical partitions, so load concentrated on one partition throttles below the table
+ *  capacity. With adaptive capacity on (the DynamoDB default) that partition's ceiling is the physical max
+ *  (1000 WCU here); with adaptive off it is the fair share (800). A well-distributed workload admits more,
+ *  and a behavior with no partition access is byte-identical (table ceiling only). */
 class HotPartitionSpec extends AnyWordSpec with should.Matchers:
 
-  // Provisioned(read 1000, write 4000) → derive: ceil(1000/3000 + 4000/1000) = 5 partitions; per-partition
-  // write ceiling = 4000/5 = 800 WCU. Table ceiling = 4000 WCU.
+  // Provisioned(read 1000, write 4000) → derive: ceil(1000/3000 + 4000/1000) = 5 partitions. Per-partition
+  // fair-share write ceiling = 4000/5 = 800 WCU; physical-max write ceiling = 1000 WCU. Table ceiling = 4000.
   private val billing = BillingMode.Provisioned(readCapacityUnits = 1000, writeCapacityUnits = 4000)
 
   private def putBehavior(access: (DynamoDbRequest, UniformRandomProvider) => Option[String]) = new TableBehavior:
@@ -28,9 +30,13 @@ class HotPartitionSpec extends AnyWordSpec with should.Matchers:
   private val latency = LogNormalSampler.constant(math.log(0.01), 0.0)
   private val rng: UniformRandomProvider = RandomSource.KISS.create(1L)
 
-  private def sampler(access: (DynamoDbRequest, UniformRandomProvider) => Option[String]): DynamoDbTable.DynamoDbTableSampler =
+  private def sampler(
+    access:           (DynamoDbRequest, UniformRandomProvider) => Option[String],
+    adaptiveCapacity: Boolean = true
+  ): DynamoDbTable.DynamoDbTableSampler =
     new DynamoDbTable.DynamoDbTableSampler(DynamoDbTable.Config(
-      initialState = TableSummaryState.empty, behavior = putBehavior(access), latency = latency, billingMode = billing
+      initialState = TableSummaryState.empty, behavior = putBehavior(access), latency = latency,
+      billingMode = billing, adaptiveCapacity = adaptiveCapacity
     ))
 
   /** Admit 1 KB (1 WCU) writes until one throttles; return how many were admitted. */
@@ -47,14 +53,21 @@ class HotPartitionSpec extends AnyWordSpec with should.Matchers:
 
   "A provisioned table with hot-partition access" should {
 
-    "throttle a concentrated key at its partition's fair-share ceiling, below the table capacity" in {
-      // every write routes to one partition → throttles at 800 (4000/5), not the table's 4000
-      admitsUntilThrottle(sampler((_, _) => Some("hot"))) shouldBe 800
+    "relieve a concentrated key to the per-partition physical max under adaptive capacity (below the table)" in {
+      // adaptive on (default): every write routes to one partition, throttling at the physical max 1000 —
+      // instant adaptive lets it borrow idle table capacity up to the physical limit, still below the 4000 table.
+      admitsUntilThrottle(sampler((_, _) => Some("hot"))) shouldBe 1000
+    }
+
+    "throttle a concentrated key at its fair share with adaptive capacity disabled (the baseline)" in {
+      // adaptive off: the without-adaptive behavior — throttles at the fair share 800 (4000/5), the Slice-1 result.
+      admitsUntilThrottle(sampler((_, _) => Some("hot"), adaptiveCapacity = false)) shouldBe 800
     }
 
     "admit far more of a well-distributed workload (load spread across partitions)" in {
-      // a distinct key per request spreads across the 5 partitions → no single partition hits 800 quickly
-      admitsUntilThrottle(sampler((_, r) => Some(r.nextLong().toString))) should be > 800
+      // a distinct key per request spreads across the 5 partitions → no single partition hits the physical max
+      // quickly; the table ceiling (4000) binds instead, so far more than the concentrated 1000 is admitted.
+      admitsUntilThrottle(sampler((_, r) => Some(r.nextLong().toString))) should be > 1000
     }
 
     "be byte-identical with no partition access — throttle only at the table ceiling" in {

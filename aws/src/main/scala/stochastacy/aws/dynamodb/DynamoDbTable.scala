@@ -37,7 +37,10 @@ object DynamoDbTable:
     reconfigurationSchedule: ReconfigurationSchedule     = ReconfigurationSchedule.empty,
     ttlPeriodTicks:         Option[Int]                  = None, // item TTL, in ticks (None = TTL off)
     burstWindowTicks:       Int                          = 0, // ticks-of-ceiling of burst capacity to bank (0 = off)
-    autoScalingPolicy:      Option[AutoScalingPolicy]    = None // reactive auto-scaling (None = off)
+    autoScalingPolicy:      Option[AutoScalingPolicy]    = None, // reactive auto-scaling (None = off)
+    adaptiveCapacity:       Boolean                      = true // instant, always-on adaptive capacity (the DynamoDB
+                                                                // default): a hot partition's ceiling is the physical
+                                                                // max. false → the fair-share (without-adaptive) baseline
   ):
     require(burstWindowTicks >= 0, s"burstWindowTicks must be non-negative, got $burstWindowTicks")
     // Auto-scaling drives capacity reactively, so it is mutually exclusive with a static reconfiguration
@@ -121,13 +124,19 @@ object DynamoDbTable:
       val writeDemand    = demandBy(allConsumption) { case WriteCapacityConsumed(u, t)   => (ThrottleBudget.budgetKey(t), u) }
 
       // Hot partition: attribute the base-target demand to a physical partition (derived topology) and check
-      // it against the partition's fair-share ceiling. Absent partition access (the default), no per-partition
-      // throttling applies. Provisioned only.
+      // it against the partition's ceiling. With adaptive capacity on (the DynamoDB default), that ceiling is
+      // the per-partition physical max — a hot partition instantly borrows idle table capacity up to the
+      // physical limit (the "bounded by table total" half is already enforced by `overBudget`). With adaptive
+      // off it is the fair share (`capacity / partitionCount`), the without-adaptive baseline. Absent partition
+      // access (the default), no per-partition throttling applies. Provisioned only.
       val hotPartition: Option[(Int, BigDecimal, BigDecimal)] = state.billingMode match
         case p: BillingMode.Provisioned =>
           config.behavior.partitionAccessFor(in, rng).map { key =>
             val count = PartitionTopology.derive(p.readCapacityUnits, p.writeCapacityUnits, state.base.totalItemBytes)
-            (PartitionTopology.partitionOf(key, count), BigDecimal(p.readCapacityUnits) / count, BigDecimal(p.writeCapacityUnits) / count)
+            val (rCeiling, wCeiling) =
+              if config.adaptiveCapacity then (BigDecimal(PartitionTopology.RcuPerPartition), BigDecimal(PartitionTopology.WcuPerPartition))
+              else                            (BigDecimal(p.readCapacityUnits) / count, BigDecimal(p.writeCapacityUnits) / count)
+            (PartitionTopology.partitionOf(key, count), rCeiling, wCeiling)
           }
         case _ => None
       val baseRead  = readDemand.getOrElse(ThrottleBudget.BaseKey, BigDecimal(0))
