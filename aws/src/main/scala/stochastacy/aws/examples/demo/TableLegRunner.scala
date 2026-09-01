@@ -63,7 +63,8 @@ object TableLegRunner:
           spec.rates,
           spec.billingMode,
           spec.globalSecondaryIndexes.map(_.indexName),
-          spec.reconfigurationSchedule
+          spec.reconfigurationSchedule,
+          spec.pointInTimeRecoveryEnabled
         )
       ) { (state, element) => state.update(element); state }
 

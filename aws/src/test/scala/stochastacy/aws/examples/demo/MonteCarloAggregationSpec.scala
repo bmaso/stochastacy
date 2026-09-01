@@ -36,6 +36,19 @@ class MonteCarloAggregationSpec extends AnyWordSpec with should.Matchers:
       agg.map(_.metric).distinct    should contain theSameElementsAs MonteCarloAggregation.summaryMetrics(Vector.empty).map(_._1)
       agg.map(_.statistic).distinct should contain theSameElementsAs Seq(AggregateStatistic.Mean, AggregateStatistic.StdDev)
     }
+
+    "surface TotalPitrCost only when the ensemble incurred PITR cost" in {
+      def pitrTrial(id: Int, pitr: BigDecimal): TrialResult =
+        TrialResult(id, Vector.empty, TrialSummary(0, 0, BigInt(0), 0L, totalEstimatedCost = pitr, totalPitrCost = pitr))
+
+      MonteCarloAggregation.hasPitr(Vector(pitrTrial(0, 5), pitrTrial(1, 7))) shouldBe true
+      MonteCarloAggregation.hasPitr(Vector(pitrTrial(0, 0), pitrTrial(1, 0))) shouldBe false
+
+      // with PITR present the metric is surfaced (mean of 5 and 7 = 6); without, it is absent
+      val withPitr = MonteCarloAggregation.summaryMetrics(Vector.empty, pitr = true)
+      withPitr.map(_._1)                                           should contain("TotalPitrCost")
+      MonteCarloAggregation.summaryMetrics(Vector.empty).map(_._1) should not contain "TotalPitrCost"
+    }
   }
 
   "MonteCarloAggregation — per-GSI breakout" should {

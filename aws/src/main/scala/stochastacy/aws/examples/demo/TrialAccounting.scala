@@ -33,9 +33,10 @@ object TrialAccounting:
     rates:               Rates,
     billingMode:         BillingMode             = BillingMode.OnDemand,
     gsiNames:            Seq[String]             = Nil,
-    schedule:            ReconfigurationSchedule = ReconfigurationSchedule.empty
+    schedule:            ReconfigurationSchedule = ReconfigurationSchedule.empty,
+    pitrEnabled:         Boolean                 = false
   ): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
-    val state = new TrialAccountingState(initialStorageBytes, rates, billingMode, gsiNames, schedule)
+    val state = new TrialAccountingState(initialStorageBytes, rates, billingMode, gsiNames, schedule, pitrEnabled)
     consumption.foreach(state.update)
     state.result()
 
@@ -50,7 +51,8 @@ final class TrialAccountingState(
   rates:               Rates,
   billingMode:         BillingMode             = BillingMode.OnDemand,
   gsiNames:            Seq[String]             = Nil,
-  schedule:            ReconfigurationSchedule = ReconfigurationSchedule.empty
+  schedule:            ReconfigurationSchedule = ReconfigurationSchedule.empty,
+  pitrEnabled:         Boolean                 = false
 ):
   // Reserved capacity per tick under provisioned billing (base + every GSI); `None` under on-demand — for
   // the mode in force at `tick` (a mid-run reconfiguration switches which mode a tick is billed by).
@@ -115,7 +117,8 @@ final class TrialAccountingState(
         storageBytes            = currentBytes,
         cumulativeEstimatedCost = Pricing.consumptionCost(cumOnDemandRcu, cumOnDemandWcu, rates)
                                     + Pricing.provisionedCost(cumProvRcuTicks, cumProvWcuTicks, rates)
-                                    + Pricing.storageCost(cumByteTicks, rates),
+                                    + Pricing.storageCost(cumByteTicks, rates)
+                                    + (if pitrEnabled then Pricing.pitrCost(cumByteTicks, rates) else BigDecimal(0)),
         gsiReadCapacityUnits    = bucketGsiRcu.toMap,
         gsiWriteCapacityUnits   = bucketGsiWcu.toMap
       )
@@ -152,6 +155,7 @@ final class TrialAccountingState(
             bucketProvisioned = Some((BigInt(r), BigInt(w)))
 
   def result(): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
+    val pitr = if pitrEnabled then Pricing.pitrCost(byteTicks, rates) else BigDecimal(0)
     val summary = TrialSummary(
       totalReadCapacityUnits     = totalRcu,
       totalWriteCapacityUnits    = totalWcu,
@@ -159,11 +163,13 @@ final class TrialAccountingState(
       finalStorageBytes          = currentBytes,
       totalEstimatedCost         = Pricing.consumptionCost(onDemandRcu, onDemandWcu, rates)
                                      + Pricing.provisionedCost(provRcuTicks, provWcuTicks, rates)
-                                     + Pricing.storageCost(byteTicks, rates),
+                                     + Pricing.storageCost(byteTicks, rates)
+                                     + pitr,
       gsiTotalReadCapacityUnits  = gsiRcuTotal.toMap,
       gsiTotalWriteCapacityUnits = gsiWcuTotal.toMap,
       totalProvisionedReadCapacityUnitTicks  = provRcuTicks,
       totalProvisionedWriteCapacityUnitTicks = provWcuTicks,
-      totalThrottledRequests                 = throttledReqs
+      totalThrottledRequests                 = throttledReqs,
+      totalPitrCost                          = pitr
     )
     (summary, points.result())

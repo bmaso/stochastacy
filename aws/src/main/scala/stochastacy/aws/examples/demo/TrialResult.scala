@@ -28,7 +28,9 @@ final case class TrialSummary(
   totalProvisionedReadCapacityUnitTicks:  BigInt = 0,
   totalProvisionedWriteCapacityUnitTicks: BigInt = 0,
   // Requests throttled because their demand would exceed the per-tick provisioned capacity (0 on-demand).
-  totalThrottledRequests: Long = 0
+  totalThrottledRequests: Long = 0,
+  // Point-In-Time Recovery continuous-backup cost, folded into totalEstimatedCost (0 when PITR is off).
+  totalPitrCost: BigDecimal = 0
 )
 
 /** The result of one Order-Tracking trial: the per-tick series and the summary totals. */

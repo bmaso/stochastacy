@@ -43,7 +43,7 @@ phase-8 growth-driven demo. Full run: 100 trials × 1440 ticks.
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | PITR mechanism | Planned | continuous-backup cost = storage byte-ticks × PITR rate when enabled; PITR-off byte-identical |
+| 1 | PITR mechanism | **Done** | continuous-backup cost = storage byte-ticks × PITR rate when enabled; `TotalPitrCost` surfaced only when on; PITR-off byte-identical |
 | 2 | Commands: transactions in the thermostat domain | Planned | a thermostat commands table bills the 2× transaction premium (dispatch + audit); determinism |
 | 3 | 4-table capstone scenario + demo | Planned | `ThermostatCapstoneConfig` (multi-table) + `@main` + per-table metrics + smoke test |
 | 4 | Legacy reconcile + phase close-out | Planned | per-table reconcile vs `ThermostatFleetCapstoneConfig`; Telemetry + Commands within tolerance / documented divergence; phase COMPLETE |
@@ -59,6 +59,16 @@ consumed. `false` = off = byte-identical.
 
 **Validated by:** unit tests — PITR cost = byte-ticks × rate; a table with PITR off is byte-identical; the cost
 surfaces only when enabled.
+
+**Delivered.** `Rates.pitrStoragePricePerGiBSecond` (= $0.20/GiB-month, the legacy rate) + `Pricing.pitrCost`.
+`TrialSummary.totalPitrCost`; `TrialAccountingState` gained a `pitrEnabled` flag and folds
+`byteTicks × PITR rate` into `totalEstimatedCost` (summary + the per-tick cumulative series). Config threaded on
+the **accounting path only** (not `DynamoDbTable.Config` — PITR is no table mechanic): `SingleTableScenario`
+(`pointInTimeRecoveryEnabled` + `usesPitr`) → `TableSpec` → `TableLegRunner`. Surfacing mirrors provisioned:
+`pitrSummaryMetrics` + `hasPitr(trials)` (batch) / `scenario.usesPitr` (streaming) / `JsonlExport` flag → the
+`TotalPitrCost` metric appears only when enabled (PITR-off byte-identical). Tests: `TrialAccountingSpec` (+2:
+cost folded / off-identical, priced at the per-GiB-second rate), `MonteCarloAggregationSpec` (+1: surfaced only
+when incurred). Full `sbt test` green: **core 512 / aws 227 / examples 244**; every prior spec byte-identical.
 
 ### Slice 2 — Commands: transactions in the thermostat domain
 Model the Commands table's workload: a device-command **dispatch + audit** written as a 2-item

@@ -61,6 +61,13 @@ trait SingleTableScenario:
    *  utilization. Mutually exclusive with a reconfiguration schedule. */
   def autoScalingPolicy: Option[AutoScalingPolicy] = None
 
+  /** Point-In-Time Recovery (false = off): bills continuous-backup storage on the table's size. A cost
+   *  dimension only — no effect on requests, consumption, or throttling. */
+  def pointInTimeRecoveryEnabled: Boolean = false
+
+  /** Whether PITR cost is worth reporting for this scenario (so PITR-off output is unchanged). */
+  def usesPitr: Boolean = pointInTimeRecoveryEnabled
+
   /** True if the table is (or becomes) provisioned — so provisioned-capacity and throttle metrics are worth
    *  reporting. A purely on-demand scenario reports none of them (its output stays unchanged). */
   def usesProvisioning: Boolean =
@@ -83,5 +90,6 @@ trait SingleTableScenario:
     arrivals                      = arrivals,
     ttlPeriodTicks                = ttlPeriodTicks,
     burstWindowTicks              = burstWindowTicks,
-    autoScalingPolicy             = autoScalingPolicy
+    autoScalingPolicy             = autoScalingPolicy,
+    pointInTimeRecoveryEnabled    = pointInTimeRecoveryEnabled
   )

@@ -30,13 +30,13 @@ object JsonlExport:
   /** The per-trial records (time series then summary) for ONE trial, given the ensemble's GSI column set.
    *  This is the streaming unit — the writer serializes a trial's records as it completes, never holding
    *  more than one trial's worth. */
-  def trialRecords(scenarioId: String, trial: TrialResult, gsiNames: Vector[String], provisioned: Boolean = false): Vector[DemoRecord] =
+  def trialRecords(scenarioId: String, trial: TrialResult, gsiNames: Vector[String], provisioned: Boolean = false, pitr: Boolean = false): Vector[DemoRecord] =
     val ts = trial.timeSeries.flatMap { point =>
       MonteCarloAggregation.timeSeriesMetrics(gsiNames).map { (name, extract) =>
         DemoRecord.TrialTimeSeries(scenarioId, trial.trialId, point.tick, name, extract(point))
       }
     }
-    val summary = MonteCarloAggregation.summaryMetrics(gsiNames, provisioned).map { (name, extract) =>
+    val summary = MonteCarloAggregation.summaryMetrics(gsiNames, provisioned, pitr).map { (name, extract) =>
       DemoRecord.TrialSummary(scenarioId, trial.trialId, name, extract(trial.summary))
     }
     ts ++ summary
@@ -89,7 +89,8 @@ object JsonlExport:
   def records(result: MonteCarloResult): Vector[DemoRecord] =
     val gsiNames    = MonteCarloAggregation.gsiNames(result.trials)
     val provisioned = MonteCarloAggregation.hasProvisioning(result.trials)
-    result.trials.flatMap(trialRecords(result.scenarioId, _, gsiNames, provisioned)) ++
+    val pitr        = MonteCarloAggregation.hasPitr(result.trials)
+    result.trials.flatMap(trialRecords(result.scenarioId, _, gsiNames, provisioned, pitr)) ++
       aggregateRecords(result.scenarioId, result.trialCount, result.aggregateTimeSeries, result.aggregateSummary)
 
   def render(result: MonteCarloResult): String =
