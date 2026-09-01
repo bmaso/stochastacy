@@ -44,7 +44,7 @@ phase-8 growth-driven demo. Full run: 100 trials × 1440 ticks.
 | # | slice | status | proof (target) |
 |---|---|---|---|
 | 1 | PITR mechanism | **Done** | continuous-backup cost = storage byte-ticks × PITR rate when enabled; `TotalPitrCost` surfaced only when on; PITR-off byte-identical |
-| 2 | Commands: transactions in the thermostat domain | Planned | a thermostat commands table bills the 2× transaction premium (dispatch + audit); determinism |
+| 2 | Commands: transactions in the thermostat domain | **Done** | a thermostat commands table bills the 2× premium on base+LSI (GSI 1×) vs equivalent singles; determinism |
 | 3 | 4-table capstone scenario + demo | Planned | `ThermostatCapstoneConfig` (multi-table) + `@main` + per-table metrics + smoke test |
 | 4 | Legacy reconcile + phase close-out | Planned | per-table reconcile vs `ThermostatFleetCapstoneConfig`; Telemetry + Commands within tolerance / documented divergence; phase COMPLETE |
 
@@ -78,6 +78,20 @@ existing telemetry-style put/query/scan behavior with per-table config — no ne
 
 **Validated by:** unit/end-to-end tests — the commands table bills the ≈2× transaction premium over equivalent
 singles; determinism.
+
+**Delivered.** `ThermostatConfig` gained `transactWriteItemsPerItemBytes: Option[Vector[Long]]` (when set, the
+write flow is transactional) + `useTransactions: Boolean` (the singles baseline for the proof — defaults keep
+every existing preset unchanged). `ThermostatWorkload` branches the write flow: `None` → telemetry puts;
+`Some` + `useTransactions` → one `TransactWriteItemsRequest(perItemBytes)` per command; `Some` +
+`!useTransactions` → the same items as singles. `ThermostatFleetBehavior` resolves `TransactWriteItemsRequest`
+→ `TransactWrite` of **inserts** (status + audit, append-only, `previousItemBytes = None`), each sized from the
+configured bytes ± the telemetry variance (matching the legacy `transactWriteItems`); and — **DQ-sub-write-shape
+follow-on** — in commands mode a plain `PutItem` is also an insert, so the singles baseline shares the
+transactions footprint (otherwise the telemetry saturation model diverged the arms). The e2e proves the 2×
+lands on the **base+LSI** portion (`total − Σ GSI`) with **GSI maintenance equal** in both arms (transactions
+do not double async GSI back-fill — the phase-8 rule). Tests: `ThermostatFleetBehaviorSpec` +1,
+`ThermostatWorkloadSpec` +2, new `ThermostatCommandsSpec` +3. **aws 233 green**; every existing thermostat
+scenario byte-identical (`transactWriteItemsPerItemBytes` defaults `None`).
 
 ### Slice 3 — 4-table capstone scenario + demo
 Assemble **`ThermostatCapstoneConfig`** as a `MultiTableScenario` (phase-5 harness) with the four tables — each a

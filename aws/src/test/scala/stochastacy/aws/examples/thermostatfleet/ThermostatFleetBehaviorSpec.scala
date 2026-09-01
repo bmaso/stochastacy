@@ -97,3 +97,15 @@ class ThermostatFleetBehaviorSpec extends AnyWordSpec with should.Matchers:
       config.initialStorageBytesAllTargets            shouldBe 0L
     }
   }
+
+  "ThermostatFleetBehavior, on a command dispatch," should {
+    "resolve a TransactWriteItems into per-item inserts (status + audit), sized from the configured bytes" in {
+      // variance off → the sub-item bytes are exactly the configured Vector; both are inserts (append-only)
+      val b   = new ThermostatFleetBehavior(config.copy(telemetryItemBytesVariance = 0.0))
+      val rng = RandomSource.KISS.create(1L)
+      b.outcomeFor(TransactWriteItemsRequest(Vector(200L, 150L)), populated, rng, 0L) match
+        case OperationOutcome.TransactWrite(items) =>
+          items.map(i => (i.writtenItemBytes, i.previousItemBytes)) shouldBe Vector((200L, None), (150L, None))
+        case other => fail(s"expected a TransactWrite outcome, got $other")
+    }
+  }

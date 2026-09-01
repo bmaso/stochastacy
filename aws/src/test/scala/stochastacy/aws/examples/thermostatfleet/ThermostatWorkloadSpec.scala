@@ -4,7 +4,7 @@ import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
-import stochastacy.aws.dynamodb.{DynamoDbRequest, DynamoDbTarget, PutItemRequest, QueryRequest, ReadConsistency, ScanRequest}
+import stochastacy.aws.dynamodb.{DynamoDbRequest, DynamoDbTarget, PutItemRequest, QueryRequest, ReadConsistency, ScanRequest, TransactWriteItemsRequest}
 import stochastacy.core.component.Timed
 import stochastacy.sim.ticks
 
@@ -132,5 +132,19 @@ class ThermostatWorkloadSpec extends AnyWordSpec with should.Matchers:
     "be deterministic under a fixed seed with shaping on" in {
       val shaped = stableFleet.copy(morningSpikePeakMultiplier = 2.0, alertStormProbabilityPerTick = 0.01)
       run(shaped, seed = 15L) shouldBe run(shaped, seed = 15L)
+    }
+
+    "emit command dispatches as TransactWriteItems when transactWriteItemsPerItemBytes is set" in {
+      val cmd      = stableFleet.copy(simulationTicks = 20L, transactWriteItemsPerItemBytes = Some(Vector(200L, 150L)))
+      val arrivals = run(cmd, seed = 1L)
+      arrivals.exists { case Timed(_: TransactWriteItemsRequest, _, _, _) => true; case _ => false } shouldBe true
+      arrivals.exists { case Timed(_: PutItemRequest, _, _, _)            => true; case _ => false } shouldBe false // no plain puts
+    }
+
+    "emit the same items as individual puts when useTransactions is off" in {
+      val cmd      = stableFleet.copy(simulationTicks = 20L, transactWriteItemsPerItemBytes = Some(Vector(200L, 150L)), useTransactions = false)
+      val arrivals = run(cmd, seed = 1L)
+      arrivals.exists { case Timed(_: TransactWriteItemsRequest, _, _, _) => true; case _ => false } shouldBe false
+      arrivals.count  { case Timed(_: PutItemRequest, _, _, _)            => true; case _ => false } should be > 0 // singles baseline
     }
   }

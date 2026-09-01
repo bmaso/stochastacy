@@ -56,7 +56,9 @@ final case class ThermostatConfig(
   override val reconfigurationSchedule: ReconfigurationSchedule = ReconfigurationSchedule.empty,
   override val billingMode:         BillingMode                 = BillingMode.OnDemand,
   override val burstWindowTicks:    Int                         = 0,
-  override val autoScalingPolicy:   Option[AutoScalingPolicy]   = None
+  override val autoScalingPolicy:   Option[AutoScalingPolicy]   = None,
+  transactWriteItemsPerItemBytes:   Option[Vector[Long]]        = None,
+  useTransactions:                  Boolean                     = true
 ) extends SingleTableScenario:
   require(scenarioId.nonEmpty,                          "scenarioId must be non-empty")
   require(simulationTicks >= 1L,                        "simulationTicks must be at least 1")
@@ -83,6 +85,8 @@ final case class ThermostatConfig(
   require(polarVortexTickRange._1 >= 0L && polarVortexTickRange._2 >= polarVortexTickRange._1,
                                                         "polarVortexTickRange must be a valid range (start >= 0, end >= start)")
   require(systemErrorRate >= 0.0 && systemErrorRate < 1.0, "systemErrorRate must be in [0, 1)")
+  require(transactWriteItemsPerItemBytes.forall(v => v.nonEmpty && v.forall(_ > 0L)),
+                                                        "transactWriteItemsPerItemBytes, when set, must be non-empty and positive")
   reconfigurationSchedule.validate(billingMode, simulationTicks) match
     case Left(message) => throw new IllegalArgumentException(message)
     case Right(_)      => ()
