@@ -46,7 +46,8 @@ phase-8 growth-driven demo. Full run: 100 trials × 1440 ticks.
 | 1 | PITR mechanism | **Done** | continuous-backup cost = storage byte-ticks × PITR rate when enabled; `TotalPitrCost` surfaced only when on; PITR-off byte-identical |
 | 2 | Commands: transactions in the thermostat domain | **Done** | a thermostat commands table bills the 2× premium on base+LSI (GSI 1×) vs equivalent singles; determinism |
 | 3 | 4-table capstone scenario + demo | **Done** | `ThermostatMultiTableConfig.capstoneDefault` (4 tables) + `@main` + per-table provisioned/PITR/GSI surfacing + smoke test |
-| 4 | Legacy reconcile + phase close-out | Planned | per-table reconcile vs `ThermostatFleetCapstoneConfig`; Telemetry + Commands within tolerance / documented divergence; phase COMPLETE |
+| 4 | Legacy reconcile | **Done** | per-table reconcile vs `ThermostatFleetCapstoneConfig`: RCU tight (~2%), Registry/Alerts ~8%, Commands/Telemetry documented divergences (v2 improvements) |
+| 4-coda | Phase close-out | Planned | roadmap COMPLETE header, CLAUDE.md, program roadmap, memory-complete, full `sbt test` |
 
 ## Slices
 
@@ -123,6 +124,20 @@ Then the phase close-out (roadmap COMPLETE, CLAUDE.md, program roadmap, memory, 
 
 **Validated by:** each table reconciles within tolerance or with a documented divergence; determinism; phase
 COMPLETE.
+
+**Delivered.** Both capstone configs parameterized by fleet size (`ThermostatMultiTableConfig.capstone(count)` /
+`ThermostatFleetCapstoneConfig.capstone(count)`; default reduced 50 k → **5 k** — the legacy figure was arbitrary,
+so the reconcile runs both sides at one CI-manageable size, no bridge flag needed). **A pre-existing legacy bug
+surfaced and was fixed (Brian-approved):** the legacy capstone `generate` threw because the windowed-rollup had no
+case for `TablePITRCumulativeCost` (`demo/rollup.scala`) — the capstone had never run end-to-end; a one-line
+additive rollup case (same rule as `TableCumulativeEstimatedCost`) unblocked it. Baseline captured from the legacy
+bridge (5 k / 30 / 1440) and pinned. New `ThermostatCapstoneReconciliationSpec`: **RCU reconciles tight (~2 %)** on
+all four tables; **Registry/Alerts within ~8 %** (WCU/storage/cost — v2 a few % lower: overwrite maintains an
+unchanged GSI entry as a no-op more often in a saturated fleet); **documented, bounded, directional divergences —
+all v2 improvements:** Commands WCU/cost ~+8 % (transaction **LSI 2×**, AWS-accurate), Telemetry storage ~−43 %
+(**TTL frees base+GSI+LSI**), Telemetry cost ~−72 % (**provisioned billing by reservation**, the mixed-mode
+pattern), Telemetry WCU ~+15 % (TTL keeps the fleet below saturation → more inserts). **Speed: v2 ~24 s vs legacy
+~165 s (≈7× faster).** Full `sbt test` green: **core 512 / examples 244 / aws 241**.
 
 ## Scope boundary
 

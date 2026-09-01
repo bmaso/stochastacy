@@ -12,9 +12,9 @@ object ThermostatFleetCapstoneConfig:
   val DeviceCommandsTableName  = "device-commands"
   val DeviceAlertsTableName    = "device-alerts"
 
-  private val DefaultRegion = RegionFleetConfig(
+  private def defaultRegion(initialDeviceCount: Long) = RegionFleetConfig(
     regionName         = "us-east-1",
-    initialDeviceCount = 50_000L,
+    initialDeviceCount = initialDeviceCount,
     deviceGrowthPerTick = 0.0
   )
 
@@ -31,7 +31,11 @@ object ThermostatFleetCapstoneConfig:
     maxWriteCapacityUnits        = 5000L
   )
 
-  val capstoneDefault: MultiTableScenarioConfig = MultiTableScenarioConfig(
+  /** The 4-table capstone at a given fleet size (the region's device count is parameterized so the v2
+   *  reconcile can run both sides at a smaller, CI-manageable fleet). */
+  def capstone(initialDeviceCount: Long): MultiTableScenarioConfig =
+    val region = defaultRegion(initialDeviceCount)
+    MultiTableScenarioConfig(
     scenarioId      = ScenarioId,
     simulationTicks = 1440L,
     trialCount      = 100,
@@ -46,7 +50,7 @@ object ThermostatFleetCapstoneConfig:
           trialCount                       = 1,
           parallelism                      = 1,
           tableName                        = DeviceRegistryTableName,
-          regions                          = Vector(DefaultRegion),
+          regions                          = Vector(region),
           telemetryReportsPerDevicePerTick = 0.001,
           customerSupportQueryRatePerTick  = 3.0,
           fleetDashboardScanRatePerTick    = 0.2,
@@ -65,7 +69,7 @@ object ThermostatFleetCapstoneConfig:
           trialCount                       = 1,
           parallelism                      = 1,
           tableName                        = DeviceTelemetryTableName,
-          regions                          = Vector(DefaultRegion),
+          regions                          = Vector(region),
           telemetryReportsPerDevicePerTick = 0.033,
           customerSupportQueryRatePerTick  = 0.1,
           fleetDashboardScanRatePerTick    = 0.05,
@@ -93,7 +97,7 @@ object ThermostatFleetCapstoneConfig:
           trialCount                          = 1,
           parallelism                         = 1,
           tableName                           = DeviceCommandsTableName,
-          regions                             = Vector(DefaultRegion),
+          regions                             = Vector(region),
           telemetryReportsPerDevicePerTick    = 0.001,
           customerSupportQueryRatePerTick     = 5.0,
           fleetDashboardScanRatePerTick       = 0.0,
@@ -113,7 +117,7 @@ object ThermostatFleetCapstoneConfig:
           trialCount                       = 1,
           parallelism                      = 1,
           tableName                        = DeviceAlertsTableName,
-          regions                          = Vector(DefaultRegion),
+          regions                          = Vector(region),
           telemetryReportsPerDevicePerTick = 0.005,
           customerSupportQueryRatePerTick  = 0.5,
           fleetDashboardScanRatePerTick    = 0.1,
@@ -129,3 +133,7 @@ object ThermostatFleetCapstoneConfig:
       )
     )
   )
+
+  // 50 k was an arbitrary legacy figure; 5 k is CI-manageable and still exercises the provisioned/auto-scaling
+  // load. The v2 capstone uses the same default, so the reconcile runs both sides at one fleet size.
+  val capstoneDefault: MultiTableScenarioConfig = capstone(5_000L)
