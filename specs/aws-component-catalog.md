@@ -161,10 +161,16 @@ consistent per item. (This deliberately diverges from the legacy simulator, whic
 1×.) Each sub-write flows through the same storage, per-index maintenance, and TTL machinery as a single write.
 See the [payments-ledger demo](README.payments-transactions.md).
 
-**Scope.** On-demand or provisioned billing (with throttling + scheduled reconfiguration), item TTL,
-transactions, a single table with Query/Scan + GSIs/LSIs, and none of the remaining advanced models
-(auto-scaling, hot-partition, burst, adaptive, PITR, replication). Those belong to later phases. Transaction
-conditional-checks / partial-failure (`TransactionCanceledException`) are out of scope.
+**Point-In-Time Recovery** (a cost dimension, not a table mechanic). A `pointInTimeRecoveryEnabled` flag on the
+demo's `TableSpec` / scenario bills **continuous-backup storage** at a PITR GB-month rate on the table's stored
+byte-ticks (base + indexes — the same integral as storage), folded into the estimated cost and surfaced as
+`TotalPitrCost` only when enabled. It has no effect on requests, consumption, or throttling — so it lives in the
+accounting, not `DynamoDbTable`. `false` = off = byte-identical.
+
+**Scope.** On-demand or provisioned billing (with throttling, scheduled reconfiguration, **burst capacity**, and
+**reactive auto-scaling**), item TTL, transactions, **PITR** (backup cost), a single table with Query/Scan +
+GSIs/LSIs, and none of the remaining advanced models (hot-partition, adaptive, replication). Those belong to
+later phases. Transaction conditional-checks / partial-failure (`TransactionCanceledException`) are out of scope.
 
 **Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md) (single table, then Query/Scan + two
 All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a growing fleet with **mixed

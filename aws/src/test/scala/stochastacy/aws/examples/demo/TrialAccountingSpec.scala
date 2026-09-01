@@ -123,3 +123,23 @@ class TrialAccountingSpec extends AnyWordSpec with should.Matchers:
       )
     }
   }
+
+  "TrialAccounting.account with PITR" should {
+
+    "fold continuous-backup cost into the total, only when enabled" in {
+      val gib    = 1024L * 1024L * 1024L                 // 1 GiB pre-loaded, held across two closed windows
+      val stream = Vector(tick(1), tick(2), tick(3), eot) // N = 2
+      val (off, _) = TrialAccounting.account(stream, initialStorageBytes = gib, rates)
+      val (on, _)  = TrialAccounting.account(stream, initialStorageBytes = gib, rates, pitrEnabled = true)
+
+      off.totalPitrCost shouldBe BigDecimal(0)                                // off → no PITR cost, byte-identical
+      on.totalPitrCost  shouldBe Pricing.pitrCost(on.totalStorageByteTicks, rates)
+      on.totalPitrCost  should be > BigDecimal(0)
+      (on.totalEstimatedCost - off.totalEstimatedCost) shouldBe on.totalPitrCost // PITR is the only difference
+    }
+
+    "price PITR at the per-GiB-second rate" in {
+      // 1 GiB held for one tick-second → exactly the per-GiB-second rate
+      Pricing.pitrCost(BigInt(1024).pow(3), rates) shouldBe rates.pitrStoragePricePerGiBSecond
+    }
+  }

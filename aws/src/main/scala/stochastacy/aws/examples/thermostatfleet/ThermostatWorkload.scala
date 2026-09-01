@@ -4,7 +4,7 @@ import scala.collection.mutable
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.aws.dynamodb.{DynamoDbRequest, DynamoDbTarget, PutItemRequest, QueryRequest, ReadConsistency, ScanRequest}
+import stochastacy.aws.dynamodb.{DynamoDbRequest, DynamoDbTarget, PutItemRequest, QueryRequest, ReadConsistency, ScanRequest, TransactWriteItemsRequest}
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.{PoissonSampler, UniformSampler}
 import stochastacy.sim.SimTime
@@ -50,7 +50,18 @@ object ThermostatWorkload:
 
       val (telemetryCount, nextTelemetryState) = telemetryRate.sample(tick, rng, telemetryState)
       telemetryState = nextTelemetryState
-      emit(telemetryCount,                      () => PutItemRequest(bytesFrom(telemetryBytes, tick)))
+      // The write flow: plain telemetry puts, or — when transactWriteItemsPerItemBytes is set — device-command
+      // dispatches, each as one atomic TransactWriteItems, or (for the 2× baseline) the same items as singles.
+      config.transactWriteItemsPerItemBytes match
+        case None =>
+          emit(telemetryCount, () => PutItemRequest(bytesFrom(telemetryBytes, tick)))
+        case Some(perItemBytes) if config.useTransactions =>
+          emit(telemetryCount, () => TransactWriteItemsRequest(perItemBytes))
+        case Some(perItemBytes) =>
+          var c = 0
+          while c < telemetryCount do
+            perItemBytes.foreach(b => perTick += ((rng.nextDouble(), PutItemRequest(b))))
+            c += 1
       emit(queryRate.sample(tick, rng, ())._1,  () => QueryRequest(customerDevices, ReadConsistency.EventuallyConsistent))
       emit(scanRate.sample(tick, rng, ())._1,   () => ScanRequest(fleetAlerts, ReadConsistency.EventuallyConsistent))
 

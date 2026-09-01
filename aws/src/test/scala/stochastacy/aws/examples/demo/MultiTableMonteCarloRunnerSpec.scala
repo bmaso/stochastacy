@@ -45,7 +45,7 @@ class MultiTableMonteCarloRunnerSpec extends AnyWordSpec with should.Matchers wi
       multiRes.perTable.find(_.tableName == "device-registry").map(_.aggregateSummary) shouldBe Some(single.aggregateSummary)
     }
 
-    "write Table:<name>: records for every table — base metrics only, no per-GSI or overall" in {
+    "write Table:<name>: records for every table, with each table's own per-GSI breakout" in {
       val out    = Files.createTempFile("mt-", ".jsonl")
       val report = Await.result(runner.runToFile(scenario, masterSeed = 2L, out), 90.seconds)
       val lines  = Files.readAllLines(out).asScala.toVector
@@ -54,8 +54,9 @@ class MultiTableMonteCarloRunnerSpec extends AnyWordSpec with should.Matchers wi
       lines.exists(_.contains("\"metric\":\"Table:device-registry:TotalWriteCapacityUnits\""))  shouldBe true
       lines.exists(_.contains("\"metric\":\"Table:device-telemetry:TotalWriteCapacityUnits\"")) shouldBe true
       lines.count(_.contains("\"recordType\":\"aggregate-summary\"")) should be > 0
-      // base metrics only: no per-GSI-within-table, and no un-prefixed / overall metric records
-      lines.exists(_.contains("Table:device-telemetry:GSI:"))         shouldBe false
+      // per-table metrics now include each table's own GSI breakout (device-telemetry is indexed); records
+      // stay Table:-prefixed, so there is still no un-prefixed / overall metric record
+      lines.exists(_.contains("Table:device-telemetry:GSI:"))            shouldBe true
       lines.exists(_.contains("\"metric\":\"TotalWriteCapacityUnits\"")) shouldBe false
       Files.deleteIfExists(out)
     }

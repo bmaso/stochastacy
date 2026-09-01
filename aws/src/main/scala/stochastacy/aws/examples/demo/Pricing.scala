@@ -4,11 +4,12 @@ package stochastacy.aws.examples.demo
  *  priced per capacity-**hour** (a standing reservation, consumption-independent). Storage is priced per
  *  GiB-second, with one tick treated as one second. */
 final case class Rates(
-  rcuPrice:                  BigDecimal,
-  wcuPrice:                  BigDecimal,
-  storagePricePerGiBSecond:  BigDecimal,
-  provisionedRcuHourlyPrice: BigDecimal = BigDecimal("0.00013"),
-  provisionedWcuHourlyPrice: BigDecimal = BigDecimal("0.00065")
+  rcuPrice:                     BigDecimal,
+  wcuPrice:                     BigDecimal,
+  storagePricePerGiBSecond:     BigDecimal,
+  provisionedRcuHourlyPrice:    BigDecimal = BigDecimal("0.00013"),
+  provisionedWcuHourlyPrice:    BigDecimal = BigDecimal("0.00065"),
+  pitrStoragePricePerGiBSecond: BigDecimal = BigDecimal("0.20") / (BigDecimal(3600) * BigDecimal(24) * BigDecimal(30))
 )
 
 object Pricing:
@@ -21,14 +22,20 @@ object Pricing:
   val phase1Default: Rates = Rates(
     rcuPrice                  = BigDecimal("0.00000025"),
     wcuPrice                  = BigDecimal("0.00000125"),
-    storagePricePerGiBSecond  = BigDecimal("0.25") / SecondsPer30DayMonth,
-    provisionedRcuHourlyPrice = BigDecimal("0.00013"),
-    provisionedWcuHourlyPrice = BigDecimal("0.00065")
+    storagePricePerGiBSecond     = BigDecimal("0.25") / SecondsPer30DayMonth,
+    provisionedRcuHourlyPrice    = BigDecimal("0.00013"),
+    provisionedWcuHourlyPrice    = BigDecimal("0.00065"),
+    pitrStoragePricePerGiBSecond = BigDecimal("0.20") / SecondsPer30DayMonth
   )
 
   /** Stored GiB-seconds (byte-ticks / 1024³) at the storage rate — billed the same under either mode. */
   def storageCost(storageByteTicks: BigInt, rates: Rates): BigDecimal =
     BigDecimal(storageByteTicks) * rates.storagePricePerGiBSecond / BytesPerGiB
+
+  /** Point-In-Time Recovery continuous-backup cost: the table's stored GiB-seconds (base + indexes, the same
+   *  byte-ticks as storage) at the PITR rate. */
+  def pitrCost(storageByteTicks: BigInt, rates: Rates): BigDecimal =
+    BigDecimal(storageByteTicks) * rates.pitrStoragePricePerGiBSecond / BytesPerGiB
 
   /** On-demand consumption cost: consumed capacity units at their unit prices. */
   def consumptionCost(rcu: BigDecimal, wcu: BigDecimal, rates: Rates): BigDecimal =

@@ -108,14 +108,23 @@ by priority.
   per-tick `ProvisionedCapacitySnapshot` (the `TickEmission`'s second use); proven by the
   `thermostat-fleet-autoscaling` demo (~57 k fewer throttles than a fixed reservation, at higher cost). Roadmap:
   `v2-phase8.md`.
-- **v2/phase9 — Thermostat-fleet capstone (single-region).** Assemble the full **4-table fleet** — Registry
-  (on-demand + GSIs), Telemetry (provisioned + burst + auto-scaling + TTL), Commands (transactions), Alerts
-  (spike) — under a **time-varying "polar-vortex" workload** (tick-varying rates are already expressible with
-  the core samplers — config, not engine). The **integration proof**, and where the deferred TTL /
-  auto-scaling reconciles land: the Telemetry table is the single legacy reconcile target
-  (`ThermostatFleetCapstoneConfig`, single-region), now **faithful** because burst + auto-scaling absorb the
-  spikes a bare per-tick ceiling would have over-throttled. Everything else composes already-reconciled
-  features, so the phase is mostly assembly + the Registry / Commands / Alerts behaviors and workloads.
+- **v2/phase9 — Thermostat-fleet capstone (single-region) — DONE.** Assemble the full **4-table fleet** — Registry
+  (on-demand + GSIs), Telemetry (provisioned + burst + auto-scaling + TTL + **PITR**), Commands (transactions),
+  Alerts (spike) — under a **time-varying "polar-vortex" workload** (5× writes on 40 % of a **fixed** 50 k-device
+  fleet, ticks 600–700; tick-varying rates are config, not engine — so auto-scaling here is **vortex-/storm-driven,
+  not growth-driven**). Opens with one **new mechanism**: **PITR** (Point-In-Time Recovery) — the legacy telemetry
+  table enables it, and it bills continuous-backup storage that v2 does not yet model; a contained storage-cost
+  dimension (byte-ticks × PITR rate), the last of the missing legacy features. The **integration proof**, and
+  where the **two** deferred phase-7 reconciles land: **Telemetry** (TTL + auto-scaling + burst + PITR) *and*
+  **Commands** (transactions — its first legacy comparison; the payments demo was bespoke) are the new reconcile
+  targets against `ThermostatFleetCapstoneConfig`; Registry and Alerts compose already-reconciled features. The
+  auto-scaling trajectory match (v2's pure `onTick` port vs. the legacy actor) is the phase's key reconcile risk.
+  Telemetry sets `burstWindowTicks = 300` to match the legacy's always-on provisioned burst. **Delivered:** PITR
+  as a continuous-backup cost dimension; a transactional command path in the thermostat domain; the 4-table
+  `capstoneDefault` with per-table provisioned/PITR/GSI surfacing; and the per-table reconcile — **RCU tight ~2 %**,
+  on-demand tables ~8 %, with documented bounded v2 improvements (transaction LSI 2×, TTL freeing base+GSI+LSI,
+  provisioned billing by reservation). v2 ran ~7× faster than the legacy; both capstone defaults were reduced
+  50 k → 5 k, and a latent legacy rollup bug (unregistered PITR metric) was fixed. Roadmap: `v2-phase9.md`.
 - **v2/phase10 — Hot-partition throttling + adaptive capacity.** The **spatial** capacity dimension — how a
   table's provisioned capacity distributes across partitions — a coupled pair orthogonal to phase-8's temporal
   auto-scaler. **Hot-partition throttling**: capacity is split across partitions, so load concentrated on one

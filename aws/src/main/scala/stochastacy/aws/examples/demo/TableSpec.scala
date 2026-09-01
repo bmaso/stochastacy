@@ -28,9 +28,21 @@ final case class TableSpec(
   billingMode:                   BillingMode,
   reconfigurationSchedule:       ReconfigurationSchedule,
   arrivals:                      UniformRandomProvider => Vector[Timed[DynamoDbRequest]],
-  ttlPeriodTicks:                Option[Int]                = None, // item TTL in ticks (None = off)
-  burstWindowTicks:              Int                        = 0,    // burst-capacity window in ticks (0 = off)
-  autoScalingPolicy:             Option[AutoScalingPolicy]  = None  // reactive auto-scaling (None = off)
+  ttlPeriodTicks:                Option[Int]                = None,  // item TTL in ticks (None = off)
+  burstWindowTicks:              Int                        = 0,     // burst-capacity window in ticks (0 = off)
+  autoScalingPolicy:             Option[AutoScalingPolicy]  = None,  // reactive auto-scaling (None = off)
+  pointInTimeRecoveryEnabled:    Boolean                    = false  // PITR continuous-backup cost (false = off)
 ):
   require(tableName.nonEmpty,               "tableName must be non-empty")
   require(systemErrorRate >= 0.0 && systemErrorRate < 1.0, "systemErrorRate must be in [0, 1)")
+
+  /** This table's GSI names — for the per-GSI metric breakout. */
+  def gsiNames: Vector[String] = globalSecondaryIndexes.map(_.indexName)
+
+  /** Whether this table uses provisioned billing (so its capacity-tick / throttle metrics are worth
+   *  reporting) — fixed, scheduled, or auto-scaled. */
+  def usesProvisioning: Boolean =
+    billingMode != BillingMode.OnDemand || autoScalingPolicy.isDefined || reconfigurationSchedule.entries.nonEmpty
+
+  /** Whether this table incurs PITR cost (so its `TotalPitrCost` metric is worth reporting). */
+  def usesPitr: Boolean = pointInTimeRecoveryEnabled

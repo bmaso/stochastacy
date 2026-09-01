@@ -23,15 +23,20 @@ import stochastacy.core.run.MonteCarlo
 final class MultiTableMonteCarloRunner()(using ActorSystem, Materializer, ExecutionContext):
 
   private val trialRunner = new MultiTableTrialRunner()
-  private val tsMetrics   = MonteCarloAggregation.timeSeriesMetrics(Vector.empty) // base metrics only
-  private val sumMetrics  = MonteCarloAggregation.summaryMetrics(Vector.empty)
 
   /** The streaming core: run the ensemble, fold each trial's per-table results into per-table aggregators
-   *  via `onTrial`, and return the per-table aggregates. No trials are retained here. */
+   *  via `onTrial`, and return the per-table aggregates. No trials are retained here. Each table's metric
+   *  set is derived from its own spec (per-GSI breakout + provisioned + PITR), so a provisioned/PITR table
+   *  reports its full metrics alongside on-demand siblings. */
   private def runStreaming(scenario: MultiTableScenario, masterSeed: Long)(
     onTrial: MultiTableTrialResult => Unit
   ): Future[Vector[TableAggregate]] =
-    val aggregators = scenario.tables.map(spec => spec.tableName -> new IncrementalAggregator(tsMetrics, sumMetrics))
+    val aggregators = scenario.tables.map { spec =>
+      spec.tableName -> new IncrementalAggregator(
+        MonteCarloAggregation.timeSeriesMetrics(spec.gsiNames),
+        MonteCarloAggregation.summaryMetrics(spec.gsiNames, spec.usesProvisioning, spec.usesPitr)
+      )
+    }
     val aggByName   = aggregators.toMap
     MonteCarlo
       .stream(scenario.trialCount, masterSeed, scenario.parallelism)(seed => trialRunner.runTrial(scenario, trialId = 0, seed))
@@ -53,9 +58,13 @@ final class MultiTableMonteCarloRunner()(using ActorSystem, Materializer, Execut
   /** Run the ensemble, streaming each table's per-trial records to `output` as trials complete, then
    *  appending the per-table aggregate records. Returns the per-table aggregates plus the record count. */
   def runToFile(scenario: MultiTableScenario, masterSeed: Long, output: Path): Future[MultiTableRunReport] =
-    val writer = JsonlWriter.open(output)
+    val writer     = JsonlWriter.open(output)
+    val specByName = scenario.tables.map(s => s.tableName -> s).toMap
     runStreaming(scenario, masterSeed) { trial =>
-      trial.perTable.foreach { (name, tr) => writer.writeAll(JsonlExport.tableTrialRecords(scenario.scenarioId, name, tr)) }
+      trial.perTable.foreach { (name, tr) =>
+        val spec = specByName(name)
+        writer.writeAll(JsonlExport.tableTrialRecords(scenario.scenarioId, name, tr, spec.gsiNames, spec.usesProvisioning, spec.usesPitr))
+      }
     }.map { perTable =>
       perTable.foreach { ta =>
         writer.writeAll(JsonlExport.tableAggregateRecords(scenario.scenarioId, ta.tableName, scenario.trialCount, ta.aggregateTimeSeries, ta.aggregateSummary))

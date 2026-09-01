@@ -35,7 +35,7 @@ final class SingleTableMonteCarloRunner()(using ActorSystem, Materializer, Execu
     val gsiNames = scenario.globalSecondaryIndexes.map(_.indexName)
     val agg = new IncrementalAggregator(
       MonteCarloAggregation.timeSeriesMetrics(gsiNames),
-      MonteCarloAggregation.summaryMetrics(gsiNames, scenario.usesProvisioning)
+      MonteCarloAggregation.summaryMetrics(gsiNames, scenario.usesProvisioning, scenario.usesPitr)
     )
     MonteCarlo
       .stream(scenario.trialCount, masterSeed, scenario.parallelism)(seed => trialRunner.runTrial(scenario, trialId = 0, seed))
@@ -66,7 +66,7 @@ final class SingleTableMonteCarloRunner()(using ActorSystem, Materializer, Execu
     val gsiNames = scenario.globalSecondaryIndexes.map(_.indexName)
     val writer   = JsonlWriter.open(output)
     runStreaming(scenario, masterSeed) { trial =>
-      writer.writeAll(JsonlExport.trialRecords(scenario.scenarioId, trial, gsiNames, scenario.usesProvisioning))
+      writer.writeAll(JsonlExport.trialRecords(scenario.scenarioId, trial, gsiNames, scenario.usesProvisioning, scenario.usesPitr))
     }.map { agg =>
       val aggregateTimeSeries = agg.timeSeries
       val aggregateSummary    = agg.summary

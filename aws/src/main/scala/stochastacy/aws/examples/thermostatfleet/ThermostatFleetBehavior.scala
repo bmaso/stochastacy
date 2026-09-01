@@ -25,13 +25,25 @@ final class ThermostatFleetBehavior(config: ThermostatConfig) extends TableBehav
   def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider, tick: Long): OperationOutcome =
     request match
       case PutItemRequest(itemBytes) =>
-        OperationOutcome.Put(writtenItemBytes = itemBytes, previousItemBytes = telemetryPrevious(state, rng, tick))
+        // In commands mode (transactional writes configured) a put is an append (like a transaction sub-item),
+        // so the useTransactions=false baseline matches the transactions footprint; otherwise telemetry's
+        // insert-or-overwrite saturation applies.
+        val previous = if config.transactWriteItemsPerItemBytes.isDefined then None else telemetryPrevious(state, rng, tick)
+        OperationOutcome.Put(writtenItemBytes = itemBytes, previousItemBytes = previous)
       case q: QueryRequest =>
         OperationOutcome.Query(q.target, q.consistency, queryShape(state, rng))
       case s: ScanRequest =>
         OperationOutcome.Scan(s.target, s.consistency, scanShape(state, rng))
+      case TransactWriteItemsRequest(perItemBytes) =>
+        // A device-command dispatch: each sub-item (status update + audit entry) is a new record (insert),
+        // its size drawn from the configured bytes ± the telemetry byte variance (matching the legacy).
+        OperationOutcome.TransactWrite(perItemBytes.map { b =>
+          val v     = config.telemetryItemBytesVariance
+          val scale = 1.0 - v + rng.nextDouble() * 2.0 * v
+          TableMechanics.TransactWriteItem(writtenItemBytes = math.max(1L, (b * scale).toLong), previousItemBytes = None)
+        })
       case other =>
-        throw new IllegalArgumentException(s"the thermostat single-region workload uses put/query/scan, not $other")
+        throw new IllegalArgumentException(s"the thermostat workload uses put/query/scan/transact-write, not $other")
 
   /** Insert (None) vs. overwrite (Some(previous)) by fleet saturation. */
   private def telemetryPrevious(state: TableSummaryState, rng: UniformRandomProvider, tick: Long): Option[Long] =
