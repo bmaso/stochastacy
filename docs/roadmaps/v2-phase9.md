@@ -1,12 +1,25 @@
 # v2/phase9 — Thermostat-fleet capstone (single-region)
 
-**Status: PLANNED** — four slices (+ a close-out coda). The **integration proof** of the v2 AWS line: the full
+**Status: COMPLETE** — four slices + a close-out coda. The **integration proof** of the v2 AWS line: the full
 **4-table thermostat fleet** on one region, reconciled against the legacy `ThermostatFleetCapstoneConfig`. It
-opens with the last **missing legacy feature** (PITR), then assembles the fleet and lands the **two** reconciles
+opened with the last **missing legacy feature** (PITR), then assembled the fleet and landed the **two** reconciles
 phase 7 deferred here (TTL and transactions), plus the phase-8 auto-scaling/burst reconcile.
 
 Follows `v2/phase8` (burst + auto-scaling). Single-region; multi-region is phase 11. This is where the phase-6/7/8
 deferred reconciles converge on one scenario.
+
+## Outcome
+
+The single-region v2 AWS line reaches **feature parity with the legacy** and is proven by the 4-table capstone.
+Phase 9 added **PITR** (continuous-backup cost — the last missing feature), a **transactional command** path in
+the thermostat domain, the **`capstoneDefault` 4-table scenario** (Registry / Telemetry provisioned+burst+
+auto-scaling+TTL+PITR+vortex / Commands transactions / Alerts) with per-table provisioned/PITR/GSI metric
+surfacing, and the **legacy reconcile**. The read path reconciles tight (~2%) across all four tables and the
+on-demand tables within ~8%; the write/storage/cost gaps are **documented, bounded v2 improvements** — the
+AWS-accurate transaction LSI-2×, TTL freeing base+GSI+LSI storage, and provisioned billing by reservation. The
+capstone runs **~7× faster than the legacy** (~24 s vs ~165 s at the 5 k-device reconcile scale). A latent legacy
+bug (an unregistered PITR rollup metric that left the capstone `generate` unrunnable) was fixed with a one-line
+additive rollup case. **core 512 / examples 244 / aws 241 green.**
 
 ## Goal
 
@@ -47,7 +60,7 @@ phase-8 growth-driven demo. Full run: 100 trials × 1440 ticks.
 | 2 | Commands: transactions in the thermostat domain | **Done** | a thermostat commands table bills the 2× premium on base+LSI (GSI 1×) vs equivalent singles; determinism |
 | 3 | 4-table capstone scenario + demo | **Done** | `ThermostatMultiTableConfig.capstoneDefault` (4 tables) + `@main` + per-table provisioned/PITR/GSI surfacing + smoke test |
 | 4 | Legacy reconcile | **Done** | per-table reconcile vs `ThermostatFleetCapstoneConfig`: RCU tight (~2%), Registry/Alerts ~8%, Commands/Telemetry documented divergences (v2 improvements) |
-| 4-coda | Phase close-out | Planned | roadmap COMPLETE header, CLAUDE.md, program roadmap, memory-complete, full `sbt test` |
+| 4-coda | Phase close-out | **Done** | roadmap COMPLETE header + Outcome, CLAUDE.md, program roadmap, memory-complete, full `sbt test` green |
 
 ## Slices
 
