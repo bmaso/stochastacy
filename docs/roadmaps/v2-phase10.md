@@ -1,6 +1,7 @@
 # v2/phase10 — Hot-partition throttling + adaptive capacity
 
-**Status: IN PROGRESS** — slices 1 / 2 / 2b done, Slice 3 dropped, Slice 4 next (+ a close-out coda). The **spatial** capacity dimension: how a table's
+**Status: COMPLETE** (2026-09-01) — slices 1 / 2 / 2b / 4 delivered, Slice 3 dropped (subsumed by instant
+adaptive). The **spatial** capacity dimension: how a table's
 provisioned capacity distributes across physical partitions. A coupled pair — **hot-partition throttling** (the
 problem) and **adaptive capacity** (the mitigation) — orthogonal to phase-8's *temporal* auto-scaler. The last
 of the three missing legacy throughput features (after burst and auto-scaling).
@@ -8,6 +9,17 @@ of the three missing legacy throughput features (after burst and auto-scaling).
 Follows `v2/phase9` (the capstone). Single-region. No existing thermostat demo hot-partitions (device-keyed →
 well-distributed), so this phase brings its own **bespoke hot-key scenario** and reconciles against the legacy
 `HotPartitionModel` / `AdaptiveCapacityModel` there.
+
+**Outcome.** Delivered as a derived partition topology (`PartitionTopology.derive`) + per-partition throttle
+(Slice 1), **instant, always-on adaptive capacity** — the correction that reshaped the phase after verifying
+against the AWS docs: adaptive is not lagged, so the per-partition ceiling is the physical max, not a fair share
+(Slice 2) — and **split-for-heat** as permanent partition-count growth on sustained heat (Slice 2b), proven by a
+bespoke standalone **hot-key demo** with a hybrid reconcile (Slice 4). **Slice 3 (per-partition burst) was
+dropped**: instant adaptive subsumes it. A representative demo run shows **28.6 % adaptive relief** (29.5 % vs
+41.3 % throttle, on vs off) with the well-distributed control at 0 %. All knobs default off/inert, so every prior
+scenario stays byte-identical; **aws 269 green**, full `sbt test` green. The single-region v2 line now models the
+legacy's full throughput feature set (throttling / hot-partition / burst / adaptive / auto-scaling); **replication
+/ multi-region is the remaining gap (phase 11)**.
 
 ## Goal
 

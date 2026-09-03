@@ -125,22 +125,24 @@ by priority.
   on-demand tables ~8 %, with documented bounded v2 improvements (transaction LSI 2×, TTL freeing base+GSI+LSI,
   provisioned billing by reservation). v2 ran ~7× faster than the legacy; both capstone defaults were reduced
   50 k → 5 k, and a latent legacy rollup bug (unregistered PITR metric) was fixed. Roadmap: `v2-phase9.md`.
-- **v2/phase10 — Hot-partition throttling + adaptive capacity.** The **spatial** capacity dimension — how a
-  table's provisioned capacity distributes across partitions — a coupled pair orthogonal to phase-8's temporal
-  auto-scaler. **Hot-partition throttling**: capacity is split across `partitionCount` physical partitions
-  (~3000 RCU / 1000 WCU / 10 GB each), so load concentrated on one partition throttles even while the table has
-  aggregate spare. **Adaptive capacity**: the mitigation — DynamoDB isolates and boosts a hot partition,
-  relieving the throttle after a lag. **Modeling (decision A, confirmed).** Port the legacy mechanism: the
-  behavior emits a per-request **partition access** (a key token), which is **hashed to one of `partitionCount`
-  physical partitions**, and the `ThrottleBudget` gains a per-partition sub-dimension checked against the
-  per-partition ceiling — this is a **bounded** per-partition summary (`O(partitions × targets)`, **not**
-  per-key maps: keys are transient, only partition demand accumulates), so it stays cheap even at large fleet
-  sizes and reconciles directly with the legacy `HotPartitionModel` / `AdaptiveCapacityModel`. `partitionCount`
-  is **derived** from the table's capacity + storage (an evolving topology, matching the legacy's versioned
-  `PartitionTopologySnapshot`). This is also where phase-8's **table-level burst is refined to per-partition**.
-  No existing thermostat demo hot-partitions (device-keyed → well-distributed, confirmed for the capstone), so
-  it is validated by a **bespoke hot-key scenario** (concentrated key access) reconciled against the legacy on
-  the same scenario, plus unit tests — confirming this phase correctly follows the capstone (phase 9).
+- **v2/phase10 — Hot-partition throttling + adaptive capacity — DONE (2026-09-01).** The **spatial** capacity
+  dimension — how a table's provisioned capacity distributes across partitions — a coupled pair orthogonal to
+  phase-8's temporal auto-scaler. **Hot-partition throttling**: capacity is split across a **derived**
+  `partitionCount` (~3000 RCU / 1000 WCU / 10 GB each, `PartitionTopology.derive` from capacity + storage), so
+  load concentrated on one partition throttles even while the table has aggregate spare; a behavior emits a
+  per-request **partition access** key hashed to a partition, and the `ThrottleBudget` gains a **bounded**
+  per-partition sub-dimension (`O(partitions × targets)`, not per-key maps). **Instant adaptive capacity** — the
+  correction that reshaped the phase after verifying the AWS docs: adaptive is *instant and always-on*, not
+  lagged, so the per-partition ceiling is the **physical max** (an `adaptiveCapacity` toggle drops it to the
+  fair-share baseline for comparison), not a lagged boost. **Split-for-heat**: a `HeatSplitPolicy` grows the
+  effective partition count permanently under sustained heat (a lone key is the AWS single-item limit — grows
+  without relief). **Per-partition burst was dropped** (subsumed by instant adaptive). Validated by a **bespoke
+  standalone hot-key demo** (`stochastacy.aws.examples.hotkey`, `@main HotKeyDemo`, three arms: adaptive-on /
+  adaptive-off / well-distributed) + a **hybrid reconcile** (control arm tight to the table-level-only/legacy
+  path; hot arm directional + documented divergence from the legacy `HotPartitionModel` /`AdaptiveCapacityModel`,
+  which configures the partition count v2 derives and models the old lagged adaptive). Representative run: **28.6 %
+  adaptive relief**. aws 269 green; all knobs default off → prior scenarios byte-identical. **Single-region
+  throughput parity with the legacy reached; replication / multi-region (phase 11) is the remaining gap.**
 - **v2/phase11 — Multi-region / global tables.** Cross-region **replication** (global tables →
   `ReplicatedWriteCapacityConsumed`), cross-region **transfer** bytes/cost, per-region metrics. Proves the
   multi-region thermostat scenarios.
