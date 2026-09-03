@@ -123,8 +123,10 @@ capacity (`ceiling − admitted`) into `[0, ceiling × burstWindowTicks]`, and a
 `ceiling + banked` — so a short spike is absorbed by banked capacity before throttling, and a sustained
 over-ceiling load drains the bank and then throttles (`ThrottleBudget.rollForward`). The window is expressed
 in **ticks** (DynamoDB's ~300 s of burst is `300 / tick-seconds` ticks); the bank is **table-level** (per
-budget target: base+LSI, each GSI), a per-partition refinement deferred to hot-partition modeling. `0` = off
-(the budget resets exactly as before, on-demand tables unaffected).
+budget target: base+LSI, each GSI). A per-partition burst refinement was considered for hot-partition modeling
+and **dropped**: under instant, always-on adaptive capacity a partition's ceiling is already the physical max,
+so there is no fair-share→max gap for per-partition burst to fill (table-total spikes remain covered by this
+table-level bank). `0` = off (the budget resets exactly as before, on-demand tables unaffected).
 
 **Reactive auto-scaling** (provisioned only). An `AutoScalingPolicy` on the `Config` makes the table's
 **base** read/write capacity track a target utilization (default 0.70): `onTick` reads the just-completed
@@ -139,6 +141,34 @@ is chosen at runtime rather than from a static schedule, `onTick` emits the tick
 `ProvisionedCapacitySnapshot` (via tick-boundary emission), which the accounting integrates in place of the
 `billingModeAt` fold — so provisioned capacity-hour cost tracks the actual per-tick capacity. See the
 [auto-scaling telemetry demo](README.thermostat-v2.md#auto-scaling--burst-capacity-provisioned-throughput-dynamics).
+
+**Hot-partition throttling + instant adaptive capacity** (provisioned only). Provisioned capacity is split
+across physical partitions — their count **derived** from the table's capacity + storage (~3000 RCU / 1000 WCU
+/ 10 GiB per partition, `PartitionTopology.derive`). A behavior that opts in emits a per-request key
+(`partitionAccessFor`), hashed to a partition; the `ThrottleBudget` tracks base-target demand **per partition**
+and throttles a request whose partition would exceed its ceiling *even while the table has aggregate spare*. The
+per-partition ceiling depends on **adaptive capacity** — the `adaptiveCapacity` flag on the `Config`, default
+**on** (the DynamoDB reality). With adaptive **on**, the ceiling is the **per-partition physical max** (3000 RCU
+/ 1000 WCU): DynamoDB adaptive capacity is *instant and always-on*, so a hot partition instantly borrows idle
+table capacity up to the physical limit (the "bounded by the table total" half is already enforced by the
+table-level `ThrottleBudget.overBudget` check). With adaptive **off**, the ceiling is the **fair share**
+(`capacity / partitionCount`) — the without-adaptive baseline (real DynamoDB is always-on; this is the demo's
+comparison arm and models the legacy's *lagged* adaptive only in the limit). The state is bounded by the
+partition count, never the key space. Behaviors that emit no partition access (the default) keep the
+table-level-only throttle path, byte-identical.
+
+**Split-for-heat** (provisioned + adaptive). A `HeatSplitPolicy` on the `Config` models DynamoDB's automatic
+splitting of a *sustained-hot* partition: when a partition stays at/above the per-partition trigger (default the
+physical max) for `windowTicks` consecutive ticks, the table **permanently** grows its **effective partition
+count** by one (`HeatSplit.step` at `onTick`, capped at `maxPartitionCount`), so a hot key *range* re-hashes
+across more partitions and escapes a single partition's physical-max ceiling toward the table total. Splits are
+never merged back (matching DynamoDB). A **lone** super-hot key cannot spread — it still hashes to one partition
+— which is the **AWS single-item limit**: the count grows without further relief. The state is a small evolving
+topology (`HeatSplitState` in `TableState`), never per-key. Requires `adaptiveCapacity` (with the fair-share
+ceiling, growing the count only shrinks it); `None` = off, byte-identical. AWS's LSI limitation — no split
+*within an item collection* under an LSI — governs *sort-key*-granularity splits **below** this partition-key
+model, so it is documented, not gated. A faithful analogue of the legacy `maybeGrowTopology`, which the phase-10
+reconcile matches in *direction* (v2 derives the base count the legacy configures).
 
 **TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
 makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the
@@ -167,10 +197,11 @@ byte-ticks (base + indexes — the same integral as storage), folded into the es
 `TotalPitrCost` only when enabled. It has no effect on requests, consumption, or throttling — so it lives in the
 accounting, not `DynamoDbTable`. `false` = off = byte-identical.
 
-**Scope.** On-demand or provisioned billing (with throttling, scheduled reconfiguration, **burst capacity**, and
-**reactive auto-scaling**), item TTL, transactions, **PITR** (backup cost), a single table with Query/Scan +
-GSIs/LSIs, and none of the remaining advanced models (hot-partition, adaptive, replication). Those belong to
-later phases. Transaction conditional-checks / partial-failure (`TransactionCanceledException`) are out of scope.
+**Scope.** On-demand or provisioned billing (with throttling, scheduled reconfiguration, **burst capacity**,
+**reactive auto-scaling**, **hot-partition throttling + instant adaptive capacity**, and **split-for-heat**),
+item TTL, transactions, **PITR** (backup cost), a single table with Query/Scan + GSIs/LSIs, and none of the
+remaining advanced models (**replication / multi-region**). Those belong to later phases. Transaction
+conditional-checks / partial-failure (`TransactionCanceledException`) are out of scope.
 
 **Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md) (single table, then Query/Scan + two
 All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a growing fleet with **mixed
@@ -178,14 +209,18 @@ index projections** — KeysOnly / Include / All — an **inbound `ChaosGate`**,
 two thermostat tables, and a **mixed-mode** run exercising provisioned billing + throttling + scheduled
 reconfiguration); the [session-store demo](README.session-store-ttl.md) (item **TTL** — storage plateaus as
 creations balance expiries); the [payments-ledger demo](README.payments-transactions.md) (**transactions** —
-the ≈2× capacity premium vs. equivalent single operations); `aws/…/DynamoDbTableSpec.scala`
+the ≈2× capacity premium vs. equivalent single operations); the [hot-key demo](README.hot-key.md)
+(**hot-partition throttling**, **instant adaptive** relief, and **split-for-heat** topology growth — three
+arms contrasting adaptive-on / adaptive-off / well-distributed); `aws/…/DynamoDbTableSpec.scala`
 (timed response + execution-time consumption, state threading, GSI+LSI maintenance, read routing to a
 projected GSI, control-event preservation, determinism); `aws/…/DynamoDbTableTtlSpec.scala` and
 `aws/…/TtlRingBufferSpec.scala` (TTL expiry timing, base + per-index freeing, delete-vs-expire, TTL-off
 byte-identity); `aws/…/DynamoDbTableTransactionSpec.scala` (base/LSI 2× + GSI 1×, atomic all-or-nothing, TTL
 over sub-writes); the `OrderTrackingEquivalenceSpec.scala`,
 `OrderTrackingIndexedReconciliationSpec.scala`, and `ThermostatFleetReconciliationSpec.scala` (reconcile
-against the legacy demos).
+against the legacy demos); `aws/…/PartitionTopologySpec.scala`, `HotPartitionSpec.scala`, `HeatSplitSpec.scala`
+(derived topology, per-partition throttle, adaptive on/off ceilings, sustained-heat splitting), and
+`aws/…/hotkey/HotKeySpec.scala` + `HotKeyReconciliationSpec.scala` (the hot-key demo + its hybrid reconcile).
 
 ### Supporting types
 
@@ -255,6 +290,7 @@ the [core component catalog](component-catalog.md#foundations); they are not rep
 | check per-op RCU/WCU/storage without a graph | `TableMechanics.resolve` |
 | check an index's maintenance without a graph | `SecondaryIndexMechanics.maintain` |
 | choose how much of an item an index projects | `IndexProjection` (`All` / `KeysOnly` / `Include`) |
+| model a hot partition / adaptive capacity / split-for-heat | `TableBehavior.partitionAccessFor` + `Config.adaptiveCapacity` + `Config.heatSplitPolicy` |
 | add throttling to a table (later) | a core `Interface.wrap` gate on the table's edge |
 
 ## See also
