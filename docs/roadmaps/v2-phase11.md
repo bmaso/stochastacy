@@ -1,12 +1,19 @@
 # v2/phase11 — Multi-region / global tables
 
-**Status: PLANNED** — four slices (+ a close-out coda). The **last simulation feature** before legacy retirement
+**Status: PLANNED** — five slices (+ a close-out coda). The **last simulation feature** before legacy retirement
 (phase 12 = Grafana delivery + delete the legacy code). Cross-region **write replication** on the v2 core:
 replicated-write capacity (**rWCU**) billing + throttling, **cross-region transfer** bytes/cost, and **per-region
 + per-link** metrics — proven by a bespoke thermostat-flavored multi-region **hot-replica demo** and reconciled
 against the legacy `DynamoDbGlobalTable` multi-region demo.
 
 Follows `v2/phase10` (single-region throughput parity reached). Deliberately **meatier slices** than phases 9/10.
+
+**A first-class core change opens the phase.** Replication is a cyclic dataflow (region → coordinator → region),
+and the `ScheduleReleaseTransducer`'s tick barrier deadlocks any external feedback loop through a component. Rather
+than work around it in AWS code, phase 11 **generalizes the core** so a component can consume a *delayed copy of
+its own effects* — a **feedback/tap loopback** — the domain-agnostic shape for replication (and gossip, retry,
+anti-entropy…). This is a deliberate `stochastacy.core` change (Brian-approved), isolated and de-risked as Slice 1
+before any AWS work depends on it.
 
 ## Goal
 
@@ -18,10 +25,18 @@ behavior that makes `ReplicationLatency` and `PendingReplicationCount` the true 
 
 ## Design decisions (confirmed)
 
-- **D-replication-tap (no core change).** Replication is driven by **tapping each region's admitted-write stream**
-  with a `ReplicationCoordinator` stage that re-injects lagged replicated writes into the other regions' inlets;
-  the v2 `DynamoDbTable` is unchanged. (Rejected: a replicated-table variant with a dedicated replication-output
-  plane — a core/protocol change.)
+- **D-loopback-core (a deliberate core change — supersedes the original "no core change" plan).** The first
+  design ("tap admitted writes on the consumption plane, re-merge replicated writes into the table's inlet") was
+  found to **deadlock**: the `MergeTimedEventGraph` imposes a both-inputs *tick barrier*, and the tap sits
+  downstream of the re-merge, so the `Tick(T)` marker must round-trip the region→coordinator→region cycle within
+  tick `T` — which the barrier forbids. The legacy avoided this with a dedicated replicated-input **port on the
+  table** (tapping admitted writes *upstream* of its storage re-merge). Rather than reproduce that per-component in
+  AWS, phase 11 **generalizes the core**: the `ScheduleReleaseTransducer` gains a **feedback inlet + tap outlet**
+  (and `ComponentSampler` an `onFeedback` handler + a `Tap` emission channel), with the **tap tick-forwarded
+  eagerly** so a component can be wired into a delayed self-loop without deadlock. `Fb = Nothing` / `Tap = Nothing`
+  leaves every existing component unchanged. This makes replication a first-class core capability. (Rejected
+  alternatives: a bespoke AWS replicated-table stage — robust but not reusable across clouds; a fused
+  multi-region mega-stage — no cycle, but re-implements per-region timing at a reconcile-fidelity risk.)
 - **D-rwcu-billing.** A replicated write is **tagged** (a request wrapper / marker) so the destination bills
   `ReplicatedWriteCapacityConsumed` (rWCU), not WCU. rWCU is consumed **only by inbound replication** (local
   writes = WCU).
@@ -65,36 +80,67 @@ transfer); cross-region transfer per-link bytes + per-region/total bytes/cost; p
 
 | # | slice | status | proof (target) |
 |---|---|---|---|
-| 1 | Multi-region composition + replication + rWCU billing | Planned | a region-A write applies rWCU-billed in region B after link lag; per-source-stream queues; transfer bytes; `ReplicationLatency`/`PendingReplicationCount` in link-lag form; single-region byte-identical |
-| 2 | rWCU throttling + depletion backlog + metric coupling | Planned | `replicatedWriteCapacityUnits` ceiling + fair-share-per-source drain; under depletion the backlog grows, per-source latency/pending diverge, both drain on recovery; unlimited rWCU = Slice-1 behavior |
-| 3 | Hot-replica demo | Planned | bespoke thermostat-flavored 3-region demo + `@main`; two arms (reconcile / 8:1 depletion) with per-region + per-link metrics, JSONL + console; the per-link distinction |
-| 4 | Hybrid reconcile + docs + close-out | Planned | reconcile arm direct per-region pin vs legacy `multiRegionDefault`; catalog + README; close-out coda |
+| 1 | Core loopback transducer + de-risking prototype | **Done** | `ScheduleReleaseTransducer` gains a feedback inlet + tap outlet (eager tick-forward), `ComponentSampler` an `onFeedback` + `Tap` channel; a toy loopback proves "effect in A reappears in B one tick later, no deadlock"; `Nothing`/`Nothing` byte-identical (full `sbt test`) |
+| 2 | Multi-region composition + replication + rWCU billing | Planned | on the loopback: a region-A write applies rWCU-billed in region B after link lag; per-source-stream queues; transfer bytes; `ReplicationLatency`/`PendingReplicationCount` in link-lag form; single-region byte-identical |
+| 3 | rWCU throttling + depletion backlog + metric coupling | Planned | `replicatedWriteCapacityUnits` ceiling + fair-share-per-source drain; under depletion the backlog grows, per-source latency/pending diverge, both drain on recovery; unlimited rWCU = Slice-2 behavior |
+| 4 | Hot-replica demo | Planned | bespoke thermostat-flavored 3-region demo + `@main`; two arms (reconcile / 8:1 depletion) with per-region + per-link metrics, JSONL + console; the per-link distinction |
+| 5 | Hybrid reconcile + docs + close-out | Planned | reconcile arm direct per-region pin vs legacy `multiRegionDefault`; catalog + README; close-out coda |
 
 ## Slices
 
-### Slice 1 — Multi-region composition + replication + rWCU billing
-Compose N regional `DynamoDbTable`s into a Global Table; the `ReplicationCoordinator` taps each region's
-admitted-write plane, holds **per-source-stream queues**, and re-injects each write into the other regions after a
-per-link lag (`ReplicationModel`), tagged so the destination bills **rWCU** (`ReplicatedWriteCapacityConsumed`).
-Emits `CrossRegionTransferEvent` + `ReplicationLatency` + `PendingReplicationCount` per `(src→dst)` link — in their
-**link-lag form** (rWCU ungated: a cost dimension only, no ceiling). Per-region consumption/metric streams out.
+### Slice 1 — Core loopback transducer + de-risking prototype
+Generalize `stochastacy.core` so a component can consume a **delayed copy of its own effects** — a feedback/tap
+loopback — and prove it deadlock-free with a toy prototype **before any AWS code depends on it**. Pure core; no
+AWS or replication logic. `Emission` gains a `Scheduled[Tap]` channel; `ComponentSampler[S,In,Out,Cons]`
+generalizes with `Fb`/`Tap` type params + a defaulted `onFeedback(fb, state, rng)` (`Nothing`/`Nothing`/no-op =
+today's component); `ScheduleReleaseTransducer` grows to two inlets (`in`, `fbIn`) + three outlets (`fwd`, `cons`,
+`tap`), with `in` the sole tick clock and **`tap` forwarding `Tick(t)` eagerly** (the invariant that breaks the
+loop) and `fbIn` dispatched to `onFeedback`.
 
-**Validated by:** unit tests — a region-A write appears as an rWCU-billed write in region B after the sampled link
-lag; transfer bytes per link; per-source-stream queue depth = writes awaiting their lag; determinism; a single
-region (no peers) is byte-identical to a plain `DynamoDbTable`.
+**Validated by:** core unit tests — a toy loopback (toy sampler + trivial coordinator) proves an effect emitted in
+"A" reappears in "B" one tick later with no deadlock, deterministically, and ends cleanly at `EndOfTime`; residue
+semantics hold on all three outlets; a `Nothing`/`Nothing` component is **byte-identical** to the pre-change
+transducer. Gate on the **full `sbt test`** (a core/shared contract change).
 
-### Slice 2 — rWCU throttling + depletion backlog + metric coupling
+**Delivered.** Unified types (zero churn to existing samplers): `LoopbackEmission[S,Out,Cons,Tap]` with
+`Emission[S,Out,Cons] = LoopbackEmission[…,Nothing]` (a type alias + an `object Emission` with the familiar 3-arg
+`apply`/`unapply`, so every existing `Emission(a,b,c)` and the transducer's destructuring compile unchanged);
+`LoopbackComponentSampler[S,In,Fb,Out,Cons,Tap]` (base) with `ComponentSampler[S,In,Out,Cons]` its
+`Fb`/`Tap`-pinned-`Nothing` subtype; `onFeedback` reuses `TickEmission` (no separate feedback-emission type). New
+`LoopbackShape` (2 inlets `in`/`fbIn`, 3 outlets `fwd`/`cons`/`tap`) + `ScheduleReleaseTransducer.loopbackComponentOf`
++ a `LoopbackStage`: `in` is the sole tick clock, `tapOut` forwards `Tick(t)` **eagerly**, a window closes only once
+both `in` and `fbIn` reach `Tick(t)`. The existing plain `Stage`/`componentOf` is **untouched** (byte-identical;
+the ~40-line timing-logic overlap with the loopback stage is a noted future dedup). Proven by `LoopbackTransducerSpec`
+(the cyclic prototype terminates — no deadlock — feeds every effect back, deterministic). Full `sbt test` green.
+The option-1 AWS edits were reverted (parked in the scratchpad) so this slice is **core-only**; Slice 2 rebuilds the
+AWS side on `Tap`/`onFeedback`.
+
+### Slice 2 — Multi-region composition + replication + rWCU billing
+On the loopback core: the `DynamoDbTable` sampler emits a **`Tap`** (the write to replicate) per admitted local
+write and applies inbound replicated writes via **`onFeedback`**, billing **rWCU** (`ReplicatedWriteCapacityConsumed`,
+base + index); loop-prevention is structural (feedback emits no tap). The `ReplicationCoordinator` holds
+**per-source-stream queues** and re-injects each write into the other regions after a per-link lag
+(`ReplicationModel`, min 1 tick), emitting `CrossRegionTransferEvent` + `ReplicationLatency` +
+`PendingReplicationCount` per `(src→dst)` link in **link-lag form** (rWCU ungated: a cost dimension only). A
+`GlobalTable` composition wires N regional tables + the coordinator through the core loopback — no custom merges,
+no cycle deadlock.
+
+**Validated by:** unit tests — the coordinator in isolation; a region-A write applies rWCU-billed in region B after
+the sampled link lag; transfer bytes per link; per-source-stream queue depth; determinism; a single region (no
+peers) byte-identical to a plain `DynamoDbTable`.
+
+### Slice 3 — rWCU throttling + depletion backlog + metric coupling
 Add `BillingMode.Provisioned.replicatedWriteCapacityUnits` (per-region rWCU ceiling) and drain each destination's
 per-source-stream queues at that budget, **split fair-share per source stream**. A replicated write that can't be
 admitted stays queued and retries, so under depletion `PendingReplicationCount` grows and `ReplicationLatency` =
 link lag + backlog wait; both drain when rWCU is restored. The heavy source stream develops the deeper, slower
-queue (fair-share). Unlimited rWCU (on-demand / no ceiling) → exactly Slice-1 behavior.
+queue (fair-share). Unlimited rWCU (on-demand / no ceiling) → exactly Slice-2 behavior.
 
 **Validated by:** unit tests — under a ceiling below inbound, the backlog grows and per-source latency/pending
 **diverge** (heavy stream worse), then drain on recovery; fair-share split; the ceiling is never exceeded;
-unlimited-rWCU byte-identical to Slice 1.
+unlimited-rWCU byte-identical to Slice 2.
 
-### Slice 3 — Hot-replica demo
+### Slice 4 — Hot-replica demo
 `HotReplica{Config,Behavior,Workload}` + a standalone multi-region trial runner + `HotReplicaMonteCarloRunner` +
 `@main HotReplicaDemo`, running the two arms with per-region + per-link metrics, per-tick streaming JSONL, and a
 console summary.
@@ -103,7 +149,7 @@ console summary.
 ≈ 8× and latency > eu-west→ap-southeast, rising then draining); the reconcile arm stays healthy; determinism. Plus
 a demo smoke-run.
 
-### Slice 4 — Hybrid reconcile + docs + close-out
+### Slice 5 — Hybrid reconcile + docs + close-out
 `HotReplicaReconciliationSpec`: direct per-region pin of the reconcile arm against a captured legacy
 `multiRegionDefault` baseline (phase-4/5/9 style); the depletion coupling documented as a v2 improvement.
 `specs/aws-component-catalog.md` (multi-region / replication / rWCU / the two metrics) + `specs/README.hot-replica.md`
