@@ -49,7 +49,7 @@ class GlobalTableSpec extends AnyWordSpec with should.Matchers with BeforeAndAft
         TimedControlEvent.Tick(SimTime.of(3)),
         TimedControlEvent.EndOfTime
       )
-      val out = await(Source(in).via(ReplicationCoordinator.flow(Vector("A", "B"), model, rng)).runWith(Sink.seq))
+      val out = await(Source(in).via(ReplicationCoordinator.flow(Vector("A", "B"), model, Map.empty, rng)).runWith(Sink.seq))
       val biz = out.collect { case t: Timed[ReplicationOutput] @unchecked => t }
       biz.collect { case Timed(ReplicationOutput.ReplicatedWriteFor(d, w), et, _, _) => (d, w, et.ticks) } shouldBe
         List(("B", ReplicationWrite(PutItemRequest(200L)), 2L)) // lag 1 → applies at tick 2

@@ -82,7 +82,7 @@ transfer); cross-region transfer per-link bytes + per-region/total bytes/cost; p
 |---|---|---|---|
 | 1 | Core loopback transducer + de-risking prototype | **Done** | `ScheduleReleaseTransducer` gains a feedback inlet + tap outlet (eager tick-forward), `ComponentSampler` an `onFeedback` + `Tap` channel; a toy loopback proves "effect in A reappears in B one tick later, no deadlock"; `Nothing`/`Nothing` byte-identical (full `sbt test`) |
 | 2 | Multi-region composition + replication + rWCU billing | **Done** | on the loopback: a region-A write applies rWCU-billed in region B after link lag; per-source-stream queues; transfer bytes; `ReplicationLatency`/`PendingReplicationCount` (in-flight count, window-close sampled); single-region byte-identical |
-| 3 | rWCU throttling + depletion backlog + metric coupling | Planned | `replicatedWriteCapacityUnits` ceiling + fair-share-per-source drain; under depletion the backlog grows, per-source latency/pending diverge, both drain on recovery; unlimited rWCU = Slice-2 behavior |
+| 3 | rWCU throttling + depletion backlog + metric coupling | **Done** | `replicatedWriteCapacityUnits` ceiling + fair-share-per-source drain; under depletion the backlog grows, per-source latency/pending diverge, both drain on recovery; unlimited rWCU = Slice-2 behavior |
 | 4 | Hot-replica demo | Planned | bespoke thermostat-flavored 3-region demo + `@main`; two arms (reconcile / 8:1 depletion) with per-region + per-link metrics, JSONL + console; the per-link distinction |
 | 5 | Hybrid reconcile + docs + close-out | Planned | reconcile arm direct per-region pin vs legacy `multiRegionDefault`; catalog + README; close-out coda |
 
@@ -154,6 +154,22 @@ queue (fair-share). Unlimited rWCU (on-demand / no ceiling) → exactly Slice-2 
 **Validated by:** unit tests — under a ceiling below inbound, the backlog grows and per-source latency/pending
 **diverge** (heavy stream worse), then drain on recovery; fair-share split; the ceiling is never exceeded;
 unlimited-rWCU byte-identical to Slice 2.
+
+**Delivered.** `BillingMode.Provisioned` gains `replicatedWriteCapacityUnits: Option[Long] = None` — the per-region
+**inbound rWCU throttle ceiling** (`None` ⇒ unlimited; every existing provisioned table byte-identical). The ceiling
+is enforced entirely in `ReplicationCoordinator` (the table's `onFeedback` is untouched): `flow` takes a
+`Map[dest, Option[Long]]` (derived by `GlobalTable` from each region's billing mode), groups the source streams
+`byDest`, and drains each destination per tick — **no ceiling** ⇒ every eligible write releases (Slice-2 path);
+**a ceiling `b`** ⇒ a **work-conserving fair-share round-robin** admits one eligible head per source stream per pass
+(per-stream FIFO preserved) until the `b`-rWCU budget is spent or no head fits, so an unused share redistributes.
+The ceiling governs **base-table** rWCU only — `ThroughputMath.writeCapacityUnits(bytes)`, equal to the base rWCU the
+destination bills; **GSI rWCU rides outside it** (a replica's GSIs carry their own replicated capacity, as in AWS,
+per Brian's D6 call). `ReplicationLatency` is now the **measured** `releaseTick − enqueueTick` (link lag with no
+backlog; link lag + backlog wait under depletion) — Slice-2's constant sampled lag was replaced (equal when the link
+keeps up, so the unlimited path stays byte-identical). Under an 8:1 two-source overload the heavy stream builds the
+deeper, slower queue and its pending/latency diverge above the light stream's, both draining on recovery; the ceiling
+is never exceeded. Coordinator-driven `RwcuThrottlingSpec` (4 cases) + the Slice-2 specs unchanged (byte-identity
+guard). Full `sbt test` green (shared-contract change to `BillingMode`).
 
 ### Slice 4 — Hot-replica demo
 `HotReplica{Config,Behavior,Workload}` + a standalone multi-region trial runner + `HotReplicaMonteCarloRunner` +

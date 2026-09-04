@@ -31,8 +31,9 @@ final case class ReplicationModel(
 /** Bytes transferred across a region link by one replicated write — priced downstream per source region. */
 final case class CrossRegionTransferEvent(sourceRegion: String, destRegion: String, bytes: Long)
 
-/** The end-to-end replication latency of one applied replicated write, in ticks (link lag in this slice;
- *  link lag + rWCU-backlog wait once depletion is modelled). Reported per source→dest link. */
+/** The **measured** end-to-end replication latency of one applied replicated write, in ticks — its release
+ *  tick minus its enqueue tick (link lag when the link is keeping up; link lag + rWCU-backlog wait under
+ *  depletion). Reported per source→dest link. */
 final case class ReplicationLatencySample(sourceRegion: String, destRegion: String, latencyTicks: Long)
 
 /** The depth of a source→dest replication stream's pending queue at a tick boundary — the backlog indicator. */

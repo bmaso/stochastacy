@@ -69,7 +69,15 @@ object GlobalTable:
       })
       merged ~> coerce.in
 
-      val coord = b.add(ReplicationCoordinator.flow(regions, config.replicationModel, rng))
+      // Each region's inbound rWCU ceiling (a provisioned replica's throttle on cross-region replication into
+      // it); on-demand or unset ⇒ no ceiling ⇒ unlimited inbound replication.
+      val rwcuCeilings: Map[String, Option[Long]] = regions.map { r =>
+        r -> (config.regions(r).billingMode match
+          case p: BillingMode.Provisioned => p.replicatedWriteCapacityUnits
+          case BillingMode.OnDemand       => None)
+      }.toMap
+
+      val coord = b.add(ReplicationCoordinator.flow(regions, config.replicationModel, rwcuCeilings, rng))
       coerce.out ~> coord.in
 
       val bcast = b.add(Broadcast[TimedElement[Timed[ReplicationOutput]]](regions.size + 1))
