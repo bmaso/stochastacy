@@ -6,7 +6,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
 import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
-import stochastacy.core.component.Emission
+import stochastacy.core.component.LoopbackEmission
 import stochastacy.core.sampler.LogNormalSampler
 
 class ThrottlingSpec extends AnyWordSpec with should.Matchers:
@@ -34,7 +34,7 @@ class ThrottlingSpec extends AnyWordSpec with should.Matchers:
       val s = sampler(BillingMode.Provisioned(readCapacityUnits = 100, writeCapacityUnits = 3)) // 3 WCU/tick, 1 KB = 1 WCU
       var st = s.initialState
 
-      def put(): Emission[TableState, DynamoDbResponse, DynamoDbConsumption] =
+      def put(): LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] =
         val e = s.sample(PutItemRequest(1024L), st, rng); st = e.newState; e
 
       (1 to 3).foreach { _ =>

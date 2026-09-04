@@ -185,6 +185,7 @@ object ScheduleReleaseTransducer:
         private val tapQ  = mutable.PriorityQueue.empty[P[Tap]](ord)
         private var inTick: Option[Long] = None // a Tick held on `in`, awaiting fbIn to reach it
         private var fbTick: Option[Long] = None
+        private var fbDone: Boolean      = false // fbIn closed (no feedback, e.g. single-region) → fire on `in` alone
 
         private def stamp(inEventTime: SimTime, inIntraTick: Double, delay: Delay): (Long, Double) =
           val raw = inIntraTick + delay; val fl = math.floor(raw)
@@ -213,11 +214,12 @@ object ScheduleReleaseTransducer:
           if !hasBeenPulled(in)   && inTick.isEmpty && !isClosed(in)   then pull(in)
           if !hasBeenPulled(fbIn) && fbTick.isEmpty && !isClosed(fbIn) then pull(fbIn)
 
-        /** Close window `t-1` once both inlets have reached `Tick(t)`: run `onTick`, then release the fwd/cons
-         *  outputs of the just-closed window and pass `Tick(t)` on both planes. */
+        /** Close window `t-1` once both inlets have reached `Tick(t)` (or `fbIn` is closed — no feedback): run
+         *  `onTick`, then release the fwd/cons outputs of the just-closed window and pass `Tick(t)` on both
+         *  planes. */
         private def tryFire(): Unit =
-          (inTick, fbTick) match
-            case (Some(t), Some(t2)) if t == t2 =>
+          inTick match
+            case Some(t) if fbDone || fbTick.contains(t) =>
               val fwd = drain(fwdQ, t)
               val te  = sampler.onTick(t, state); state = te.newState
               te.consumption.foreach { c => val (ct, ci) = stamp(SimTime.of(t), 0.0, c.delay); consQ.enqueue(P(ct, ci, seq, Timed(c.event, SimTime.of(ct), ci, TickBoundaryUsecase))); seq += 1 }
@@ -255,7 +257,7 @@ object ScheduleReleaseTransducer:
               case t: TimedControlEvent.Tick   => fbTick = Some(t.eventTime.ticks); tryFire()
               case TimedControlEvent.EndOfTime => () // the primary inlet drives completion
               case other                       => runFeedback(other.asInstanceOf[Timed[Fb]]); pump()
-          override def onUpstreamFinish(): Unit = () // ignore: `in` drives completion
+          override def onUpstreamFinish(): Unit = { fbDone = true; tryFire() } // no feedback → unblock `in`'s window
         )
 
         setHandler(fwdOut,  new OutHandler { override def onPull(): Unit = pump() })

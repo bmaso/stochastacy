@@ -81,7 +81,7 @@ transfer); cross-region transfer per-link bytes + per-region/total bytes/cost; p
 | # | slice | status | proof (target) |
 |---|---|---|---|
 | 1 | Core loopback transducer + de-risking prototype | **Done** | `ScheduleReleaseTransducer` gains a feedback inlet + tap outlet (eager tick-forward), `ComponentSampler` an `onFeedback` + `Tap` channel; a toy loopback proves "effect in A reappears in B one tick later, no deadlock"; `Nothing`/`Nothing` byte-identical (full `sbt test`) |
-| 2 | Multi-region composition + replication + rWCU billing | Planned | on the loopback: a region-A write applies rWCU-billed in region B after link lag; per-source-stream queues; transfer bytes; `ReplicationLatency`/`PendingReplicationCount` in link-lag form; single-region byte-identical |
+| 2 | Multi-region composition + replication + rWCU billing | **Done** | on the loopback: a region-A write applies rWCU-billed in region B after link lag; per-source-stream queues; transfer bytes; `ReplicationLatency`/`PendingReplicationCount` (in-flight count, window-close sampled); single-region byte-identical |
 | 3 | rWCU throttling + depletion backlog + metric coupling | Planned | `replicatedWriteCapacityUnits` ceiling + fair-share-per-source drain; under depletion the backlog grows, per-source latency/pending diverge, both drain on recovery; unlimited rWCU = Slice-2 behavior |
 | 4 | Hot-replica demo | Planned | bespoke thermostat-flavored 3-region demo + `@main`; two arms (reconcile / 8:1 depletion) with per-region + per-link metrics, JSONL + console; the per-link distinction |
 | 5 | Hybrid reconcile + docs + close-out | Planned | reconcile arm direct per-region pin vs legacy `multiRegionDefault`; catalog + README; close-out coda |
@@ -128,6 +128,21 @@ no cycle deadlock.
 **Validated by:** unit tests — the coordinator in isolation; a region-A write applies rWCU-billed in region B after
 the sampled link lag; transfer bytes per link; per-source-stream queue depth; determinism; a single region (no
 peers) byte-identical to a plain `DynamoDbTable`.
+
+**Delivered.** `DynamoDbTable` is now a `LoopbackComponentSampler[TableState, DynamoDbRequest, ReplicationWrite,
+DynamoDbResponse, DynamoDbConsumption, ReplicationWrite]`: each admitted Put/Update/Delete emits one
+`ReplicationWrite` **tap** (`tapFor`); reads and throttled writes tap nothing; `onFeedback` re-applies an inbound
+write through the behavior/mechanics (base + index maintenance + TTL) and **relabels WCU→rWCU**
+(`ReplicatedWriteCapacityConsumed`, `asReplicated`), never re-tapping. `componentOf` ties `fbIn ← Source.empty`
+(the Slice-1 `fbDone` gate fires on `in` alone → single-region byte-identical); `replicatedComponentOf` exposes the
+full `LoopbackShape`. `ReplicationCoordinator.flow` holds one queue **per (src→dst) link**, releases a write at
+`enqueueTick + max(1, ⌊lag⌋)` (`ReplicationModel`), and emits `CrossRegionTransferEvent` + `ReplicationLatencySample`
+at release; **`PendingReplicationSample` is an in-flight count sampled at window close** — a write authored at tick
+`t` (its tap arrives *after* `Tick(t)`) and applied at `t+lag` is counted pending over `t … t+lag-1` (a start-of-tick
+sample would miss a 1-tick-lag write entirely). `GlobalTable.componentOf` wires N regional loopback tables through a
+`MergeTimedEventGraph` chain → coordinator → `Broadcast`, routing `ReplicatedWriteFor(r)` to region `r`'s `fbIn` and
+the rest out on `metricsOut` — a cyclic graph proven **deadlock-free** (the Slice-1 eager tap-tick forward). rWCU is
+ungated (cost only); throttle/backlog/coupling are Slice 3. Full `sbt test` green (Task 0 touched core).
 
 ### Slice 3 — rWCU throttling + depletion backlog + metric coupling
 Add `BillingMode.Provisioned.replicatedWriteCapacityUnits` (per-region rWCU ceiling) and drain each destination's
