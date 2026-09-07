@@ -1,10 +1,23 @@
 # v2/phase11 — Multi-region / global tables
 
-**Status: PLANNED** — five slices (+ a close-out coda). The **last simulation feature** before legacy retirement
-(phase 12 = Grafana delivery + delete the legacy code). Cross-region **write replication** on the v2 core:
-replicated-write capacity (**rWCU**) billing + throttling, **cross-region transfer** bytes/cost, and **per-region
-+ per-link** metrics — proven by a bespoke thermostat-flavored multi-region **hot-replica demo** and reconciled
-against the legacy `DynamoDbGlobalTable` multi-region demo.
+**Status: COMPLETE** (6 slices, 2026-09-07). The **last simulation feature** before legacy retirement (phase 12 =
+Grafana delivery + delete the legacy code). Cross-region **write replication** on the v2 core: replicated-write
+capacity (**rWCU**) billing + throttling and **per-region + per-link** metrics — proven by a bespoke
+thermostat-flavored multi-region **hot-replica demo** and reconciled against the legacy `DynamoDbGlobalTable`
+multi-region demo.
+
+**Outcome.** A deliberate **core generalization** (`LoopbackComponentSampler` + `ScheduleReleaseTransducer.loopbackComponentOf`,
+eager tap-tick forward) makes a region↔coordinator **cycle deadlock-free**, and every prior scenario stays
+byte-identical (`Fb`/`Tap` pinned to `Nothing`). On it: a `DynamoDbTable` taps each admitted write's resolved
+outcome and **replays** inbound replicated writes via `onFeedback` (billing **rWCU**, AWS-correct rWRU = WRU); a
+`ReplicationCoordinator` gates inbound replication fair-share against a per-replica rWCU ceiling so **depletion**
+grows `PendingReplicationCount` + measured `ReplicationLatency`; a `GlobalTable` composes N regions + the coordinator.
+The reconcile arm **pins RCU/WCU clean** against the legacy `multiRegionDefault` and — grounded in the **AWS docs, not
+the legacy** — **fixed two AWS-accuracy bugs** (replicas now hold the full-copy union; global-table replication
+transfer is free), leaving storage (~16 %) and cost (v2's correct rWCU pricing) as **documented, bounded divergences**,
+with a residual **summary-model saturation-pollution** discrepancy recorded in the catalog's Known-discrepancies
+section. **Single-region + multi-region parity reached; only phase 12 (Grafana + legacy retirement) remains.**
+Guides: `specs/aws-component-catalog.md` (multi-region + Known discrepancies), `specs/README.hot-replica.md`.
 
 Follows `v2/phase10` (single-region throughput parity reached). Deliberately **meatier slices** than phases 9/10.
 
@@ -85,7 +98,7 @@ transfer); cross-region transfer per-link bytes + per-region/total bytes/cost; p
 | 3 | rWCU throttling + depletion backlog + metric coupling | **Done** | `replicatedWriteCapacityUnits` ceiling + fair-share-per-source drain; under depletion the backlog grows, per-source latency/pending diverge, both drain on recovery; unlimited rWCU = Slice-2 behavior |
 | 4 | Hot-replica demo | **Done** | bespoke thermostat-flavored 3-region demo + `@main`; two arms (reconcile / 8:1 depletion) with per-region + per-link metrics, JSONL + console; the per-link distinction |
 | 5 | Hybrid reconcile (+ two AWS-accuracy fixes) | **Done** | reconcile arm per-region pin vs legacy `multiRegionDefault` — RCU/WCU clean, storage/cost documented divergences; fixed replicated-write storage (replay source outcome) + removed transfer cost (AWS doesn't bill GT replication); logged the saturation-pollution discrepancy |
-| 6 | Docs + close-out | Planned | multi-region section of `aws-component-catalog.md`; `README.hot-replica.md`; CLAUDE.md demo entry; close-out coda (roadmap COMPLETE, program roadmap, memory, full `sbt test`) |
+| 6 | Docs + close-out | **Done** | multi-region section of `aws-component-catalog.md` + core-catalog loopback entry; `README.hot-replica.md`; CLAUDE.md demo entry + position; close-out coda (roadmap COMPLETE, program roadmap, memory, full `sbt test`) |
 
 ## Slices
 
