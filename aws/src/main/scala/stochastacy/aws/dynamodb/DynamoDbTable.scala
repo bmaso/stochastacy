@@ -4,9 +4,10 @@ import scala.concurrent.Future
 
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.pekko.stream.{FanOutShape2, Graph}
+import org.apache.pekko.stream.scaladsl.{GraphDSL, Sink, Source}
 
 import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
-import stochastacy.core.component.{ComponentResult, ComponentSampler, Emission, Scheduled, ScheduleReleaseTransducer, TickEmission, Timed}
+import stochastacy.core.component.{ComponentResult, LoopbackComponentSampler, LoopbackEmission, LoopbackShape, Scheduled, ScheduleReleaseTransducer, TickEmission, Timed}
 import stochastacy.core.sampler.StatelessSampler
 import stochastacy.sim.TimedElement
 
@@ -73,17 +74,27 @@ object DynamoDbTable:
    * the index's propagation delay.
    */
   final class DynamoDbTableSampler(config: Config)
-      extends ComponentSampler[TableState, DynamoDbRequest, DynamoDbResponse, DynamoDbConsumption]:
+      extends LoopbackComponentSampler[TableState, DynamoDbRequest, ReplicationWrite, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite]:
 
     private val indexes: Vector[SecondaryIndex] = config.secondaryIndexes
 
     def initialState: TableState = TableState.initial(config.initialState, indexes, config.billingMode, config.ttlPeriodTicks)
 
+    /** The **tap** (loop-out) for a local write: one [[ReplicationWrite]] per admitted single-item write,
+     *  carrying the write's **resolved outcome** (insert/overwrite + item bytes) so peer regions replay what
+     *  happened here rather than re-deciding it against their own state. Reads, transactions, and throttled
+     *  writes tap nothing. Emitted regardless of single- vs multi-region — a standalone table's tap plane is
+     *  simply ignored (inert). */
+    private def tapFor(outcome: OperationOutcome): List[Scheduled[ReplicationWrite]] = outcome match
+      case _: OperationOutcome.Put | _: OperationOutcome.Update | _: OperationOutcome.Delete =>
+        List(Scheduled(ReplicationWrite(outcome), 0.0))
+      case _ => Nil
+
     def sample(
       in:    DynamoDbRequest,
       state: TableState,
       rng:   UniformRandomProvider
-    ): Emission[TableState, DynamoDbResponse, DynamoDbConsumption] =
+    ): LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] =
       val outcome      = config.behavior.outcomeFor(in, readTargetState(in, state), rng, state.currentTick)
       val resolution   = TableMechanics.resolve(outcome, state.base)
       val (latency, _) = config.latency.sample(0L, rng, ())
@@ -157,26 +168,30 @@ object DynamoDbTable:
             if state.perTickBudget.overBudget(readDemand, writeDemand, p) ||
                hotPartition.exists((pid, rc, wc) => state.perTickBudget.partitionOverBudget(pid, baseRead, baseWrite, rc, wc)) =>
           // Throttle: reject the whole operation — no capacity consumed, no state mutated, budget untouched.
-          Emission(
+          // A throttled write is not admitted, so it taps nothing to replicate.
+          LoopbackEmission(
             newState    = state, // base / indexes / currentTick / budget all preserved
             output      = Scheduled(ThrottledResponse, math.max(0.0, latency)),
-            consumption = List(Scheduled(RequestThrottled(firstOverTarget(allConsumption, state.perTickBudget, p)), 0.0))
+            consumption = List(Scheduled(RequestThrottled(firstOverTarget(allConsumption, state.perTickBudget, p)), 0.0)),
+            taps        = Nil
           )
         case p: BillingMode.Provisioned =>
           // Admit and charge the demand against this tick's provisioned budget (table target and partition).
           val charged = state.perTickBudget.add(readDemand, writeDemand)
           val budget  = hotPartition.fold(charged)((pid, _, _) => charged.addPartition(pid, baseRead, baseWrite))
-          Emission(
+          LoopbackEmission(
             newState    = state.copy(base = resolution.state, indexes = nextIndexes, perTickBudget = budget, ttl = nextTtl),
             output      = Scheduled(resolution.response, math.max(0.0, latency)),
-            consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
+            consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled,
+            taps        = tapFor(outcome)
           )
         case BillingMode.OnDemand =>
           // Uncapped: admit unchanged (no budget), exactly as before provisioned billing existed.
-          Emission(
+          LoopbackEmission(
             newState    = state.copy(base = resolution.state, indexes = nextIndexes, ttl = nextTtl), // copy preserves currentTick
             output      = Scheduled(resolution.response, math.max(0.0, latency)),
-            consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled
+            consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled,
+            taps        = tapFor(outcome)
           )
 
     /** Sum per-budget-target capacity demand from the operation's consumption facts. */
@@ -274,7 +289,54 @@ object DynamoDbTable:
       case DynamoDbTarget.Gsi(name) => state.index(name)
       case DynamoDbTarget.Lsi(name) => state.index(name)
 
-  /** Materialize the table into a running stage: requests in, responses and consumption facts out. */
+    /** Apply an inbound **replicated** write at this (destination) region by **replaying the source's resolved
+     *  outcome** (`fb.outcome`) against the destination's state — never re-deciding insert-vs-overwrite here, so
+     *  a write that inserted a new item at the source inserts it here too and every replica converges to the
+     *  same full dataset (the AWS global-table guarantee). It runs the write's mechanics (storage + index
+     *  maintenance + TTL, exactly as a local write) and bills **rWCU** — every `WriteCapacityConsumed` becomes
+     *  `ReplicatedWriteCapacityConsumed`. It has no client, so it emits no forward output; it never re-replicates,
+     *  so it emits no tap (loop-prevention is structural). rWCU is applied here (coordinator-gated upstream). */
+    override def onFeedback(fb: ReplicationWrite, state: TableState, rng: UniformRandomProvider): TickEmission[TableState, DynamoDbConsumption] =
+      val outcome    = fb.outcome
+      val resolution = TableMechanics.resolve(outcome, state.base)
+
+      val writeFootprints: List[(Option[Long], Option[Long])] = outcome match
+        case OperationOutcome.Put(written, previous)    => List((Some(written), previous))
+        case OperationOutcome.Update(written, previous) => List((Some(written), previous))
+        case OperationOutcome.Delete(deleted)           => List((None, deleted))
+        case _                                          => Nil
+
+      val (nextIndexes, indexScheduled) =
+        writeFootprints.foldLeft((state.indexes, List.empty[Scheduled[DynamoDbConsumption]])) {
+          case ((states0, scheduled0), (newBytes, prevBytes)) =>
+            indexes.foldLeft((states0, scheduled0)) {
+              case ((states, scheduled), idx) =>
+                val m = SecondaryIndexMechanics.maintain(idx, newBytes, prevBytes, states.getOrElse(idx.indexName, TableSummaryState.empty), transactional = false)
+                (states.updated(idx.indexName, m.state), scheduled ++ m.consumption.map(c => Scheduled(c, idx.maintenanceDelay)))
+            }
+        }
+
+      val nextTtl: Option[TtlRingBuffer] = state.ttl.map { rb0 =>
+        writeFootprints.foldLeft(rb0) {
+          case (rb, (Some(nb), None))    => rb.recordWrite(nb, state.currentTick)
+          case (rb, (Some(nb), Some(_))) => rb.recordDelete(state.currentTick).recordWrite(nb, state.currentTick)
+          case (rb, (None, Some(_)))     => rb.recordDelete(state.currentTick)
+          case (rb, _)                   => rb
+        }
+      }
+
+      val facts = (resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled)
+        .map(s => Scheduled(asReplicated(s.event), s.delay))
+      TickEmission(state.copy(base = resolution.state, indexes = nextIndexes, ttl = nextTtl), facts)
+
+    /** WCU → rWCU relabelling for a replicated write's consumption facts. */
+    private def asReplicated(c: DynamoDbConsumption): DynamoDbConsumption = c match
+      case WriteCapacityConsumed(units, target) => ReplicatedWriteCapacityConsumed(units, target)
+      case other                                => other
+
+  /** Materialize the table as a **single-region** running stage (requests in, responses + consumption out).
+   *  Built on the loopback transducer with the feedback inlet tied off (`Source.empty` → the stage runs on its
+   *  primary clock) and the tap outlet ignored, so a standalone table behaves exactly as a plain component. */
   def componentOf(config: Config, rng: UniformRandomProvider): Graph[
     FanOutShape2[
       TimedElement[Timed[DynamoDbRequest]],
@@ -283,4 +345,17 @@ object DynamoDbTable:
     ],
     Future[ComponentResult[TableState]]
   ] =
-    ScheduleReleaseTransducer.componentOf(new DynamoDbTableSampler(config), rng)
+    GraphDSL.createGraph(ScheduleReleaseTransducer.loopbackComponentOf(new DynamoDbTableSampler(config), rng)) { implicit b => ls =>
+      import GraphDSL.Implicits.*
+      b.add(Source.empty[TimedElement[Timed[ReplicationWrite]]]) ~> ls.fbIn
+      ls.tapOut ~> b.add(Sink.ignore)
+      new FanOutShape2(ls.in, ls.fwdOut, ls.consOut)
+    }
+
+  /** Materialize the table as a **replicated** region of a Global Table: the loopback shape (feedback inlet +
+   *  tap outlet) that [[GlobalTable]] wires to the [[ReplicationCoordinator]]. */
+  def replicatedComponentOf(config: Config, rng: UniformRandomProvider): Graph[
+    LoopbackShape[DynamoDbRequest, ReplicationWrite, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite],
+    Future[ComponentResult[TableState]]
+  ] =
+    ScheduleReleaseTransducer.loopbackComponentOf(new DynamoDbTableSampler(config), rng)

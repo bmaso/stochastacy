@@ -3,8 +3,8 @@ package stochastacy.core.component
 /** Diagnostic summary of outputs still pending at `EndOfTime` — i.e. scheduled past the simulation
  *  horizon and therefore never emitted on the streams. A large residue signals the horizon may be
  *  truncating events. Counts are split by output plane. */
-final case class ResidueSummary(responses: Long, consumptions: Long):
-  def total: Long = responses + consumptions
+final case class ResidueSummary(responses: Long, consumptions: Long, taps: Long = 0L):
+  def total: Long = responses + consumptions + taps
 
 object ResidueSummary:
   val empty: ResidueSummary = ResidueSummary(0L, 0L)

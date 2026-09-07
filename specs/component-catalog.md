@@ -192,14 +192,24 @@ guides show these in use.
 
 - **`ComponentSampler[S, In, Out, Cons]`** (`core/component/SamplerContract.scala`) — the production
   function every component implements: `initialState`, `sample(in, state, rng): Emission[S, Out, Cons]`,
-  and a defaulted `onTick(tick, state): S` for tick-boundary state (reset, decay, refill). An
-  **`Emission`** carries the new state, one **`Scheduled`** forward output, and zero-or-more scheduled
-  consumption facts; a **`Scheduled[E](event, delay)`** pairs a timeless payload with a latency in
-  fractional ticks. Samplers speak only in delays — never absolute time.
+  and a defaulted `onTick(tick, state): TickEmission[S, Cons]` for tick-boundary state plus scheduled
+  consumption facts. An **`Emission`** carries the new state, one **`Scheduled`** forward output, and
+  zero-or-more scheduled consumption facts; a **`Scheduled[E](event, delay)`** pairs a timeless payload
+  with a latency in fractional ticks. Samplers speak only in delays — never absolute time.
+- **`LoopbackComponentSampler[S, In, Fb, Out, Cons, Tap]`** (same file) — the **feedback-capable** base
+  `ComponentSampler` extends (with `Fb` / `Tap` pinned to `Nothing`, so an ordinary component is
+  byte-identical). It adds a second input — `onFeedback(fb, state, rng): TickEmission[S, Cons]` — and a
+  `Tap` output channel on the emission (`LoopbackEmission`, of which `Emission` is the `Tap = Nothing`
+  alias). This is what lets a component sit in a **cycle**: it emits taps out one edge and consumes
+  feedback on another. (AWS's `GlobalTable` uses it — a table taps admitted writes and applies replicated
+  writes via `onFeedback`.)
 - **`ScheduleReleaseTransducer`** (`core/component/ScheduleReleaseTransducer.scala`) — the generic
   machinery that turns a `ComponentSampler` into a running Pekko graph stage: it unwraps the envelope,
   runs the sampler, stamps each output's absolute time from its delay, buffers, **releases in time order
-  at tick boundaries**, and summarizes post-horizon residue into its materialized `ComponentResult`.
+  at tick boundaries**, and summarizes post-horizon residue into its materialized `ComponentResult`. Its
+  `loopbackComponentOf` variant adds a **feedback inlet** and a **tap outlet** (2-in / 3-out); the tap
+  forwards each `Tick` **eagerly**, which is the invariant that makes a region↔coordinator cycle
+  deadlock-free.
 - **The timed-event protocol** (`core/component/Timed.scala`, `stochastacy.sim`) — every wire element is
   a `Timed[E](event, eventTime, intraTick, usecase)` or a `TimedControlEvent` (`Tick` / `EndOfTime`);
   `TimedElement[X] = X | TimedControlEvent`. Streams are partitioned into tick windows and terminated by

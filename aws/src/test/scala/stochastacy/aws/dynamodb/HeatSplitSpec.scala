@@ -6,7 +6,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
 import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
-import stochastacy.core.component.Emission
+import stochastacy.core.component.LoopbackEmission
 import stochastacy.core.sampler.LogNormalSampler
 
 /** Split-for-heat (Slice 2b): a partition sustained-hot for `windowTicks` grows the effective partition
@@ -45,7 +45,7 @@ class HeatSplitSpec extends AnyWordSpec with should.Matchers:
   private def admits(s: DynamoDbTable.DynamoDbTableSampler, start: TableState): (Int, TableState) =
     var st = start; var n = 0; var done = false
     while !done do
-      val e: Emission[TableState, DynamoDbResponse, DynamoDbConsumption] = s.sample(PutItemRequest(1024L), st, rng)
+      val e: LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] = s.sample(PutItemRequest(1024L), st, rng)
       e.output.event match
         case ThrottledResponse => done = true
         case _                 => st = e.newState; n += 1

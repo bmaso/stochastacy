@@ -20,6 +20,11 @@ final case class ReadCapacityConsumed(units: BigDecimal, consistency: ReadConsis
 /** Write capacity units consumed by a write (put / update / delete, or index maintenance) on `target`. */
 final case class WriteCapacityConsumed(units: BigDecimal, target: DynamoDbTarget) extends DynamoDbConsumption
 
+/** Replicated write capacity units (**rWCU**) consumed by a *replicated* write applied at this region (base or
+ *  index maintenance) on `target` — the cross-region-replication counterpart of [[WriteCapacityConsumed]]. A
+ *  Global Table bills inbound replication at rWCU, local writes at WCU. Multi-region only. */
+final case class ReplicatedWriteCapacityConsumed(units: BigDecimal, target: DynamoDbTarget) extends DynamoDbConsumption
+
 /** The signed change in stored bytes on `target` produced by a write or delete (positive grows storage). */
 final case class StorageBytesDelta(bytesDelta: Long, target: DynamoDbTarget) extends DynamoDbConsumption
 

@@ -7,7 +7,11 @@ package stochastacy.aws.dynamodb
  *   - [[BillingMode.OnDemand]] — pay per consumed capacity unit; no throughput ceiling.
  *   - [[BillingMode.Provisioned]] — reserve a fixed RCU/WCU capacity, billed per capacity-hour
  *     (consumption-independent). Base-table and each GSI carry their **own** provisioned capacity (a GSI
- *     falls back to the base value when unset); LSIs share the base table's throughput.
+ *     falls back to the base value when unset); LSIs share the base table's throughput. A multi-region
+ *     replica additionally carries an optional **inbound rWCU ceiling** ([[Provisioned.replicatedWriteCapacityUnits]])
+ *     that throttles cross-region replication into this region — governing the **base-table** replicated
+ *     write stream (GSIs on a replica carry their own replicated capacity, exactly as in AWS, so index
+ *     rWCU is billed but rides outside this ceiling); `None` ⇒ unlimited inbound replication.
  */
 sealed trait BillingMode
 
@@ -19,12 +23,14 @@ object BillingMode:
     readCapacityUnits:     Long,
     writeCapacityUnits:    Long,
     gsiReadCapacityUnits:  Map[String, Long] = Map.empty,
-    gsiWriteCapacityUnits: Map[String, Long] = Map.empty
+    gsiWriteCapacityUnits: Map[String, Long] = Map.empty,
+    replicatedWriteCapacityUnits: Option[Long] = None
   ) extends BillingMode:
     require(readCapacityUnits > 0L,  "readCapacityUnits must be positive")
     require(writeCapacityUnits > 0L, "writeCapacityUnits must be positive")
     require(gsiReadCapacityUnits.values.forall(_ > 0L),  "per-GSI readCapacityUnits must be positive")
     require(gsiWriteCapacityUnits.values.forall(_ > 0L), "per-GSI writeCapacityUnits must be positive")
+    require(replicatedWriteCapacityUnits.forall(_ > 0L), "replicatedWriteCapacityUnits must be positive")
 
     /** A GSI's provisioned read/write **throttle ceiling**, falling back to the base table's value when the
      *  GSI's capacity is not separately provisioned (a GSI without its own capacity is limited by the base). */

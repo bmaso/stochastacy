@@ -143,9 +143,19 @@ by priority.
   which configures the partition count v2 derives and models the old lagged adaptive). Representative run: **28.6 %
   adaptive relief**. aws 269 green; all knobs default off → prior scenarios byte-identical. **Single-region
   throughput parity with the legacy reached; replication / multi-region (phase 11) is the remaining gap.**
-- **v2/phase11 — Multi-region / global tables.** Cross-region **replication** (global tables →
-  `ReplicatedWriteCapacityConsumed`), cross-region **transfer** bytes/cost, per-region metrics. Proves the
-  multi-region thermostat scenarios.
+- **v2/phase11 — Multi-region / global tables. DONE (6 slices, 2026-09-07).** A deliberate **core generalization**
+  (`LoopbackComponentSampler` + `ScheduleReleaseTransducer.loopbackComponentOf`, eager tap-tick forward) makes a
+  region↔coordinator **cycle deadlock-free** (all prior scenarios byte-identical). On it: a `DynamoDbTable` taps
+  each admitted write's resolved outcome and **replays** inbound replicated writes via `onFeedback`, billing **rWCU**
+  (`ReplicatedWriteCapacityConsumed`, AWS-correct rWRU = WRU); a `ReplicationCoordinator` gates inbound replication
+  fair-share against a per-replica rWCU ceiling so **depletion** grows `PendingReplicationCount` + measured
+  `ReplicationLatency`; a `GlobalTable` composes N regions. Bespoke **hot-replica demo**
+  (`stochastacy.aws.examples.hotreplica`, `@main HotReplicaDemo`, reconcile + 8:1 depletion arms). Reconcile **pins
+  RCU/WCU clean** vs legacy `multiRegionDefault` and — grounded in the **AWS docs, not the legacy** — **fixed two
+  AWS-accuracy bugs** (replicas hold the full-copy union; global-table replication transfer is free); storage (~16 %)
+  and cost (v2's correct rWCU pricing) are **documented, bounded divergences** with a residual summary-model
+  saturation-pollution discrepancy logged in the catalog's Known-discrepancies section. **Single-region +
+  multi-region parity reached.**
 - **v2/phase12 — Grafana delivery + legacy retirement.** Port the `generate → stage → view` Postgres/Grafana
   pipeline to the v2 demos (likely a separate `aws-grafana` bridge module — the `aws` module is
   deliberately JDBC-free); then **delete the legacy `stochastacy.aws` code and the legacy `examples`

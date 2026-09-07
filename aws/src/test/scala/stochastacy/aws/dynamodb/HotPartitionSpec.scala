@@ -6,7 +6,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
 import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
-import stochastacy.core.component.Emission
+import stochastacy.core.component.LoopbackEmission
 import stochastacy.core.sampler.LogNormalSampler
 
 /** Hot-partition throttling (Slice 1) + instant adaptive capacity (Slice 2): provisioned capacity is split
@@ -45,7 +45,7 @@ class HotPartitionSpec extends AnyWordSpec with should.Matchers:
     var n  = 0
     var done = false
     while !done do
-      val e: Emission[TableState, DynamoDbResponse, DynamoDbConsumption] = s.sample(PutItemRequest(1024L), st, rng)
+      val e: LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] = s.sample(PutItemRequest(1024L), st, rng)
       e.output.event match
         case ThrottledResponse => done = true
         case _                 => st = e.newState; n += 1

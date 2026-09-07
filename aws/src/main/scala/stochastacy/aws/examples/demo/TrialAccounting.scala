@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import scala.collection.mutable
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ProvisionedCapacitySnapshot, ReadCapacityConsumed, ReconfigurationSchedule, RequestThrottled, StorageBytesDelta, WriteCapacityConsumed}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ProvisionedCapacitySnapshot, ReadCapacityConsumed, ReconfigurationSchedule, ReplicatedWriteCapacityConsumed, RequestThrottled, StorageBytesDelta, WriteCapacityConsumed}
 import stochastacy.core.component.Timed
 import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
 
@@ -153,6 +153,8 @@ final class TrialAccountingState(
             throttledReqs += 1L
           case ProvisionedCapacitySnapshot(r, w) =>
             bucketProvisioned = Some((BigInt(r), BigInt(w)))
+          case ReplicatedWriteCapacityConsumed(_, _) =>
+            () // multi-region rWCU — accounted by the hot-replica demo, not this single-table harness
 
   def result(): (TrialSummary, Vector[TrialTimeSeriesPoint]) =
     val pitr = if pitrEnabled then Pricing.pitrCost(byteTicks, rates) else BigDecimal(0)
