@@ -84,7 +84,8 @@ transfer); cross-region transfer per-link bytes + per-region/total bytes/cost; p
 | 2 | Multi-region composition + replication + rWCU billing | **Done** | on the loopback: a region-A write applies rWCU-billed in region B after link lag; per-source-stream queues; transfer bytes; `ReplicationLatency`/`PendingReplicationCount` (in-flight count, window-close sampled); single-region byte-identical |
 | 3 | rWCU throttling + depletion backlog + metric coupling | **Done** | `replicatedWriteCapacityUnits` ceiling + fair-share-per-source drain; under depletion the backlog grows, per-source latency/pending diverge, both drain on recovery; unlimited rWCU = Slice-2 behavior |
 | 4 | Hot-replica demo | **Done** | bespoke thermostat-flavored 3-region demo + `@main`; two arms (reconcile / 8:1 depletion) with per-region + per-link metrics, JSONL + console; the per-link distinction |
-| 5 | Hybrid reconcile + docs + close-out | Planned | reconcile arm direct per-region pin vs legacy `multiRegionDefault`; catalog + README; close-out coda |
+| 5 | Hybrid reconcile (+ two AWS-accuracy fixes) | **Done** | reconcile arm per-region pin vs legacy `multiRegionDefault` — RCU/WCU clean, storage/cost documented divergences; fixed replicated-write storage (replay source outcome) + removed transfer cost (AWS doesn't bill GT replication); logged the saturation-pollution discrepancy |
+| 6 | Docs + close-out | Planned | multi-region section of `aws-component-catalog.md`; `README.hot-replica.md`; CLAUDE.md demo entry; close-out coda (roadmap COMPLETE, program roadmap, memory, full `sbt test`) |
 
 ## Slices
 
@@ -198,11 +199,35 @@ us-east→ap-southeast pending ≈ **12×** and latency ≈ 2.5× the eu-west st
 `HotReplicaSpec` (4 cases: divergence / healthy arm / determinism / smoke-run). Note: this continuously-loaded demo
 never drains a backlog — rise-then-drain is unit-tested in `RwcuThrottlingSpec`. Full `sbt test` green.
 
-### Slice 5 — Hybrid reconcile + docs + close-out
-`HotReplicaReconciliationSpec`: direct per-region pin of the reconcile arm against a captured legacy
-`multiRegionDefault` baseline (phase-4/5/9 style); the depletion coupling documented as a v2 improvement.
-`specs/aws-component-catalog.md` (multi-region / replication / rWCU / the two metrics) + `specs/README.hot-replica.md`
-+ a CLAUDE.md demo entry. Close-out coda: roadmap COMPLETE, program roadmap, memory, full `sbt test`.
+### Slice 5 — Hybrid reconcile (+ two AWS-accuracy fixes)
+`HotReplicaReconciliationSpec`: per-region pin of the reconcile arm against a **captured** legacy `multiRegionDefault`
+baseline (1200 × 20; the legacy is unreferenceable from the aws module). To reconcile, arm A gained per-region
+**growth** (0.15 / 0.075 / 0.025) and per-region **pricing** (`RegionConfig.rates`, matching the legacy's
+`PricingSchedule.byRegion`).
+
+**Delivered — and the reconcile surfaced two AWS-accuracy bugs, both fixed (grounded in the AWS docs, not the legacy):**
+- **Replicated-write storage** — `onFeedback` used to *re-run* the destination's fleet-saturation, so replicas held
+  only their own fleet, not the AWS full-copy union. Fixed: `ReplicationWrite` now carries the **source's resolved
+  `OperationOutcome`**, which `onFeedback` **replays** (never re-deciding) — every replica converges to the same
+  dataset. `ReplicationCoordinator.bytesFor`, `tapFor`, and the Slice-2/3 specs updated accordingly.
+- **Cross-region transfer cost removed** — AWS charges nothing for global-table replication transfer; v2 now charges
+  nothing (transfer **bytes** kept as a volume metric). `RegionConfig.transferPricePerGiB` and all transfer-cost
+  fields removed.
+
+**Reconcile posture (per the house "keep the more-accurate v2, document divergences"):** RCU and WCU **pin clean**
+(~1–4 %; validates workload + replication volume). **Storage** (uniform ~16 %) and **cost** (up to +59 % at ap-se)
+are **documented, regression-guarded divergences**, not pinned: storage is a **summary-model saturation-pollution**
+limitation (a region's insert/overwrite heuristic reads replication-polluted state → converged population deviates
+from the true union — bounded, **negligible cost**); cost is *higher* because v2 prices **rWCU at the AWS-correct
+rate (rWRU = WRU)** while the legacy underprices it. Both recorded in the new **"Known discrepancies"** section of
+`specs/aws-component-catalog.md` (with a local/replicated-split fix sketch for the storage one). Traced to ground via
+a controlled 2-region experiment (pure inserts → exact union; insert-then-overwrite → larger fleet, not union) before
+being deferred. Full `sbt test` green.
+
+### Slice 6 — Docs + close-out
+`specs/aws-component-catalog.md` multi-region section (GlobalTable / ReplicationCoordinator / rWCU / the two metrics)
++ `specs/README.hot-replica.md` + a CLAUDE.md demo entry. Close-out coda: roadmap COMPLETE, program roadmap, memory,
+full `sbt test`.
 
 ## Scope boundary
 

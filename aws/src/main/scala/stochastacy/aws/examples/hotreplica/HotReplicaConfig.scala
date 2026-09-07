@@ -8,31 +8,36 @@ import stochastacy.core.sampler.{LogNormalSampler, StatelessSampler}
 /**
  * One region of the hot-replica Global Table: a thermostat **telemetry** table (the reused
  * [[ThermostatConfig]] shape — mixed-projection GSIs + LSI, temporally-shaped telemetry writes, customer
- * queries, fleet scans) sized by its own fleet, plus the per-GB **cross-region transfer** rate charged on
- * replication **out of** this region (AWS prices egress by the source region).
+ * queries, fleet scans) sized by its own fleet, on-demand or provisioned with its own per-region pricing.
+ *
+ * There is **no cross-region transfer charge**: AWS does not bill data transfer for replicating data between
+ * the Regions of a global table, so replication egress is free. The replication **volume** (transfer bytes) is
+ * still surfaced as a metric — it just carries no cost.
  */
 final case class RegionConfig(
   regionName:            String,
   fleetSize:             Long,
+  growthPerTick:         Double,
   billingMode:           BillingMode,
-  transferPricePerGiB:   BigDecimal
+  rates:                 Rates
 ):
-  require(regionName.nonEmpty, "regionName must be non-empty")
-  require(fleetSize >= 1L,     "fleetSize must be at least 1")
+  require(regionName.nonEmpty,  "regionName must be non-empty")
+  require(fleetSize >= 1L,      "fleetSize must be at least 1")
+  require(growthPerTick >= 0.0, "growthPerTick must be non-negative")
 
-  /** The reused thermostat telemetry scenario for this region — its fleet size and billing mode, everything
-   *  else the thermostat single-region default (so arm A reconciles directly against the legacy telemetry
-   *  table). The vortex/spikes ride along from the default; the shared simulation horizon is stamped in by
-   *  the ensemble. No system-error `ChaosGate` is attached in the multi-region graph (the ~0.1 % the legacy
-   *  models is well within the reconcile tolerance). */
+  /** The reused thermostat telemetry scenario for this region — its fleet size, growth and billing mode,
+   *  everything else the thermostat single-region default (so arm A reconciles directly against the legacy
+   *  telemetry table). The vortex/spikes ride along from the default; the shared simulation horizon is
+   *  stamped in by the ensemble. No system-error `ChaosGate` is attached in the multi-region graph (the
+   *  ~0.1 % the legacy models is well within the reconcile tolerance). */
   def thermostat(simulationTicks: Long): ThermostatConfig =
     ThermostatConfig(
-      scenarioId         = s"hot-replica-$regionName",
-      simulationTicks    = simulationTicks,
-      initialDeviceCount = fleetSize,
-      deviceGrowthPerTick = 0.0,       // a steady fleet — the replication load is what we study
-      systemErrorRate    = 0.0,        // no ChaosGate inside the Global Table graph
-      billingMode        = billingMode
+      scenarioId          = s"hot-replica-$regionName",
+      simulationTicks     = simulationTicks,
+      initialDeviceCount  = fleetSize,
+      deviceGrowthPerTick = growthPerTick,
+      systemErrorRate     = 0.0,        // no ChaosGate inside the Global Table graph
+      billingMode         = billingMode
     )
 
   def tableConfig(simulationTicks: Long, latency: StatelessSampler[Double]): DynamoDbTable.Config =
@@ -68,8 +73,7 @@ final case class HotReplicaConfig(
   trialCount:       Int,
   parallelism:      Int,
   regions:          Vector[RegionConfig],
-  replicationModel: ReplicationModel,
-  rates:            Rates
+  replicationModel: ReplicationModel
 ):
   require(scenarioId.nonEmpty,    "scenarioId must be non-empty")
   require(simulationTicks >= 1L,  "simulationTicks must be at least 1")
@@ -96,10 +100,18 @@ object HotReplicaConfig:
   val EuWest     = "eu-west-1"
   val ApSoutheast = "ap-southeast-1"
 
-  // Legacy cross-region egress rates ($/GB), priced by source region.
-  private val UsEastTransferPerGiB = BigDecimal("0.02")
-  private val EuWestTransferPerGiB = BigDecimal("0.02")
-  private val ApSeTransferPerGiB   = BigDecimal("0.08")
+  // Legacy per-region on-demand pricing (from `ThermostatFleetScenarioConfig.multiRegionDefault`'s
+  // `PricingSchedule.byRegion`): us-east is the shared phase-1 default; eu-west and ap-southeast carry their
+  // own (higher) regional rates. Matched so arm A's per-region cost reconciles.
+  private val UsEastRates = Pricing.phase1Default
+  private val EuWestRates = Rates(
+    rcuPrice                 = BigDecimal("0.000000283"),
+    wcuPrice                 = BigDecimal("0.0000014"),
+    storagePricePerGiBSecond = BigDecimal("0.000000108507"))
+  private val ApSeRates = Rates(
+    rcuPrice                 = BigDecimal("0.000000338"),
+    wcuPrice                 = BigDecimal("0.000001690"),
+    storagePricePerGiBSecond = BigDecimal("0.000000125"))
 
   /** Link lag samplers: `LogNormal(0, 1)` floored to ticks on every link (≈ 1-tick base lag), matching the
    *  legacy default — except a modestly longer `us-east-1 → ap-southeast-1` link in the depletion arm. */
@@ -121,12 +133,11 @@ object HotReplicaConfig:
       trialCount      = trialCount,
       parallelism     = parallelism,
       regions = Vector(
-        RegionConfig(UsEast,      1800L, BillingMode.OnDemand, UsEastTransferPerGiB),
-        RegionConfig(EuWest,       900L, BillingMode.OnDemand, EuWestTransferPerGiB),
-        RegionConfig(ApSoutheast,  300L, BillingMode.OnDemand, ApSeTransferPerGiB)
+        RegionConfig(UsEast,      1800L, 0.15,  BillingMode.OnDemand, UsEastRates),
+        RegionConfig(EuWest,       900L, 0.075, BillingMode.OnDemand, EuWestRates),
+        RegionConfig(ApSoutheast,  300L, 0.025, BillingMode.OnDemand, ApSeRates)
       ),
-      replicationModel = allToAllModel(regionOrder, longLink = None),
-      rates            = Pricing.phase1Default
+      replicationModel = allToAllModel(regionOrder, longLink = None)
     )
 
   /** The depletion showcase: 8 : 1 fleets (2000 / 250 / 300); ap-southeast-1 provisioned with an inbound rWCU
@@ -148,10 +159,9 @@ object HotReplicaConfig:
       trialCount      = trialCount,
       parallelism     = parallelism,
       regions = Vector(
-        RegionConfig(UsEast,      2000L, BillingMode.OnDemand,   UsEastTransferPerGiB),
-        RegionConfig(EuWest,       250L, BillingMode.OnDemand,   EuWestTransferPerGiB),
-        RegionConfig(ApSoutheast,  300L, apSeProvisioned,        ApSeTransferPerGiB)
+        RegionConfig(UsEast,      2000L, 0.0, BillingMode.OnDemand, Pricing.phase1Default),
+        RegionConfig(EuWest,       250L, 0.0, BillingMode.OnDemand, Pricing.phase1Default),
+        RegionConfig(ApSoutheast,  300L, 0.0, apSeProvisioned,      Pricing.phase1Default)
       ),
-      replicationModel = allToAllModel(regionOrder, longLink = Some((UsEast, ApSoutheast))),
-      rates            = Pricing.phase1Default
+      replicationModel = allToAllModel(regionOrder, longLink = Some((UsEast, ApSoutheast)))
     )

@@ -48,10 +48,10 @@ object ReplicationCoordinator:
     usecase:      Any
   )
 
-  private def bytesFor(write: ReplicationWrite): Long = write.inner match
-    case PutItemRequest(b)    => b
-    case UpdateItemRequest(b) => b
-    case DeleteItemRequest    => 0L
+  private def bytesFor(write: ReplicationWrite): Long = write.outcome match
+    case TableMechanics.OperationOutcome.Put(b, _)    => b
+    case TableMechanics.OperationOutcome.Update(b, _) => b
+    case _                                            => 0L // Delete replicates a tombstone (no item bytes)
 
   /** A write's **base-table** rWCU — the figure the ceiling is drained against, equal to the base rWCU the
    *  destination bills in `onFeedback` (GSI rWCU is billed separately and rides outside the ceiling). */

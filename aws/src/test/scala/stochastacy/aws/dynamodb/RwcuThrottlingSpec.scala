@@ -12,6 +12,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
+import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
 import stochastacy.core.component.Timed
 import stochastacy.core.sampler.LogNormalSampler
 import stochastacy.sim.{SimTime, TimedControlEvent, TimedElement, ticks}
@@ -41,7 +42,7 @@ class RwcuThrottlingSpec extends AnyWordSpec with should.Matchers with BeforeAnd
       val tick: TimedElement[Timed[TaggedTap]] = TimedControlEvent.Tick(SimTime.of(t))
       val taps: Vector[TimedElement[Timed[TaggedTap]]] =
         arrivals.getOrElse(t, Nil).toVector.flatMap { case (src, count) =>
-          Vector.fill(count)(Timed(TaggedTap(src, ReplicationWrite(PutItemRequest(WriteBytes))), SimTime.of(t), 0.0, "w"))
+          Vector.fill(count)(Timed(TaggedTap(src, ReplicationWrite(OperationOutcome.Put(WriteBytes, None))), SimTime.of(t), 0.0, "w"))
         }
       tick +: taps
     } :+ TimedControlEvent.EndOfTime

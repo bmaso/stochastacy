@@ -14,17 +14,17 @@ import stochastacy.core.stream.TickFraming
 import stochastacy.sim.{TimedElement, TimedControlEvent}
 
 /** One trial's outcome: the per-region roll-ups, the per-link replication metrics, and the per-region
- *  cross-region egress (bytes + cost, a source-region charge derived from the links). */
+ *  cross-region egress **bytes** (replication volume — a metric only; AWS charges nothing for global-table
+ *  replication transfer, so there is no transfer cost). */
 final case class HotReplicaTrialResult(
   trialId:             Int,
   regions:             Vector[RegionSummary],
   links:               Vector[LinkSummary],
-  regionTransferBytes: Map[String, Long],
-  regionTransferCost:  Map[String, BigDecimal]
+  regionTransferBytes: Map[String, Long]
 ):
   def region(name: String): RegionSummary          = regions.find(_.regionName == name).get
   def link(src: String, dst: String): LinkSummary  = links.find(l => l.sourceRegion == src && l.destRegion == dst).get
-  def totalCost(name: String): BigDecimal          = region(name).capacityAndStorageCost + regionTransferCost.getOrElse(name, BigDecimal(0))
+  def totalCost(name: String): BigDecimal          = region(name).capacityAndStorageCost
 
 /**
  * Runs one trial of a [[HotReplicaConfig]] on a **bespoke** multi-region graph around [[GlobalTable]] — the
@@ -56,7 +56,7 @@ final class HotReplicaTrialRunner()(using ActorSystem, Materializer, ExecutionCo
     val gt = GlobalTable.componentOf(config.globalTableConfig, RandomSource.KISS.create(tableSeed))
 
     def regionSink(r: String): Sink[TimedElement[Timed[DynamoDbConsumption]], Future[RegionAccountingState]] =
-      Sink.fold(new RegionAccountingState(r, config.region(r).billingMode, config.rates, config.simulationTicks)) {
+      Sink.fold(new RegionAccountingState(r, config.region(r).billingMode, config.region(r).rates, config.simulationTicks)) {
         (state, element: TimedElement[Timed[DynamoDbConsumption]]) => state.update(element); state
       }
     val metricsSink: Sink[TimedElement[Timed[ReplicationOutput]], Future[ReplicationMetricsState]] =
@@ -86,9 +86,6 @@ final class HotReplicaTrialRunner()(using ActorSystem, Materializer, ExecutionCo
     yield
       val regionSummaries = Vector(a0, a1, a2).map(_.result())
       val links           = m.result()
-      // Egress bytes/cost by source region (transfer is charged at the source region's per-GB rate).
+      // Egress bytes by source region — the replication volume (a metric only; no transfer charge).
       val transferBytes = names.map(r => r -> links.filter(_.sourceRegion == r).map(_.transferBytes).sum).toMap
-      val transferCost  = names.map { r =>
-        r -> BigDecimal(transferBytes(r)) * config.region(r).transferPricePerGiB / BigDecimal(1024).pow(3)
-      }.toMap
-      HotReplicaTrialResult(trialId, regionSummaries, links, transferBytes, transferCost)
+      HotReplicaTrialResult(trialId, regionSummaries, links, transferBytes)

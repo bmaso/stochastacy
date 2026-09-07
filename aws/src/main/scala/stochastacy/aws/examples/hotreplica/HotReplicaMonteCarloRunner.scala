@@ -9,7 +9,8 @@ import org.apache.pekko.stream.scaladsl.Sink
 
 import stochastacy.core.run.MonteCarlo
 
-/** Cross-trial mean of one region's roll-up. */
+/** Cross-trial mean of one region's roll-up. Cost is capacity + storage only — global-table replication
+ *  transfer is free in AWS, so there is no transfer cost. */
 final case class RegionAggregate(
   regionName:             String,
   meanRcu:                Double,
@@ -17,8 +18,6 @@ final case class RegionAggregate(
   meanRwcu:               Double,
   meanFinalStorageBytes:  Double,
   meanThrottledRequests:  Double,
-  meanCapacityStorageCost: BigDecimal,
-  meanTransferCost:       BigDecimal,
   meanTotalCost:          BigDecimal
 )
 
@@ -62,7 +61,7 @@ final class HotReplicaMonteCarloRunner()(using system: ActorSystem, mat: Materia
   private final class Aggregator(config: HotReplicaConfig):
     private var count = 0
     private val rcu, wcu, rwcu, storage, throttled = mutable.Map.empty[String, Double].withDefaultValue(0.0)
-    private val capStoreCost, transferCost         = mutable.Map.empty[String, BigDecimal].withDefaultValue(BigDecimal(0))
+    private val capStoreCost                        = mutable.Map.empty[String, BigDecimal].withDefaultValue(BigDecimal(0))
     private val linkBytes, linkLatMean, linkLatP95, linkLatMax, linkPendMean, linkPendMax =
       mutable.Map.empty[(String, String), Double].withDefaultValue(0.0)
     private var sample: Vector[LinkSummary] = Vector.empty
@@ -77,8 +76,6 @@ final class HotReplicaMonteCarloRunner()(using system: ActorSystem, mat: Materia
         storage(r.regionName)   += r.finalStorageBytes.toDouble
         throttled(r.regionName) += r.throttledRequests.toDouble
         capStoreCost(r.regionName) = capStoreCost(r.regionName) + r.capacityAndStorageCost
-      for (name, cost) <- t.regionTransferCost do
-        transferCost(name) = transferCost(name) + cost
       for l <- t.links do
         val k = (l.sourceRegion, l.destRegion)
         linkBytes(k)    += l.transferBytes.toDouble
@@ -93,15 +90,13 @@ final class HotReplicaMonteCarloRunner()(using system: ActorSystem, mat: Materia
       val nb = BigDecimal(n)
       val regions = config.regionNames.map { r =>
         RegionAggregate(
-          regionName              = r,
-          meanRcu                 = rcu(r) / n,
-          meanWcu                 = wcu(r) / n,
-          meanRwcu                = rwcu(r) / n,
-          meanFinalStorageBytes   = storage(r) / n,
-          meanThrottledRequests   = throttled(r) / n,
-          meanCapacityStorageCost = capStoreCost(r) / nb,
-          meanTransferCost        = transferCost(r) / nb,
-          meanTotalCost           = (capStoreCost(r) + transferCost(r)) / nb
+          regionName            = r,
+          meanRcu               = rcu(r) / n,
+          meanWcu               = wcu(r) / n,
+          meanRwcu              = rwcu(r) / n,
+          meanFinalStorageBytes = storage(r) / n,
+          meanThrottledRequests = throttled(r) / n,
+          meanTotalCost         = capStoreCost(r) / nb
         )
       }
       val links = linkBytes.keys.toVector.sorted.map { k =>

@@ -293,6 +293,51 @@ the [core component catalog](component-catalog.md#foundations); they are not rep
 | model a hot partition / adaptive capacity / split-for-heat | `TableBehavior.partitionAccessFor` + `Config.adaptiveCapacity` + `Config.heatSplitPolicy` |
 | add throttling to a table (later) | a core `Interface.wrap` gate on the table's edge |
 
+## Known discrepancies
+
+Modeling gaps we have **deliberately deferred** — where the AWS DynamoDB model is knowingly less than
+perfectly AWS-accurate, but the inaccuracy is understood and bounded. Each entry records the discrepancy, its
+effect versus perfect AWS accuracy, and a sketch of the fix. Add to this section (rather than silently
+leaving a gap) whenever a divergence is left for later.
+
+### Multi-region per-region storage — summary-model saturation-pollution
+
+**Discrepancy.** In a Global Table, a region's storage should converge to the **full key-space union** of all
+regions' items (every replica is a full copy — the AWS guarantee). A local write's insert-vs-overwrite
+decision is made by the domain `TableBehavior` (e.g. the thermostat's fleet-saturation heuristic), which reads
+the region's `TableSummaryState`. Because that state is the **combined** local + replicated summary, a region
+that receives replicated inbound writes sees an inflated `itemCount` and stops inserting its *own* new items
+too early. The converged per-region population therefore lands **between "largest single fleet" and the true
+union**, and differs between v2 and the legacy. (Replicated writes themselves are applied correctly — they
+replay the source's resolved outcome via `onFeedback`; a pure-insert workload converges to the exact union.
+The residual is only in how the *source* region's own insert/overwrite mix is polluted.)
+
+**Effect vs. perfect AWS accuracy.** Per-region **final storage bytes** diverge — in the hot-replica reconcile
+arm, a uniform ≈ 16 % vs. the legacy (which has its own version of the same pollution). It is **bounded** (it
+does not grow without limit) and its **cost impact is negligible**: storage cost (byte-ticks × the GiB-second
+rate) is orders of magnitude below capacity cost, so the total-cost story is unaffected. Capacity (RCU/WCU)
+and replication *volume* are unaffected and reconcile cleanly. Verified by `ControlledReplicationDiagnosticSpec`
+(removed after tracing): pure inserts → exact union; insert-then-overwrite → converges to the larger fleet, not
+the union.
+
+**Fix sketch.** Split the per-region summary into **local** vs. **replicated** contributions: the behavior's
+saturation reads the *local-only* `itemCount` (its own fleet's population), while storage / rWCU / index
+maintenance / TTL continue to use the **combined** totals. That means threading a two-part `TableSummaryState`
+(local + replicated) through `TableMechanics`, `SecondaryIndexMechanics`, and `TtlRingBuffer`, and routing
+`sample`'s outcome decision to the local part while `onFeedback` grows the replicated part. A real mechanism
+change (Slice-2/3 territory), with its own tests — deferred, as it is bounded and cost-negligible.
+
+### Multi-region system-error rate — omitted `ChaosGate`
+
+**Discrepancy.** The single-region thermostat attaches a ~0.1 % system-error `ChaosGate` on the table's inlet;
+the hot-replica multi-region demo omits it, because `GlobalTable` builds its regional tables internally and a
+gate cannot currently sit inside the cyclic Global Table graph.
+
+**Effect vs. perfect AWS accuracy.** ~0.1 % fewer rejected requests, i.e. a ~0.1 % upward bias on consumed
+capacity — well within the reconcile tolerance, immaterial. **Fix sketch.** Let `GlobalTable.Config` carry an
+optional per-region system-error rate and wrap each region's inlet source with the `ChaosGate` before
+`requestIn`, or expose a pre-wrapped-region hook.
+
 ## See also
 
 - [Order-Tracking v2 — DynamoDB on the v2 core](README.ordertracking-v2.md) — the table as a worked example.

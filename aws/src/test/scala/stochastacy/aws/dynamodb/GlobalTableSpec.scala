@@ -44,7 +44,7 @@ class GlobalTableSpec extends AnyWordSpec with should.Matchers with BeforeAndAft
     "release a tap to its peer after the link lag, with transfer + latency, tracking pending depth" in {
       val in: Vector[TimedElement[Timed[TaggedTap]]] = Vector(
         TimedControlEvent.Tick(SimTime.of(1)),
-        Timed(TaggedTap("A", ReplicationWrite(PutItemRequest(200L))), SimTime.of(1), 0.0, "x"),
+        Timed(TaggedTap("A", ReplicationWrite(OperationOutcome.Put(200L, None))), SimTime.of(1), 0.0, "x"),
         TimedControlEvent.Tick(SimTime.of(2)),
         TimedControlEvent.Tick(SimTime.of(3)),
         TimedControlEvent.EndOfTime
@@ -52,7 +52,7 @@ class GlobalTableSpec extends AnyWordSpec with should.Matchers with BeforeAndAft
       val out = await(Source(in).via(ReplicationCoordinator.flow(Vector("A", "B"), model, Map.empty, rng)).runWith(Sink.seq))
       val biz = out.collect { case t: Timed[ReplicationOutput] @unchecked => t }
       biz.collect { case Timed(ReplicationOutput.ReplicatedWriteFor(d, w), et, _, _) => (d, w, et.ticks) } shouldBe
-        List(("B", ReplicationWrite(PutItemRequest(200L)), 2L)) // lag 1 → applies at tick 2
+        List(("B", ReplicationWrite(OperationOutcome.Put(200L, None)), 2L)) // lag 1 → applies at tick 2
       biz.collect { case Timed(ReplicationOutput.Transfer(e), _, _, _) => e } shouldBe
         List(CrossRegionTransferEvent("A", "B", 200L))
       biz.collect { case Timed(ReplicationOutput.Latency(s), _, _, _) => s.latencyTicks } shouldBe List(1L)

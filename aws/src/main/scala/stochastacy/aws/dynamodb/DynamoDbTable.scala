@@ -80,14 +80,15 @@ object DynamoDbTable:
 
     def initialState: TableState = TableState.initial(config.initialState, indexes, config.billingMode, config.ttlPeriodTicks)
 
-    /** The **tap** (loop-out) for a local write: one [[ReplicationWrite]] per admitted single-item write, to be
-     *  replicated to peer regions. Reads, transactions, and throttled writes tap nothing. Emitted regardless of
-     *  single- vs multi-region — a standalone table's tap plane is simply ignored (inert). */
-    private def tapFor(in: DynamoDbRequest): List[Scheduled[ReplicationWrite]] = in match
-      case p: PutItemRequest    => List(Scheduled(ReplicationWrite(p), 0.0))
-      case u: UpdateItemRequest => List(Scheduled(ReplicationWrite(u), 0.0))
-      case DeleteItemRequest    => List(Scheduled(ReplicationWrite(DeleteItemRequest), 0.0))
-      case _                    => Nil
+    /** The **tap** (loop-out) for a local write: one [[ReplicationWrite]] per admitted single-item write,
+     *  carrying the write's **resolved outcome** (insert/overwrite + item bytes) so peer regions replay what
+     *  happened here rather than re-deciding it against their own state. Reads, transactions, and throttled
+     *  writes tap nothing. Emitted regardless of single- vs multi-region — a standalone table's tap plane is
+     *  simply ignored (inert). */
+    private def tapFor(outcome: OperationOutcome): List[Scheduled[ReplicationWrite]] = outcome match
+      case _: OperationOutcome.Put | _: OperationOutcome.Update | _: OperationOutcome.Delete =>
+        List(Scheduled(ReplicationWrite(outcome), 0.0))
+      case _ => Nil
 
     def sample(
       in:    DynamoDbRequest,
@@ -182,7 +183,7 @@ object DynamoDbTable:
             newState    = state.copy(base = resolution.state, indexes = nextIndexes, perTickBudget = budget, ttl = nextTtl),
             output      = Scheduled(resolution.response, math.max(0.0, latency)),
             consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled,
-            taps        = tapFor(in)
+            taps        = tapFor(outcome)
           )
         case BillingMode.OnDemand =>
           // Uncapped: admit unchanged (no budget), exactly as before provisioned billing existed.
@@ -190,7 +191,7 @@ object DynamoDbTable:
             newState    = state.copy(base = resolution.state, indexes = nextIndexes, ttl = nextTtl), // copy preserves currentTick
             output      = Scheduled(resolution.response, math.max(0.0, latency)),
             consumption = resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled,
-            taps        = tapFor(in)
+            taps        = tapFor(outcome)
           )
 
     /** Sum per-budget-target capacity demand from the operation's consumption facts. */
@@ -288,13 +289,15 @@ object DynamoDbTable:
       case DynamoDbTarget.Gsi(name) => state.index(name)
       case DynamoDbTarget.Lsi(name) => state.index(name)
 
-    /** Apply an inbound **replicated** write at this (destination) region: run the wrapped write's mechanics
-     *  against the destination's state (storage + index maintenance + TTL, exactly as a local write) and bill
-     *  **rWCU** — every `WriteCapacityConsumed` becomes `ReplicatedWriteCapacityConsumed`. It has no client, so
-     *  it emits no forward output; it never re-replicates, so it emits no tap (loop-prevention is structural).
-     *  rWCU is ungated in this slice — always applied, never throttled. */
+    /** Apply an inbound **replicated** write at this (destination) region by **replaying the source's resolved
+     *  outcome** (`fb.outcome`) against the destination's state — never re-deciding insert-vs-overwrite here, so
+     *  a write that inserted a new item at the source inserts it here too and every replica converges to the
+     *  same full dataset (the AWS global-table guarantee). It runs the write's mechanics (storage + index
+     *  maintenance + TTL, exactly as a local write) and bills **rWCU** — every `WriteCapacityConsumed` becomes
+     *  `ReplicatedWriteCapacityConsumed`. It has no client, so it emits no forward output; it never re-replicates,
+     *  so it emits no tap (loop-prevention is structural). rWCU is applied here (coordinator-gated upstream). */
     override def onFeedback(fb: ReplicationWrite, state: TableState, rng: UniformRandomProvider): TickEmission[TableState, DynamoDbConsumption] =
-      val outcome    = config.behavior.outcomeFor(fb.inner, state.base, rng, state.currentTick)
+      val outcome    = fb.outcome
       val resolution = TableMechanics.resolve(outcome, state.base)
 
       val writeFootprints: List[(Option[Long], Option[Long])] = outcome match

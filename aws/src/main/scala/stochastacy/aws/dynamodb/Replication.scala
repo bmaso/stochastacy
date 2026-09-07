@@ -1,5 +1,6 @@
 package stochastacy.aws.dynamodb
 
+import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
 import stochastacy.core.sampler.StatelessSampler
 
 /**
@@ -10,8 +11,15 @@ import stochastacy.core.sampler.StatelessSampler
  * (billing rWCU). The same `ReplicationWrite` payload serves as both the tap and the feedback event.
  */
 
-/** A write to replicate / a replicated write to apply — the table's `Tap` and `Fb` payload. */
-final case class ReplicationWrite(inner: PutItemRequest | UpdateItemRequest | DeleteItemRequest.type)
+/**
+ * A write to replicate / a replicated write to apply — the table's `Tap` and `Fb` payload. It carries the
+ * source's **resolved** write outcome (its insert-vs-overwrite decision and item bytes), never the raw
+ * request, so the destination **replays** what actually happened at the source rather than re-deciding it
+ * against its own (local) state. This is what makes every replica converge to the *same* full dataset — the
+ * AWS global-table guarantee (each replica is a full copy). `outcome` is always a write outcome
+ * (`Put` / `Update` / `Delete`); reads and transactions never tap.
+ */
+final case class ReplicationWrite(outcome: OperationOutcome)
 
 /** A tap tagged with the region it originated in — the coordinator's input element. */
 final case class TaggedTap(sourceRegion: String, write: ReplicationWrite):
