@@ -83,7 +83,7 @@ transfer); cross-region transfer per-link bytes + per-region/total bytes/cost; p
 | 1 | Core loopback transducer + de-risking prototype | **Done** | `ScheduleReleaseTransducer` gains a feedback inlet + tap outlet (eager tick-forward), `ComponentSampler` an `onFeedback` + `Tap` channel; a toy loopback proves "effect in A reappears in B one tick later, no deadlock"; `Nothing`/`Nothing` byte-identical (full `sbt test`) |
 | 2 | Multi-region composition + replication + rWCU billing | **Done** | on the loopback: a region-A write applies rWCU-billed in region B after link lag; per-source-stream queues; transfer bytes; `ReplicationLatency`/`PendingReplicationCount` (in-flight count, window-close sampled); single-region byte-identical |
 | 3 | rWCU throttling + depletion backlog + metric coupling | **Done** | `replicatedWriteCapacityUnits` ceiling + fair-share-per-source drain; under depletion the backlog grows, per-source latency/pending diverge, both drain on recovery; unlimited rWCU = Slice-2 behavior |
-| 4 | Hot-replica demo | Planned | bespoke thermostat-flavored 3-region demo + `@main`; two arms (reconcile / 8:1 depletion) with per-region + per-link metrics, JSONL + console; the per-link distinction |
+| 4 | Hot-replica demo | **Done** | bespoke thermostat-flavored 3-region demo + `@main`; two arms (reconcile / 8:1 depletion) with per-region + per-link metrics, JSONL + console; the per-link distinction |
 | 5 | Hybrid reconcile + docs + close-out | Planned | reconcile arm direct per-region pin vs legacy `multiRegionDefault`; catalog + README; close-out coda |
 
 ## Slices
@@ -179,6 +179,24 @@ console summary.
 **Validated by:** `HotReplicaSpec` — the depletion arm shows the per-link distinction (us-east→ap-southeast pending
 ≈ 8× and latency > eu-west→ap-southeast, rising then draining); the reconcile arm stays healthy; determinism. Plus
 a demo smoke-run.
+
+**Delivered.** A bespoke `stochastacy.aws.examples.hotreplica` package (`@main HotReplicaDemo`), **reusing the
+thermostat telemetry table** per region so arm A stays reconcilable: `RegionConfig` wraps a `ThermostatConfig`
+(fleet size + billing mode) and `HotReplicaConfig` assembles three into a `GlobalTable.Config` with a per-link
+`ReplicationModel`. `HotReplicaTrialRunner` drives the coupled cyclic `GlobalTable` (each region's framed workload →
+`requestIn`; per-region consumption folded by `RegionAccountingState`; the single `metricsOut` by
+`ReplicationMetricsState`), materialized with a 3-region + metrics `createGraph`. **rWCU priced by billing mode
+exactly as WCU** (D7): consumed under on-demand, reserved capacity-hours under provisioned (rWCU reservation
+included); cross-region transfer priced per **source** region ($/GiB). `HotReplicaMonteCarloRunner` folds trials
+into cross-trial means incrementally (`MonteCarlo.stream` + `Sink.fold`, bounded memory), keeping the first trial's
+per-tick link series for the streaming JSONL. **No system-error `ChaosGate`** inside the Global Table graph (the
+legacy's ~0.1 % is within reconcile tolerance). Two shipped arms: `reconcileDefault` (on-demand 1800/900/300, all
+links latency ≈ link-lag, pending bounded) and `depletionDefault` (8:1 2000/250/300; `ap-southeast-1` provisioned
+with a **12-rWCU inbound ceiling** below its ~74/tick combined inbound + a longer us-east→ap-southeast link). A
+representative run shows both inbound links into ap-southeast backing up with a clear per-link distinction —
+us-east→ap-southeast pending ≈ **12×** and latency ≈ 2.5× the eu-west stream, while every other link stays healthy.
+`HotReplicaSpec` (4 cases: divergence / healthy arm / determinism / smoke-run). Note: this continuously-loaded demo
+never drains a backlog — rise-then-drain is unit-tested in `RwcuThrottlingSpec`. Full `sbt test` green.
 
 ### Slice 5 — Hybrid reconcile + docs + close-out
 `HotReplicaReconciliationSpec`: direct per-region pin of the reconcile arm against a captured legacy
