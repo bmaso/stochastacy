@@ -52,7 +52,10 @@ lazy val core = (project in file("core"))
   )
 
 lazy val examples = (project in file("examples"))
-  .dependsOn(core)
+  // aws (dependsOn core) brings core transitively AND places the v2 `stochastacy.aws.dynamodb` ahead of
+  // core's legacy same-named package on the classpath (the two collide on a case-insensitive filesystem);
+  // the legacy is deleted in the phase-12 close-out, after which the ordering no longer matters.
+  .dependsOn(aws)
   .settings(
     name := "stochastacy-examples",
     version := "0.0.1",

@@ -56,18 +56,29 @@ deleted and the build/tests are green without them.
 
 | # | Title | Status | Delivered / notes |
 |---|---|---|---|
-| 1 | Pipeline foundation + order-tracking end-to-end | Planned | `examples.dependsOn(aws)`; a shared v2 bridge (`generate → stage → view`) over the existing `stochastacy.demo.*` staging + Postgres schema + docker-compose; both order-tracking dashboards (p1 `OrderTrackingDemo`, p2 `IndexedOrderTrackingDemo`) ported and proven end-to-end; a Grafana-assets spec |
+| 1 | Delete legacy examples demos + pipeline foundation + order-tracking | **Done** | forced reorder (Brian-approved): `examples.dependsOn(aws)` puts the v2 `stochastacy.aws.dynamodb` beside `core`'s legacy same-named package, so the **legacy `examples` demos had to go first** (their imports go ambiguous); then a shared v2 bridge (`GrafanaBridge` + `DemoPostgresStaging` in `stochastacy.demo`, `@main GrafanaDemoBridge`) over the existing schema/docker-compose, both order-tracking dashboards reused and proven end-to-end (H2 round-trip) + a Grafana-assets spec |
 | 2 | Thermostat single-region + mixed-mode | Planned | the `ThermostatFleetDemo` + `ThermostatMixedModeDemo` bridge modes + dashboards, reusing the Slice-1 shape |
 | 3 | Thermostat multi-table + capstone | Planned | the `ThermostatMultiTableDemo` + `ThermostatCapstoneDemo` bridge modes + dashboards (per-table metrics) |
-| 4 | Legacy retirement + close-out | Planned | delete legacy `core/…/stochastacy/aws` + `stochastacy/workload`, the legacy `examples` `ordertracking`/`thermostatfleet` demos + bridges, the `samplerExports` shim; fix build deps; update runbooks + CLAUDE.md to the v2 bridge; full `sbt test` green; roadmap COMPLETE, program roadmap, memory |
+| 4 | Legacy **core** retirement + close-out | Planned | the legacy `examples` demos are already gone (Slice 1); delete the legacy **core** `stochastacy/aws` + `stochastacy/workload` + `samplerExports` shim; prune deps; update runbooks + CLAUDE.md to the v2 bridge; full `sbt test` green; roadmap COMPLETE, program roadmap, memory |
 
-### Slice 1 — Pipeline foundation + order-tracking end-to-end
-The heavy slice: stand up the whole v2 pipeline and prove it on the simplest demo. Add `examples.dependsOn(aws)`.
-Build a shared v2 bridge with `generate` (run the v2 `OrderTracking{,Indexed}MonteCarloRunner`, emit
-`DemoExportRecord` JSONL via `DemoJsonlExporter`), `stage` (the existing Postgres loader — `demo_batches` /
-`demo_records`), and `view` (Grafana dashboard provisioning). Port the two order-tracking dashboards to the v2
-metric names, and validate the round trip against the `docker-compose` Postgres + Grafana. A Grafana-assets spec
-(mirroring `OrderTrackingGrafanaAssetsSpec`) locks the dashboard JSON.
+### Slice 1 — Delete legacy examples demos + pipeline foundation + order-tracking
+The heavy slice. **Forced reorder (Brian-approved):** `examples.dependsOn(aws)` puts the v2 `stochastacy.aws.dynamodb`
+package on the same classpath as `core`'s legacy same-named package; the legacy `examples` demos import the legacy
+one, so every reference goes ambiguous (and the `.class` files collide on a case-insensitive filesystem). So the
+**legacy `examples` `ordertracking` + `thermostatfleet` demos (main + test) were deleted first** — they are exactly
+what the v2 pipeline replaces, nothing surviving references them, and the aws reconcile specs cite the legacy only in
+capture-command comments. The legacy **core** simulator stays for Slice 4.
+
+**Delivered.** `examples.dependsOn(aws)` (brings `core` transitively, v2 classes ahead of the legacy). A surviving
+generic staging home in `stochastacy.demo`: `DemoPostgresStaging` (JDBC loader — schema + `demo_batches`/`demo_records`,
+metric-agnostic, a generic `001-schema.sql` resource) + `GrafanaBridge` (adapts a v2 `SingleTableScenario` run into the
+generic `TrialResult` model — the v2 metric strings already equal `DemoMetric.exportName` — and drives it through
+`DemoReportBuilder`, which adds the **windowed** records the dashboards' time panels need and the v2 AWS exporter never
+emitted). A shared `@main GrafanaDemoBridge` CLI (`generate|stage|view`, `--demo <name>`) wires both order-tracking
+demos, reusing the legacy dashboards unchanged. Proven end-to-end (minus live Grafana) by `GrafanaBridgeSpec` — an H2
+`generate → stage` round trip asserting every dashboard record family populates, including the window views and the
+per-GSI metrics — plus `GrafanaAssetsSpec` (dashboards + pipeline assets). Live Grafana `view` is runbook-verified
+(Slice 4). Full `sbt test` green.
 
 ### Slice 2 — Thermostat single-region + mixed-mode
 Reuse the Slice-1 bridge shape for `ThermostatFleetDemo` (single-region) and `ThermostatMixedModeDemo` (the
