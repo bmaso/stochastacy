@@ -57,7 +57,7 @@ deleted and the build/tests are green without them.
 | # | Title | Status | Delivered / notes |
 |---|---|---|---|
 | 1 | Delete legacy examples demos + pipeline foundation + order-tracking | **Done** | forced reorder (Brian-approved): `examples.dependsOn(aws)` puts the v2 `stochastacy.aws.dynamodb` beside `core`'s legacy same-named package, so the **legacy `examples` demos had to go first** (their imports go ambiguous); then a shared v2 bridge (`GrafanaBridge` + `DemoPostgresStaging` in `stochastacy.demo`, `@main GrafanaDemoBridge`) over the existing schema/docker-compose, both order-tracking dashboards reused and proven end-to-end (H2 round-trip) + a Grafana-assets spec |
-| 2 | Thermostat single-region + mixed-mode | Planned | the `ThermostatFleetDemo` + `ThermostatMixedModeDemo` bridge modes + dashboards, reusing the Slice-1 shape |
+| 2 | Thermostat single-region + mixed-mode | **Done** | registered both demos; a small Tier-1 accounting extension (per-tick provisioned capacity + throttle count, from facts already folded to summary) so the mixed-mode **right-sizing-trap** story is visible; both dashboards adapted to v2's metric set (dropped latency/returned/system-error/multi-region panels); H2 round-trips incl. the provisioned throttle path |
 | 3 | Thermostat multi-table + capstone | Planned | the `ThermostatMultiTableDemo` + `ThermostatCapstoneDemo` bridge modes + dashboards (per-table metrics) |
 | 4 | Legacy **core** retirement + close-out | Planned | the legacy `examples` demos are already gone (Slice 1); delete the legacy **core** `stochastacy/aws` + `stochastacy/workload` + `samplerExports` shim; prune deps; update runbooks + CLAUDE.md to the v2 bridge; full `sbt test` green; roadmap COMPLETE, program roadmap, memory |
 
@@ -81,8 +81,27 @@ per-GSI metrics — plus `GrafanaAssetsSpec` (dashboards + pipeline assets). Liv
 (Slice 4). Full `sbt test` green.
 
 ### Slice 2 — Thermostat single-region + mixed-mode
-Reuse the Slice-1 bridge shape for `ThermostatFleetDemo` (single-region) and `ThermostatMixedModeDemo` (the
-mixed-mode provisioned/reconfiguration story — its dashboard carries the extra provisioned/throttle panels).
+Reuse the Slice-1 bridge for `ThermostatFleetDemo` + `ThermostatMixedModeDemo` (both `SingleTableScenario`s).
+
+**The metric gap + how we handled it.** The legacy thermostat dashboards query a far richer per-tick set than the
+v2 demos emit (per-op latency percentiles, returned-item counts, system-error counts, multi-region panels, and —
+mixed-mode — per-tick provisioned capacity / throttle / billing-mode / admitted). This is **not** a fundamental v2
+incapacity: the simulation produces all the underlying events; the demos' cost-only accounting just doesn't fold them
+(some are on the response plane the demos ignore; per-op latency is drawn but not surfaced as a fact). Per Brian's
+call, we **adapt the dashboards to what v2 produces now** and build the rest only when a later demo needs it (no
+Known-discrepancies note — these are "produce later", not "won't do").
+
+**Delivered.** One **Tier-1 accounting extension** (the throttle story genuinely needs it — a summary total hides
+*when* throttling starts): `TrialTimeSeriesPoint` + `TrialAccountingState` now carry per-tick provisioned RCU/WCU +
+throttle count (from `ProvisionedCapacitySnapshot` / `RequestThrottled`, already folded to summary; additive, defaulted
+— on-demand demos unchanged). `GrafanaBridge.adaptSingleTable` gained a `provisioned` flag and maps these to
+`ProvisionedReadCapacityUnits`/`WriteCapacityUnits`/`ThrottleCount`/`BillingModeIndicator` (the generic
+`TimeWindowRollups` already knew these metrics). Both demos registered in `GrafanaDemoBridge`. Both dashboards
+**adapted in place** (fleet 27→13 panels, mixed-mode 17→11) — dropping latency-percentile / returned-item /
+system-error / multi-region / admitted panels, keeping capacity/storage/cost/GSI and (mixed-mode) the billing-mode /
+consumed-vs-provisioned / throttle panels that tell the right-sizing trap. `GrafanaBridgeSpec` gained a provisioned
+thermostat H2 round-trip (per-tick provisioned/throttle records populate); `GrafanaAssetsSpec` covers both dashboards.
+Full `sbt test` green.
 
 ### Slice 3 — Thermostat multi-table + capstone
 `ThermostatMultiTableDemo` (per-table `Table:<name>:…` metrics) and `ThermostatCapstoneDemo` (the 4-table fleet),

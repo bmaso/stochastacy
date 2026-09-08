@@ -25,8 +25,12 @@ import stochastacy.aws.examples.demo.{SingleTableMonteCarloRunner, SingleTableSc
 object GrafanaBridge:
 
   /** Adapt one v2 single-table trial into a generic [[TrialResult]] — base RCU/WCU/storage/cumulative-cost per
-   *  tick + per-GSI capacity, and the summary totals. Metric names come straight from [[DemoMetric.exportName]]. */
-  def adaptSingleTable(scenarioId: String, gsiNames: Vector[String], t: AwsTrialResult): TrialResult =
+   *  tick + per-GSI capacity, and the summary totals. Metric names come straight from [[DemoMetric.exportName]].
+   *  For a **provisioned** table it additionally surfaces the per-tick reserved capacity, billing-mode
+   *  indicator, and throttle count — the temporal signal a mixed-mode / reconfiguration story turns on (a
+   *  summary total would hide *when* throttling starts). On-demand tables emit none of these, so their output
+   *  is unchanged. */
+  def adaptSingleTable(scenarioId: String, gsiNames: Vector[String], provisioned: Boolean, t: AwsTrialResult): TrialResult =
     val timeSeries = t.timeSeries.flatMap { p =>
       val base = Vector(
         SimulationTimeSeriesPoint(p.tick, DemoMetric.ReadCapacityUnits,       p.readCapacityUnits),
@@ -38,7 +42,16 @@ object GrafanaBridge:
         p.gsiReadCapacityUnits.get(n).map(v  => SimulationTimeSeriesPoint(p.tick, DemoMetric.GsiReadCapacityUnits(n), v)).toVector ++
         p.gsiWriteCapacityUnits.get(n).map(v => SimulationTimeSeriesPoint(p.tick, DemoMetric.GsiWriteCapacityUnits(n), v)).toVector
       }
-      base ++ gsi
+      val provisionedSeries =
+        if !provisioned then Vector.empty
+        else
+          Vector(
+            SimulationTimeSeriesPoint(p.tick, DemoMetric.ThrottleCount,       BigDecimal(p.throttledRequests)),
+            SimulationTimeSeriesPoint(p.tick, DemoMetric.BillingModeIndicator, if p.provisionedReadCapacityUnits.isDefined then BigDecimal(1) else BigDecimal(0))
+          ) ++
+          p.provisionedReadCapacityUnits.map(v  => SimulationTimeSeriesPoint(p.tick, DemoMetric.ProvisionedReadCapacityUnits, BigDecimal(v))).toVector ++
+          p.provisionedWriteCapacityUnits.map(v => SimulationTimeSeriesPoint(p.tick, DemoMetric.ProvisionedWriteCapacityUnits, BigDecimal(v))).toVector
+      base ++ gsi ++ provisionedSeries
     }
     val summary = Vector(
       TrialSummaryValue(DemoMetric.TotalReadCapacityUnits,  t.summary.totalReadCapacityUnits),
@@ -62,8 +75,8 @@ object GrafanaBridge:
     case other                                               => other
 
   /** All six record families (trial/aggregate × time-series/window/summary) for the adapted trials, tick-shifted. */
-  def recordsFor(scenarioId: String, gsiNames: Vector[String], awsTrials: Vector[AwsTrialResult], offsetSeconds: Long): Vector[DemoExportRecord] =
-    val trials = awsTrials.map(adaptSingleTable(scenarioId, gsiNames, _))
+  def recordsFor(scenarioId: String, gsiNames: Vector[String], provisioned: Boolean, awsTrials: Vector[AwsTrialResult], offsetSeconds: Long): Vector[DemoExportRecord] =
+    val trials = awsTrials.map(adaptSingleTable(scenarioId, gsiNames, provisioned, _))
     DemoReportBuilder.build(trials).records.map(applyTickOffset(_, offsetSeconds))
 
   /** Run the v2 single-table Monte Carlo runner and write the staging JSONL; returns the record count. */
@@ -72,7 +85,7 @@ object GrafanaBridge:
   ): Future[Int] =
     val gsiNames = scenario.globalSecondaryIndexes.map(_.indexName)
     new SingleTableMonteCarloRunner().run(scenario, masterSeed).map { result =>
-      val records = recordsFor(scenario.scenarioId, gsiNames, result.trials, offsetSeconds)
+      val records = recordsFor(scenario.scenarioId, gsiNames, scenario.usesProvisioning, result.trials, offsetSeconds)
       DemoJsonlExporter.write(output, records)
       records.size
     }(using summon[ExecutionContext])

@@ -91,6 +91,7 @@ final class TrialAccountingState(
   private var bucketGsiWcu      = mutable.Map.empty[String, BigDecimal]
   // The reserved capacity an auto-scaling table emits for this tick; overrides the static schedule when present.
   private var bucketProvisioned = Option.empty[(BigInt, BigInt)]
+  private var bucketThrottled   = 0L // requests throttled during this tick (the per-tick throttle signal)
   private val points            = Vector.newBuilder[TrialTimeSeriesPoint]
 
   private def bump(m: mutable.Map[String, BigDecimal], key: String, v: BigDecimal): Unit =
@@ -101,7 +102,8 @@ final class TrialAccountingState(
       // Attribute this tick to its billing mode: provisioned → accrue reserved capacity-ticks; on-demand →
       // accrue the consumed capacity that gets billed. An auto-scaling table's per-tick snapshot (runtime
       // capacity) takes precedence over the static schedule.
-      bucketProvisioned.orElse(provisionedPerTick(bucketTick)) match
+      val provisionedInForce = bucketProvisioned.orElse(provisionedPerTick(bucketTick))
+      provisionedInForce match
         case Some((r, w)) =>
           provRcuTicks += r; cumProvRcuTicks += r
           provWcuTicks += w; cumProvWcuTicks += w
@@ -120,7 +122,10 @@ final class TrialAccountingState(
                                     + Pricing.storageCost(cumByteTicks, rates)
                                     + (if pitrEnabled then Pricing.pitrCost(cumByteTicks, rates) else BigDecimal(0)),
         gsiReadCapacityUnits    = bucketGsiRcu.toMap,
-        gsiWriteCapacityUnits   = bucketGsiWcu.toMap
+        gsiWriteCapacityUnits   = bucketGsiWcu.toMap,
+        provisionedReadCapacityUnits  = provisionedInForce.map(_._1.toLong),
+        provisionedWriteCapacityUnits = provisionedInForce.map(_._2.toLong),
+        throttledRequests             = bucketThrottled
       )
 
   def update(element: TimedElement[Timed[DynamoDbConsumption]]): Unit =
@@ -133,6 +138,7 @@ final class TrialAccountingState(
         bucketGsiRcu      = mutable.Map.empty
         bucketGsiWcu      = mutable.Map.empty
         bucketProvisioned = None
+        bucketThrottled   = 0L
         bucketOpen        = true
 
       case TimedControlEvent.EndOfTime =>
@@ -150,7 +156,7 @@ final class TrialAccountingState(
           case StorageBytesDelta(d, _) =>
             currentBytes += d
           case RequestThrottled(_) =>
-            throttledReqs += 1L
+            throttledReqs += 1L; bucketThrottled += 1L
           case ProvisionedCapacitySnapshot(r, w) =>
             bucketProvisioned = Some((BigInt(r), BigInt(w)))
           case ReplicatedWriteCapacityConsumed(_, _) =>

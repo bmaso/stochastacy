@@ -11,6 +11,7 @@ import org.apache.pekko.stream.Materializer
 
 import stochastacy.aws.examples.demo.SingleTableScenario
 import stochastacy.aws.examples.ordertracking.OrderTrackingConfig
+import stochastacy.aws.examples.thermostatfleet.ThermostatConfig
 import stochastacy.demo.{BatchMetadata, DemoPostgresStaging, GrafanaBridge}
 
 /** One v2 demo the bridge can drive: how to build its (override-able) scenario, its batch-metadata bits, and
@@ -57,6 +58,22 @@ object GrafanaDemoBridgeCli:
       defaultTicks = OrderTrackingConfig.indexedDefault.simulationTicks,
       defaultParallelism = OrderTrackingConfig.indexedDefault.parallelism,
       scenarioFor = (tr, tk, p) => OrderTrackingConfig.indexedDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p)
+    ),
+    "thermostat-fleet" -> DemoSpec(
+      name = "thermostat-fleet", tableName = "device-telemetry", readConsistency = "EventuallyConsistent",
+      dashboardUid = "ips-phase3-thermostat-fleet", dashboardSlug = "ips-phase-3-thermostat-fleet-dynamodb-simulation",
+      defaultTrials = ThermostatConfig.singleRegionDefault.trialCount,
+      defaultTicks = ThermostatConfig.singleRegionDefault.simulationTicks,
+      defaultParallelism = ThermostatConfig.singleRegionDefault.parallelism,
+      scenarioFor = (tr, tk, p) => ThermostatConfig.singleRegionDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p)
+    ),
+    "thermostat-mixed-mode" -> DemoSpec(
+      name = "thermostat-mixed-mode", tableName = "device-telemetry", readConsistency = "EventuallyConsistent",
+      dashboardUid = "ips-phase4-mixed-mode", dashboardSlug = "thermostat-fleet-mixed-billing-mode-demo",
+      defaultTrials = ThermostatConfig.mixedModeDefault.trialCount,
+      defaultTicks = ThermostatConfig.mixedModeDefault.simulationTicks,
+      defaultParallelism = ThermostatConfig.mixedModeDefault.parallelism,
+      scenarioFor = (tr, tk, p) => ThermostatConfig.mixedModeDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p)
     )
   )
 

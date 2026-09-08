@@ -46,4 +46,27 @@ class GrafanaAssetsSpec extends AnyWordSpec with should.Matchers:
       json should include ("GSI Write Capacity Units by Window")
       json should include (":ReadCapacityUnits")
     }
+
+    "ship the thermostat-fleet dashboard adapted to v2's metric set (capacity/storage/cost/GSI, no unsupported panels)" in {
+      val json = read("examples/grafana/thermostat-fleet-dashboard.json")
+      json should include ("Total Read Capacity Units by Window")
+      json should include ("GSI ${gsiIndexName}: Read Capacity Units by Window")
+      json should include ("Storage Bytes by Window")
+      // dropped — metrics v2 does not (yet) produce for a single-region cost run:
+      json should not include ("Latency Percentiles")
+      json should not include ("by Region")
+      json should not include ("System Error Count")
+    }
+
+    "ship the thermostat-mixed-mode dashboard with the right-sizing-trap panels (billing mode / provisioned / throttle)" in {
+      val json = read("examples/grafana/thermostat-fleet-mixed-mode-dashboard.json")
+      json should include ("Billing Mode Timeline")
+      json should include ("Throttle Rate")
+      json should include ("Consumed vs. Provisioned")
+      json should include ("BillingModeIndicator")
+      json should include ("ProvisionedReadCapacityUnits")
+      // dropped:
+      json should not include ("Latency Percentiles")
+      json should not include ("Admitted vs. Throttled Requests")
+    }
   }
