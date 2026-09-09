@@ -14,7 +14,7 @@ import org.scalatest.wordspec.AnyWordSpec
 
 import stochastacy.aws.dynamodb.BillingMode
 import stochastacy.aws.examples.ordertracking.OrderTrackingConfig
-import stochastacy.aws.examples.thermostatfleet.ThermostatConfig
+import stochastacy.aws.examples.thermostatfleet.{ThermostatConfig, ThermostatMultiTableConfig}
 import stochastacy.demo.{BatchMetadata, DemoPostgresStaging, GrafanaBridge}
 
 /**
@@ -99,6 +99,46 @@ class GrafanaBridgeSpec extends AnyWordSpec with should.Matchers with BeforeAndA
         scalarLong(verify, "select max(\"value\") from stochastacy_demo.demo_records where metric = 'ProvisionedReadCapacityUnits'") shouldBe 100L
         // Throttling actually occurred (tight reservation vs the telemetry load):
         scalarLong(verify, "select sum(\"value\") from stochastacy_demo.demo_records where record_type = 'trial-time-series' and metric = 'ThrottleCount'") should be > 0L
+      finally verify.close()
+    }
+
+    "generate + stage the capstone multi-table demo so per-table records (incl. the native TTL-deletion flow) populate" in {
+      // The capstone's four tables at a small fleet + short horizon; the telemetry table's TTL is shortened to
+      // 4 ticks so items written early actually expire within the run (its native TimeToLiveDeletedItemCount > 0).
+      val base    = ThermostatMultiTableConfig.capstone(initialDeviceCount = 500L)
+      val shortTtl = base.copy(tableConfigs = base.tableConfigs.map {
+        case (n, c) if n == "device-telemetry" => (n, c.copy(ttlPeriodTicks = Some(4)))
+        case other                             => other
+      })
+      val scenario = shortTtl.withEnsemble(trials = 2, ticks = 12L, par = 1)
+      val jsonl    = Files.createTempFile("grafana-bridge-capstone-", ".jsonl")
+      val count    = Await.result(GrafanaBridge.generateMultiTable(scenario, masterSeed = 5L, output = jsonl, offsetSeconds = 0L), 180.seconds)
+      count should be > 0
+
+      val dbUrl = "jdbc:h2:mem:grafana_bridge_capstone;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
+      val setup = DriverManager.getConnection(dbUrl, "sa", "")
+      try DemoPostgresStaging.loadSchema(setup) finally setup.close()
+      DemoPostgresStaging.stage(jsonl,
+        BatchMetadata("capstone-test", scenario.scenarioId, 2, 1, 12L, 5L, "EventuallyConsistent", "device-telemetry", Some(jsonl.toString)),
+        dbUrl, "sa", "")
+
+      val verify = DriverManager.getConnection(dbUrl, "sa", "")
+      try
+        // Per-table base metrics populate for every one of the four tables:
+        for t <- Seq("device-registry", "device-telemetry", "device-commands", "device-alerts") do
+          withClue(s"$t WCU: ")(
+            scalarLong(verify, s"select count(*) from stochastacy_demo.demo_records where metric = 'Table:$t:WriteCapacityUnits'") should be > 0L)
+        // The provisioned telemetry table surfaces reserved capacity + throttle (emitted per tick, 0 when idle):
+        scalarLong(verify, "select count(*) from stochastacy_demo.demo_records where metric = 'Table:device-telemetry:ProvisionedWriteCapacityUnits'") should be > 0L
+        scalarLong(verify, "select count(*) from stochastacy_demo.demo_records where metric = 'Table:device-telemetry:ThrottleCount'")                should be > 0L
+        // The native TTL-deletion flow — present, and actually non-zero (items expired within the run):
+        scalarLong(verify, "select sum(\"value\") from stochastacy_demo.demo_records where record_type = 'trial-time-series' and metric = 'Table:device-telemetry:TimeToLiveDeletedItemCount'") should be > 0L
+        // A non-TTL table emits no TTL-deletion metric at all:
+        scalarLong(verify, "select count(*) from stochastacy_demo.demo_records where metric = 'Table:device-registry:TimeToLiveDeletedItemCount'") shouldBe 0L
+        // The item-count *stock* is gone (not a native CloudWatch metric):
+        scalarLong(verify, "select count(*) from stochastacy_demo.demo_records where metric like '%:EstimatedItemCount'") shouldBe 0L
+        // Window records the per-table time panels read:
+        scalarLong(verify, "select count(*) from stochastacy_demo.demo_records where record_type = 'trial-window-time-series' and metric = 'Table:device-telemetry:WriteCapacityUnits'") should be > 0L
       finally verify.close()
     }
   }

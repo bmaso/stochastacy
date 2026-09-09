@@ -14,7 +14,8 @@ final case class TrialTimeSeriesPoint(
   gsiWriteCapacityUnits:   Map[String, BigDecimal] = Map.empty,
   provisionedReadCapacityUnits:  Option[Long] = None,
   provisionedWriteCapacityUnits: Option[Long] = None,
-  throttledRequests:             Long         = 0L
+  throttledRequests:             Long         = 0L,
+  ttlDeletedItemCount:           Long         = 0L
 )
 
 /** A trial's roll-up totals: capacity consumed (overall — base + all indexes — plus a per-GSI breakout),

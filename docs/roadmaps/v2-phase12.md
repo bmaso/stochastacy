@@ -58,7 +58,7 @@ deleted and the build/tests are green without them.
 |---|---|---|---|
 | 1 | Delete legacy examples demos + pipeline foundation + order-tracking | **Done** | forced reorder (Brian-approved): `examples.dependsOn(aws)` puts the v2 `stochastacy.aws.dynamodb` beside `core`'s legacy same-named package, so the **legacy `examples` demos had to go first** (their imports go ambiguous); then a shared v2 bridge (`GrafanaBridge` + `DemoPostgresStaging` in `stochastacy.demo`, `@main GrafanaDemoBridge`) over the existing schema/docker-compose, both order-tracking dashboards reused and proven end-to-end (H2 round-trip) + a Grafana-assets spec |
 | 2 | Thermostat single-region + mixed-mode | **Done** | registered both demos; a small Tier-1 accounting extension (per-tick provisioned capacity + throttle count, from facts already folded to summary) so the mixed-mode **right-sizing-trap** story is visible; both dashboards adapted to v2's metric set (dropped latency/returned/system-error/multi-region panels); H2 round-trips incl. the provisioned throttle path |
-| 3 | Thermostat multi-table + capstone | Planned | the `ThermostatMultiTableDemo` + `ThermostatCapstoneDemo` bridge modes + dashboards (per-table metrics) |
+| 3 | Thermostat multi-table + capstone | **Done** | a multi-table bridge path (`adaptMultiTable`/`generateMultiTable` over `MultiTableMonteCarloRunner`) + a sealed `DemoKind` (Single \| Multi) registry, wiring both demos; one new **native** metric `TimeToLiveDeletedItemCount` (the TTL-deletion flow, an already-computed value); capstone dashboard swaps the item-count *stock* panel for the TTL-deletion flow and drops latency/system-error; multi-table dashboard unchanged; H2 round-trip witnessing real TTL deletions |
 | 4 | Legacy **core** retirement + close-out | Planned | the legacy `examples` demos are already gone (Slice 1); delete the legacy **core** `stochastacy/aws` + `stochastacy/workload` + `samplerExports` shim; prune deps; update runbooks + CLAUDE.md to the v2 bridge; full `sbt test` green; roadmap COMPLETE, program roadmap, memory |
 
 ### Slice 1 — Delete legacy examples demos + pipeline foundation + order-tracking
@@ -104,8 +104,33 @@ thermostat H2 round-trip (per-tick provisioned/throttle records populate); `Graf
 Full `sbt test` green.
 
 ### Slice 3 — Thermostat multi-table + capstone
-`ThermostatMultiTableDemo` (per-table `Table:<name>:…` metrics) and `ThermostatCapstoneDemo` (the 4-table fleet),
-the richest dashboards. Confirms the per-table metric shape stages and charts correctly.
+`thermostat-fleet-multi-table` (`twoTableDefault` — device-registry read-heavy + device-telemetry write-heavy) and
+`thermostat-fleet-capstone` (`capstoneDefault` — the 4-table integration proof), the richest dashboards, both with
+per-table `Table:<name>:…` metrics.
+
+**The one new metric (grounded in AWS).** The capstone's Telemetry table has TTL, and the legacy dashboard charted a
+"live item count" *stock*. We checked AWS: there is **no native CloudWatch item-count metric** — `DescribeTable.ItemCount`
+is an approximate value refreshed ~every 6 h that operators push as a *custom* metric, so a live-item-count panel is off
+the table under the phase's "native CloudWatch metrics only" rule (Brian's call). The **native** TTL signal is
+`TimeToLiveDeletedItemCount` — the per-period count of items deleted by TTL (a *flow*). We surface that instead: it is the
+item count the table **already computes** when its `TtlRingBuffer` cohort drains at `onTick` and previously discarded.
+
+**Delivered.** A new **native** consumption fact `TimeToLiveDeletedItemCount(count)` (`consumption.scala`), emitted from
+`DynamoDbTable.onTick` only when a TTL cohort actually expires (non-TTL tables byte-identical); folded per-tick in
+`TrialAccounting` (`TrialTimeSeriesPoint.ttlDeletedItemCount`, additive/defaulted) and mapped by the bridge to the new
+generic `DemoMetric.TableTimeToLiveDeletedItemCount` (a summed-flow window rollup). The bridge grew a **multi-table path**
+— `GrafanaBridge.adaptMultiTable` (each table's per-tick + summary as `Table:<name>:…`, provisioned/TTL extras gated by
+`TableSpec.usesProvisioning`/`usesTtl`; no per-GSI breakout — no multi-table dashboard charts it) + `generateMultiTable`
+over `MultiTableMonteCarloRunner`, driven through `DemoReportBuilder` for the windowed records — and the CLI registry was
+generalized to a sealed **`DemoKind` (Single | Multi)**, wiring `thermostat-fleet-multi-table` (uid `ips-phase6-multi-table`)
+and `thermostat-fleet-capstone` (uid `ips-phase6-capstone`). The **capstone dashboard** was adapted in place (20→15 panels):
+the "Estimated Live Item Count" panel became **"TTL Deleted Item Count per Window"** (`Table:device-telemetry:TimeToLiveDeletedItemCount`),
+and the system-error + latency-percentile panels were dropped (Tier-2/3, not v2-produced). The **multi-table dashboard is
+unchanged** — every metric it queries (`Table:<n>:{RCU,WCU,StorageBytes,CumulativeEstimatedCost,TotalEstimatedCost}`) is
+already produced. `GrafanaBridgeSpec` gained a capstone H2 round-trip (per-table families populate; the telemetry TTL is
+shortened to 4 ticks so `Table:device-telemetry:TimeToLiveDeletedItemCount` is actually **> 0**; non-TTL tables emit no TTL
+metric; `EstimatedItemCount` is gone), and `GrafanaAssetsSpec` covers both dashboards. Four aws TTL/transaction specs were
+updated — the new fact is now correctly part of the expiry-tick emission. Full `sbt test` green (290 aws + core + examples).
 
 ### Slice 4 — Legacy retirement + close-out
 Delete the legacy simulator and demos now that every legacy-dashboarded demo has a v2 pipeline:

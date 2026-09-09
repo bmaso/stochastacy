@@ -90,7 +90,8 @@ object TimeWindowRollups:
         points.map(_.value).sum / BigDecimal(points.size)
       case DemoMetric.TableCumulativeEstimatedCost(_) | DemoMetric.TablePITRCumulativeCost(_) =>
         points.maxBy(_.tick).value
-      case DemoMetric.TableThrottleCount(_) | DemoMetric.TableSystemErrorCount(_) =>
+      case DemoMetric.TableThrottleCount(_) | DemoMetric.TableSystemErrorCount(_) |
+          DemoMetric.TableTimeToLiveDeletedItemCount(_) =>
         points.map(_.value).sum
       case DemoMetric.TableProvisionedReadCapacityUnits(_) | DemoMetric.TableProvisionedWriteCapacityUnits(_) =>
         points.map(_.value).sum

@@ -99,9 +99,10 @@ class DynamoDbTableTtlSpec extends AnyWordSpec with should.Matchers with BeforeA
       cons.filter(_.eventTime.ticks == 1L).map(_.event) should contain theSameElementsAs
         Seq(WriteCapacityConsumed(BigDecimal(1), Table), StorageBytesDelta(800L, Table))
 
-      // the expiry frees the storage at tick 3 — stamped (3, 0), tagged with the tick-boundary usecase
+      // the expiry frees the storage at tick 3 — stamped (3, 0), tagged with the tick-boundary usecase,
+      // preceded by the native TimeToLiveDeletedItemCount flow for the expired cohort
       val expiry = cons.filter(_.eventTime.ticks == 3L)
-      expiry.map(_.event) shouldBe Seq(StorageBytesDelta(-800L, Table))
+      expiry.map(_.event) shouldBe Seq(TimeToLiveDeletedItemCount(1L), StorageBytesDelta(-800L, Table))
       expiry.head.intraTick shouldBe 0.0
       expiry.head.usecase   shouldBe TickBoundaryUsecase
     }
@@ -124,8 +125,10 @@ class DynamoDbTableTtlSpec extends AnyWordSpec with should.Matchers with BeforeA
       val cons   = consumptions(runPlanes(cfg, Vector(req(1L, PutItemRequest(800L))), ticks = 5L))
       val expiry = cons.filter(_.eventTime.ticks == 3L)
 
-      // base + each index freed, tagged by target; KeysOnly GSI freed 128 B, All LSI freed 800 B
+      // base + each index freed, tagged by target; KeysOnly GSI freed 128 B, All LSI freed 800 B; plus the
+      // native TTL-deletion count for the expired cohort
       expiry.map(_.event) should contain theSameElementsAs Seq(
+        TimeToLiveDeletedItemCount(1L),
         StorageBytesDelta(-800L, Table),
         StorageBytesDelta(-128L, DynamoDbTarget.Gsi("g")),
         StorageBytesDelta(-800L, DynamoDbTarget.Lsi("l"))
@@ -157,7 +160,7 @@ class DynamoDbTableTtlSpec extends AnyWordSpec with should.Matchers with BeforeA
       val cons = consumptions(runPlanes(cfg, input, ticks = 5L))
       // the early delete frees 300 B at tick 2; the expiry frees the remaining 600 B at tick 3 (not 900)
       cons.filter(_.eventTime.ticks == 2L).map(_.event) should contain (StorageBytesDelta(-300L, Table))
-      cons.filter(_.eventTime.ticks == 3L).map(_.event) shouldBe Seq(StorageBytesDelta(-600L, Table))
+      cons.filter(_.eventTime.ticks == 3L).map(_.event) shouldBe Seq(TimeToLiveDeletedItemCount(2L), StorageBytesDelta(-600L, Table))
 
       // net: 3 inserted, 1 deleted early, 2 expired → the table returns to empty (nothing double-freed)
       runResult(cfg, input, ticks = 5L).finalState.base shouldBe TableSummaryState.empty

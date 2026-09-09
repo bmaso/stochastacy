@@ -9,13 +9,20 @@ import scala.concurrent.{Await, ExecutionContext}
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
 
-import stochastacy.aws.examples.demo.SingleTableScenario
+import stochastacy.aws.examples.demo.{MultiTableScenario, SingleTableScenario}
 import stochastacy.aws.examples.ordertracking.OrderTrackingConfig
-import stochastacy.aws.examples.thermostatfleet.ThermostatConfig
+import stochastacy.aws.examples.thermostatfleet.{ThermostatConfig, ThermostatMultiTableConfig}
 import stochastacy.demo.{BatchMetadata, DemoPostgresStaging, GrafanaBridge}
 
-/** One v2 demo the bridge can drive: how to build its (override-able) scenario, its batch-metadata bits, and
- *  the Grafana dashboard it lands on. */
+/** How the bridge builds a demo's (override-able) scenario — a single [[SingleTableScenario]] or a composed
+ *  [[MultiTableScenario]]. `generate` dispatches on the kind; `stage`/`view` are kind-agnostic (both scenario
+ *  types expose `scenarioId`). */
+enum DemoKind:
+  case Single(scenarioFor: (Int, Long, Int) => SingleTableScenario)
+  case Multi (scenarioFor: (Int, Long, Int) => MultiTableScenario)
+
+/** One v2 demo the bridge can drive: how to build its scenario, its batch-metadata bits, and the Grafana
+ *  dashboard it lands on. `tableName` is the informational `demo_batches` label (a composite for multi-table). */
 final case class DemoSpec(
   name:            String,
   tableName:       String,
@@ -25,14 +32,15 @@ final case class DemoSpec(
   defaultTrials:   Int,
   defaultTicks:    Long,
   defaultParallelism: Int,
-  scenarioFor:     (Int, Long, Int) => SingleTableScenario
+  kind:            DemoKind
 )
 
 /**
  * The shared v2 demo → Postgres/Grafana bridge CLI: `generate` runs a v2 demo's Monte Carlo ensemble and
  * writes staging JSONL (via [[GrafanaBridge]]), `stage` loads it into Postgres ([[DemoPostgresStaging]]), and
- * `view` prints the dashboard URL. One CLI for every wired demo — Slice 1 wires the two order-tracking demos,
- * reusing the legacy dashboards.
+ * `view` prints the dashboard URL. One CLI for every wired demo — the two order-tracking demos, the two
+ * single-region / mixed-mode thermostat demos, and the two multi-table thermostat demos — each reusing its
+ * legacy dashboard.
  *
  * {{{
  * generate --demo <name> --output <path> --batch-id <id> [--seed n] [--trials n] [--ticks n] [--parallelism n]
@@ -49,7 +57,7 @@ object GrafanaDemoBridgeCli:
       defaultTrials = OrderTrackingConfig.phase1Default.trialCount,
       defaultTicks = OrderTrackingConfig.phase1Default.simulationTicks,
       defaultParallelism = OrderTrackingConfig.phase1Default.parallelism,
-      scenarioFor = (tr, tk, p) => OrderTrackingConfig.phase1Default.copy(trialCount = tr, simulationTicks = tk, parallelism = p)
+      kind = DemoKind.Single((tr, tk, p) => OrderTrackingConfig.phase1Default.copy(trialCount = tr, simulationTicks = tk, parallelism = p))
     ),
     "order-tracking-indexed" -> DemoSpec(
       name = "order-tracking-indexed", tableName = "orders", readConsistency = "StronglyConsistent",
@@ -57,7 +65,7 @@ object GrafanaDemoBridgeCli:
       defaultTrials = OrderTrackingConfig.indexedDefault.trialCount,
       defaultTicks = OrderTrackingConfig.indexedDefault.simulationTicks,
       defaultParallelism = OrderTrackingConfig.indexedDefault.parallelism,
-      scenarioFor = (tr, tk, p) => OrderTrackingConfig.indexedDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p)
+      kind = DemoKind.Single((tr, tk, p) => OrderTrackingConfig.indexedDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p))
     ),
     "thermostat-fleet" -> DemoSpec(
       name = "thermostat-fleet", tableName = "device-telemetry", readConsistency = "EventuallyConsistent",
@@ -65,7 +73,7 @@ object GrafanaDemoBridgeCli:
       defaultTrials = ThermostatConfig.singleRegionDefault.trialCount,
       defaultTicks = ThermostatConfig.singleRegionDefault.simulationTicks,
       defaultParallelism = ThermostatConfig.singleRegionDefault.parallelism,
-      scenarioFor = (tr, tk, p) => ThermostatConfig.singleRegionDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p)
+      kind = DemoKind.Single((tr, tk, p) => ThermostatConfig.singleRegionDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p))
     ),
     "thermostat-mixed-mode" -> DemoSpec(
       name = "thermostat-mixed-mode", tableName = "device-telemetry", readConsistency = "EventuallyConsistent",
@@ -73,7 +81,23 @@ object GrafanaDemoBridgeCli:
       defaultTrials = ThermostatConfig.mixedModeDefault.trialCount,
       defaultTicks = ThermostatConfig.mixedModeDefault.simulationTicks,
       defaultParallelism = ThermostatConfig.mixedModeDefault.parallelism,
-      scenarioFor = (tr, tk, p) => ThermostatConfig.mixedModeDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p)
+      kind = DemoKind.Single((tr, tk, p) => ThermostatConfig.mixedModeDefault.copy(trialCount = tr, simulationTicks = tk, parallelism = p))
+    ),
+    "thermostat-fleet-multi-table" -> DemoSpec(
+      name = "thermostat-fleet-multi-table", tableName = "device-registry,device-telemetry", readConsistency = "EventuallyConsistent",
+      dashboardUid = "ips-phase6-multi-table", dashboardSlug = "thermostat-fleet-multi-table-demo",
+      defaultTrials = ThermostatMultiTableConfig.twoTableDefault.trialCount,
+      defaultTicks = ThermostatMultiTableConfig.twoTableDefault.simulationTicks,
+      defaultParallelism = ThermostatMultiTableConfig.twoTableDefault.parallelism,
+      kind = DemoKind.Multi((tr, tk, p) => ThermostatMultiTableConfig.twoTableDefault.withEnsemble(tr, tk, p))
+    ),
+    "thermostat-fleet-capstone" -> DemoSpec(
+      name = "thermostat-fleet-capstone", tableName = "device-telemetry", readConsistency = "EventuallyConsistent",
+      dashboardUid = "ips-phase6-capstone", dashboardSlug = "thermostat-fleet-capstone-demo",
+      defaultTrials = ThermostatMultiTableConfig.capstone().trialCount,
+      defaultTicks = ThermostatMultiTableConfig.capstone().simulationTicks,
+      defaultParallelism = ThermostatMultiTableConfig.capstone().parallelism,
+      kind = DemoKind.Multi((tr, tk, p) => ThermostatMultiTableConfig.capstone().withEnsemble(tr, tk, p))
     )
   )
 
@@ -90,7 +114,9 @@ object GrafanaDemoBridgeCli:
   val ticks       = flag("ticks").flatMap(_.toLongOption).getOrElse(spec.defaultTicks)
   val parallelism = flag("parallelism").flatMap(_.toIntOption).getOrElse(spec.defaultParallelism)
   val seed        = flag("seed").flatMap(_.toLongOption).getOrElse(1L)
-  val scenario    = spec.scenarioFor(trials, ticks, parallelism)
+  val scenarioId  = spec.kind match
+    case DemoKind.Single(f) => f(trials, ticks, parallelism).scenarioId
+    case DemoKind.Multi(f)  => f(trials, ticks, parallelism).scenarioId
 
   command match
     case "generate" =>
@@ -100,14 +126,16 @@ object GrafanaDemoBridgeCli:
       given ExecutionContext    = system.dispatcher
       try
         val offset = ZonedDateTime.now(ZoneOffset.UTC).toEpochSecond
-        val count  = Await.result(GrafanaBridge.generateSingleTable(scenario, seed, output, offset), 60.minutes)
-        println(s"generated $count records for '${scenario.scenarioId}' → $output")
+        val count  = spec.kind match
+          case DemoKind.Single(f) => Await.result(GrafanaBridge.generateSingleTable(f(trials, ticks, parallelism), seed, output, offset), 60.minutes)
+          case DemoKind.Multi(f)  => Await.result(GrafanaBridge.generateMultiTable(f(trials, ticks, parallelism), seed, output, offset), 60.minutes)
+        println(s"generated $count records for '$scenarioId' → $output")
       finally Await.result(system.terminate(), 30.seconds)
 
     case "stage" =>
       val input = Path.of(required("input"))
       val metadata = BatchMetadata(
-        batchId = required("batch-id"), scenarioId = scenario.scenarioId, trialCount = trials,
+        batchId = required("batch-id"), scenarioId = scenarioId, trialCount = trials,
         parallelism = parallelism, simulationTicks = ticks, baseSeed = seed,
         readConsistency = spec.readConsistency, tableName = spec.tableName, sourceJsonlPath = Some(input.toString))
       val count = DemoPostgresStaging.stage(input, metadata, required("db-url"), required("db-user"), required("db-password"))
@@ -116,7 +144,7 @@ object GrafanaDemoBridgeCli:
     case "view" =>
       val url = GrafanaBridge.viewUrl(
         flag("grafana-base-url").getOrElse("http://localhost:3000"),
-        spec.dashboardUid, spec.dashboardSlug, required("batch-id"), scenario.scenarioId)
+        spec.dashboardUid, spec.dashboardSlug, required("batch-id"), scenarioId)
       println(url)
 
     case other => sys.error(s"unknown command '$other'; use generate | stage | view")

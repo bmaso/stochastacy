@@ -38,3 +38,10 @@ final case class RequestThrottled(target: DynamoDbTarget) extends DynamoDbConsum
  *  actual per-tick capacity trace. A metric-plane marker on the base table; it moves no capacity or storage. */
 final case class ProvisionedCapacitySnapshot(readCapacityUnits: Long, writeCapacityUnits: Long) extends DynamoDbConsumption:
   def target: DynamoDbTarget = DynamoDbTarget.Table
+
+/** The number of items deleted by TTL at this tick boundary on the base table — the native CloudWatch
+ *  `TimeToLiveDeletedItemCount` flow. A metric-plane marker; it moves no capacity, and the storage the
+ *  expired cohort frees is reported separately (via the base + index [[StorageBytesDelta]]s). Emitted only
+ *  by a TTL-enabled table, and only for a tick that actually expires a non-empty cohort. */
+final case class TimeToLiveDeletedItemCount(count: Long) extends DynamoDbConsumption:
+  def target: DynamoDbTarget = DynamoDbTarget.Table

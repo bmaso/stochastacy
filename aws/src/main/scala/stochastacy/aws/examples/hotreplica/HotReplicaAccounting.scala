@@ -57,6 +57,7 @@ final class RegionAccountingState(
           case StorageBytesDelta(d, _)                  => currentBytes += d
           case RequestThrottled(_)                      => throttled += 1L
           case _: ProvisionedCapacitySnapshot           => ()
+          case _: TimeToLiveDeletedItemCount            => () // no TTL in the multi-region demo
 
   def result(): RegionSummary =
     // Cost by billing mode, mirroring WCU: on-demand bills consumed capacity; provisioned bills the reserved

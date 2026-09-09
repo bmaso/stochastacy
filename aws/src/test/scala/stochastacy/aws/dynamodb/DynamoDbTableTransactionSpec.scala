@@ -142,7 +142,7 @@ class DynamoDbTableTransactionSpec extends AnyWordSpec with should.Matchers with
       val input = Vector(req(1L, TransactWriteItemsRequest(Vector(300L, 300L, 300L))))
 
       val (_, cons) = runPlanes(cfg, input, ticks = 5L)
-      consumptions(cons).filter(_.eventTime.ticks == 3L).map(_.event) shouldBe Seq(StorageBytesDelta(-900L, Table))
+      consumptions(cons).filter(_.eventTime.ticks == 3L).map(_.event) shouldBe Seq(TimeToLiveDeletedItemCount(3L), StorageBytesDelta(-900L, Table))
       runResult(cfg, input, ticks = 5L).finalState.base shouldBe TableSummaryState.empty
     }
 

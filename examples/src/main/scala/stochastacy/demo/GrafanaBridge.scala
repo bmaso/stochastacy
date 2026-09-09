@@ -9,7 +9,7 @@ import scala.concurrent.{ExecutionContext, Future}
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.stream.Materializer
 
-import stochastacy.aws.examples.demo.{SingleTableMonteCarloRunner, SingleTableScenario, TrialResult as AwsTrialResult}
+import stochastacy.aws.examples.demo.{MultiTableMonteCarloRunner, MultiTableScenario, MultiTableTrialResult, SingleTableMonteCarloRunner, SingleTableScenario, TrialResult as AwsTrialResult}
 
 /**
  * The shared v2 demo → Postgres/Grafana bridge. It runs a v2 AWS demo's Monte Carlo runner, **adapts** each
@@ -86,6 +86,58 @@ object GrafanaBridge:
     val gsiNames = scenario.globalSecondaryIndexes.map(_.indexName)
     new SingleTableMonteCarloRunner().run(scenario, masterSeed).map { result =>
       val records = recordsFor(scenario.scenarioId, gsiNames, scenario.usesProvisioning, result.trials, offsetSeconds)
+      DemoJsonlExporter.write(output, records)
+      records.size
+    }(using summon[ExecutionContext])
+
+  /** Adapt one v2 **multi-table** trial into a generic [[TrialResult]]: every table's per-tick + summary
+   *  metrics, each named `Table:<name>:…` (the metric carries the table identity, so downstream windowing /
+   *  aggregation stays per-`(table, metric)`). `flags(name) = (provisioned, ttl)` gates the temporal
+   *  extras — a provisioned table adds its per-tick reserved capacity + throttle count, a TTL table adds the
+   *  native `TimeToLiveDeletedItemCount` flow. Base capacity/storage/cost is emitted for every table; per-GSI
+   *  breakout is omitted (no multi-table dashboard charts it). */
+  def adaptMultiTable(scenarioId: String, flags: Map[String, (Boolean, Boolean)], trial: MultiTableTrialResult): TrialResult =
+    val timeSeries = trial.perTable.flatMap { case (name, tr) =>
+      val (provisioned, ttl) = flags.getOrElse(name, (false, false))
+      tr.timeSeries.flatMap { p =>
+        val base = Vector(
+          SimulationTimeSeriesPoint(p.tick, DemoMetric.TableReadCapacityUnits(name),       p.readCapacityUnits),
+          SimulationTimeSeriesPoint(p.tick, DemoMetric.TableWriteCapacityUnits(name),      p.writeCapacityUnits),
+          SimulationTimeSeriesPoint(p.tick, DemoMetric.TableStorageBytes(name),            BigDecimal(p.storageBytes)),
+          SimulationTimeSeriesPoint(p.tick, DemoMetric.TableCumulativeEstimatedCost(name), p.cumulativeEstimatedCost)
+        )
+        val prov =
+          if !provisioned then Vector.empty
+          else
+            Vector(SimulationTimeSeriesPoint(p.tick, DemoMetric.TableThrottleCount(name), BigDecimal(p.throttledRequests))) ++
+            p.provisionedReadCapacityUnits.map(v  => SimulationTimeSeriesPoint(p.tick, DemoMetric.TableProvisionedReadCapacityUnits(name), BigDecimal(v))).toVector ++
+            p.provisionedWriteCapacityUnits.map(v => SimulationTimeSeriesPoint(p.tick, DemoMetric.TableProvisionedWriteCapacityUnits(name), BigDecimal(v))).toVector
+        val ttlSeries =
+          if !ttl then Vector.empty
+          else Vector(SimulationTimeSeriesPoint(p.tick, DemoMetric.TableTimeToLiveDeletedItemCount(name), BigDecimal(p.ttlDeletedItemCount)))
+        base ++ prov ++ ttlSeries
+      }
+    }
+    val summary = trial.perTable.flatMap { case (name, tr) =>
+      Vector(
+        TrialSummaryValue(DemoMetric.TableTotalReadCapacityUnits(name),  tr.summary.totalReadCapacityUnits),
+        TrialSummaryValue(DemoMetric.TableTotalWriteCapacityUnits(name), tr.summary.totalWriteCapacityUnits),
+        TrialSummaryValue(DemoMetric.TableTotalStorageByteTicks(name),   BigDecimal(tr.summary.totalStorageByteTicks)),
+        TrialSummaryValue(DemoMetric.TableFinalStorageBytes(name),       BigDecimal(tr.summary.finalStorageBytes)),
+        TrialSummaryValue(DemoMetric.TableTotalEstimatedCost(name),      tr.summary.totalEstimatedCost)
+      )
+    }
+    TrialResult(scenarioId, trial.trialId, timeSeries, summary)
+
+  /** Run the v2 multi-table Monte Carlo runner and write the staging JSONL; returns the record count.
+   *  Per-table `(provisioned, ttl)` flags come from each [[stochastacy.aws.examples.demo.TableSpec]]. */
+  def generateMultiTable(scenario: MultiTableScenario, masterSeed: Long, output: Path, offsetSeconds: Long)(using
+    ActorSystem, Materializer, ExecutionContext
+  ): Future[Int] =
+    val flags = scenario.tables.map(s => s.tableName -> (s.usesProvisioning, s.usesTtl)).toMap
+    new MultiTableMonteCarloRunner().run(scenario, masterSeed).map { result =>
+      val trials  = result.trials.map(adaptMultiTable(scenario.scenarioId, flags, _))
+      val records = DemoReportBuilder.build(trials).records.map(applyTickOffset(_, offsetSeconds))
       DemoJsonlExporter.write(output, records)
       records.size
     }(using summon[ExecutionContext])

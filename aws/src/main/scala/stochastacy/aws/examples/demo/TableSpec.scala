@@ -46,3 +46,6 @@ final case class TableSpec(
 
   /** Whether this table incurs PITR cost (so its `TotalPitrCost` metric is worth reporting). */
   def usesPitr: Boolean = pointInTimeRecoveryEnabled
+
+  /** Whether this table has TTL enabled (so its `TimeToLiveDeletedItemCount` flow is worth reporting). */
+  def usesTtl: Boolean = ttlPeriodTicks.isDefined

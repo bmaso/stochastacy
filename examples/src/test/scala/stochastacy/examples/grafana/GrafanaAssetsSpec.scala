@@ -69,4 +69,25 @@ class GrafanaAssetsSpec extends AnyWordSpec with should.Matchers:
       json should not include ("Latency Percentiles")
       json should not include ("Admitted vs. Throttled Requests")
     }
+
+    "ship the thermostat multi-table dashboard with its per-table window + cost panels" in {
+      val json = read("examples/grafana/thermostat-fleet-multi-table-dashboard.json")
+      json should include ("Read Capacity Units by Window")
+      json should include ("Total Cost per Table")
+      json should include ("Table:device-registry:ReadCapacityUnits")
+      json should include ("Table:device-telemetry:WriteCapacityUnits")
+    }
+
+    "ship the capstone dashboard with the native TTL-deletion flow, no unsupported panels" in {
+      val json = read("examples/grafana/thermostat-fleet-capstone-dashboard.json")
+      json should include ("TTL Deleted Item Count per Window")
+      json should include ("Table:device-telemetry:TimeToLiveDeletedItemCount")
+      json should include ("Throttle Count per Table per Window")
+      json should include ("Storage Bytes by Table")
+      json should include ("Table:device-telemetry:ProvisionedWriteCapacityUnits")
+      // dropped — the item-count *stock* (only a special-API estimate, not a native metric) and Tier-2/3 panels:
+      json should not include ("EstimatedItemCount")
+      json should not include ("Latency Percentiles")
+      json should not include ("System Error Count")
+    }
   }

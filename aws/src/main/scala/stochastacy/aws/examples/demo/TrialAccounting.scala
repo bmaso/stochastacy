@@ -2,7 +2,7 @@ package stochastacy.aws.examples.demo
 
 import scala.collection.mutable
 
-import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ProvisionedCapacitySnapshot, ReadCapacityConsumed, ReconfigurationSchedule, ReplicatedWriteCapacityConsumed, RequestThrottled, StorageBytesDelta, WriteCapacityConsumed}
+import stochastacy.aws.dynamodb.{BillingMode, DynamoDbConsumption, DynamoDbTarget, ProvisionedCapacitySnapshot, ReadCapacityConsumed, ReconfigurationSchedule, ReplicatedWriteCapacityConsumed, RequestThrottled, StorageBytesDelta, TimeToLiveDeletedItemCount, WriteCapacityConsumed}
 import stochastacy.core.component.Timed
 import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
 
@@ -92,6 +92,7 @@ final class TrialAccountingState(
   // The reserved capacity an auto-scaling table emits for this tick; overrides the static schedule when present.
   private var bucketProvisioned = Option.empty[(BigInt, BigInt)]
   private var bucketThrottled   = 0L // requests throttled during this tick (the per-tick throttle signal)
+  private var bucketTtlDeleted  = 0L // items deleted by TTL during this tick (the native TTL-deletion flow)
   private val points            = Vector.newBuilder[TrialTimeSeriesPoint]
 
   private def bump(m: mutable.Map[String, BigDecimal], key: String, v: BigDecimal): Unit =
@@ -125,7 +126,8 @@ final class TrialAccountingState(
         gsiWriteCapacityUnits   = bucketGsiWcu.toMap,
         provisionedReadCapacityUnits  = provisionedInForce.map(_._1.toLong),
         provisionedWriteCapacityUnits = provisionedInForce.map(_._2.toLong),
-        throttledRequests             = bucketThrottled
+        throttledRequests             = bucketThrottled,
+        ttlDeletedItemCount           = bucketTtlDeleted
       )
 
   def update(element: TimedElement[Timed[DynamoDbConsumption]]): Unit =
@@ -139,6 +141,7 @@ final class TrialAccountingState(
         bucketGsiWcu      = mutable.Map.empty
         bucketProvisioned = None
         bucketThrottled   = 0L
+        bucketTtlDeleted  = 0L
         bucketOpen        = true
 
       case TimedControlEvent.EndOfTime =>
@@ -159,6 +162,8 @@ final class TrialAccountingState(
             throttledReqs += 1L; bucketThrottled += 1L
           case ProvisionedCapacitySnapshot(r, w) =>
             bucketProvisioned = Some((BigInt(r), BigInt(w)))
+          case TimeToLiveDeletedItemCount(c) =>
+            bucketTtlDeleted += c
           case ReplicatedWriteCapacityConsumed(_, _) =>
             () // multi-region rWCU — accounted by the hot-replica demo, not this single-table harness
 
