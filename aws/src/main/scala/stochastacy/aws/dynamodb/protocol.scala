@@ -2,9 +2,8 @@ package stochastacy.aws.dynamodb
 
 /**
  * The v2 DynamoDB request/response protocol — **timeless** payloads carried on the v2 wire inside a
- * `Timed[E]` wrapper (which owns `eventTime` / `intraTick` / `usecase`). This is a clean re-creation of
- * the legacy `stochastacy.aws.dynamodb` protocol, not a reuse: the legacy events embed their own timing
- * and are slated for removal once the v2 line reaches parity.
+ * `Timed[E]` wrapper (which owns `eventTime` / `intraTick` / `usecase`); the wrapper owns the timing so
+ * the payloads never embed their own.
  *
  * Covers the four single-item operations (get / put / update / delete) and the two multi-item read
  * operations (query / scan). The transactional operations arrive with a later demo.

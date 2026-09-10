@@ -1,8 +1,8 @@
 package stochastacy.aws.dynamodb
 
 /**
- * Reactive (target-tracking) auto-scaling for a provisioned table's **base** read/write capacity — a
- * faithful port of the legacy `DynamoDbAutoScaler.Policy` logic, but as pure, immutable table mechanics run
+ * Reactive (target-tracking) auto-scaling for a provisioned table's **base** read/write capacity — the
+ * auto-scaler as pure, immutable table mechanics run
  * in `onTick` rather than a separate actor/stream. Each dimension (read, write) tracks a rolling utilization
  * window; when the average crosses the scale-up / scale-down threshold (and the cooldown has elapsed) it
  * schedules a capacity change that takes effect after a reaction delay — scale-up-fast, scale-down-slow.

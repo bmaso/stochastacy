@@ -39,8 +39,8 @@ final case class DemoSpec(
  * The shared v2 demo → Postgres/Grafana bridge CLI: `generate` runs a v2 demo's Monte Carlo ensemble and
  * writes staging JSONL (via [[GrafanaBridge]]), `stage` loads it into Postgres ([[DemoPostgresStaging]]), and
  * `view` prints the dashboard URL. One CLI for every wired demo — the two order-tracking demos, the two
- * single-region / mixed-mode thermostat demos, and the two multi-table thermostat demos — each reusing its
- * legacy dashboard.
+ * single-region / mixed-mode thermostat demos, and the two multi-table thermostat demos — each with its own
+ * dashboard.
  *
  * {{{
  * generate --demo <name> --output <path> --batch-id <id> [--seed n] [--trials n] [--ticks n] [--parallelism n]

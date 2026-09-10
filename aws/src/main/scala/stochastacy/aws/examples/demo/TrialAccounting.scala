@@ -9,11 +9,11 @@ import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
 /**
  * Folds a table's consumption stream into a trial's summary totals and per-tick time series, in a single
  * pass so the two always reconcile. Capacity is summed **overall** (base + every index) and also broken
- * out **per GSI** (the legacy demo reports per-GSI RCU/WCU; LSI maintenance folds into the overall only).
+ * out **per GSI** (per-GSI RCU/WCU is reported; LSI maintenance folds into the overall only).
  *
  * Storage is integrated over ticks: `currentBytes` is **seeded with all targets' initial storage** (base
- * plus each index's projected initial contents — so the pre-loaded items are billed, the correction over
- * the legacy demo which started from zero) and moved by each `StorageBytesDelta`; on each tick boundary
+ * plus each index's projected initial contents — so the pre-loaded items are billed from the start) and
+ * moved by each `StorageBytesDelta`; on each tick boundary
  * the storage then held is accrued as byte-ticks. The final flush window (the `Tick(N+1)` that closes the
  * last real window) opens a bucket that is never closed, so it is discarded — yielding exactly one point
  * per simulated tick `1..N`.

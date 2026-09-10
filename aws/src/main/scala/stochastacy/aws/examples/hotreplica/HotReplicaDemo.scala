@@ -11,7 +11,7 @@ import org.apache.pekko.stream.Materializer
 /**
  * Runnable hot-replica demo: a thermostat-flavored 3-region Global Table run as two Monte Carlo arms —
  *
- *   - **reconcile** — all on-demand, legacy fleets 1800 / 900 / 300; replication stays healthy (pending ≈ 0,
+ *   - **reconcile** — all on-demand, reference fleets 1800 / 900 / 300; replication stays healthy (pending ≈ 0,
  *     latency ≈ the link-lag mean);
  *   - **depletion** — an 8 : 1 fleet discrepancy (2000 / 250 / 300) whose provisioned `ap-southeast-1` replica
  *     has an inbound rWCU ceiling below its combined inbound, so **both** its inbound links back up and

@@ -64,16 +64,15 @@ model does this, proven directly in `HeatSplitSpec` (two keys colliding at count
 
 ## 3. The hybrid reconcile
 
-The legacy hot-partition / adaptive models are unreferenceable from this module and hash differently
-(`MurmurHash3` vs `String.hashCode`), so `HotKeyReconciliationSpec` reconciles **internally + transitively**:
+`HotKeyReconciliationSpec` reconciles **internally + transitively**:
 
 - **Control arm (tight).** On a well-distributed, table-saturating workload the per-partition machinery is
   *inert* — the access-on path matches the **table-level-only** path (access off) within ~2 %. That access-off
-  path *is* the phase-6/8 table-level path already reconciled against the legacy, so the control arm inherits
-  that reconcile transitively.
+  path *is* the table-level path already pinned to the established capacity/throttle baseline, so the control
+  arm inherits that reconcile transitively.
 - **Hot arm (directional + documented).** Adaptive-**on** throttles strictly fewer than **off**, and the
-  effective count grows. The legacy's *lagged* adaptive would land *between* off and on; the legacy *configures*
-  the partition count v2 *derives*; and its heat-split grows the count as v2 does (matched in *direction*).
+  effective count grows — the direction the per-partition model guarantees, with the partition count *derived*
+  from capacity + storage rather than configured.
 
 ## 4. Running it
 

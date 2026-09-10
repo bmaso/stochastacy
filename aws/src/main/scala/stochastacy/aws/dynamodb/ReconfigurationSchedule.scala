@@ -27,7 +27,7 @@ final case class ReconfigurationSchedule(entries: Vector[ScheduledReconfiguratio
   def billingModeAt(tick: Long, initial: BillingMode): BillingMode =
     entries.filter(_.tick <= tick).foldLeft(initial)((m, e) => ReconfigurationSchedule.applyEvent(m, e.event))
 
-  /** Validate the schedule against the table's initial mode and horizon — mirrors the legacy guards:
+  /** Validate the schedule against the table's initial mode and horizon, applying AWS's guards:
    *  entries within the horizon, a 24 h cooldown between billing-mode switches, and capacity updates only
    *  while the table is provisioned at that point. */
   def validate(initial: BillingMode, simulationTicks: Long): Either[String, ReconfigurationSchedule] =

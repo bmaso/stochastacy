@@ -7,7 +7,7 @@ import org.json4s.DefaultFormats
 import org.json4s.jackson.Serialization
 
 /**
- * JSONL export for the Monte Carlo result — one JSON object per line, in the legacy demo's record shape
+ * JSONL export for the Monte Carlo result — one JSON object per line, in the demo's record shape
  * (so the existing Grafana dashboard/queries still bind): `trial-time-series`, `trial-summary`,
  * `aggregate-time-series`, `aggregate-summary`, with the same field and metric names.
  */
@@ -55,7 +55,7 @@ object JsonlExport:
     }
 
   /** The per-trial records for ONE table of a multi-table trial: the **base** metrics only (no per-GSI
-   *  breakout), each named `Table:<tableName>:<metric>` — the legacy multi-table record shape. */
+   *  breakout), each named `Table:<tableName>:<metric>` — the multi-table record shape. */
   def tableTrialRecords(scenarioId: String, tableName: String, trial: TrialResult,
                         gsiNames: Vector[String] = Vector.empty, provisioned: Boolean = false, pitr: Boolean = false): Vector[DemoRecord] =
     val ts = trial.timeSeries.flatMap { point =>

@@ -3,11 +3,11 @@
 An IoT-scale AWS demo on the domain-agnostic v2 engine: a **growing fleet of smart thermostats** streaming
 telemetry into **one on-demand DynamoDB table** with **three GSIs and one LSI of mixed projections**,
 queried by customer support and scanned for fleet alerts, estimating capacity, storage, and cost across a
-Monte Carlo ensemble. It re-implements the legacy `thermostat-fleet-single-region` demo on the new
-`stochastacy.core` abstractions, and is proven — by a reconciliation gate — to reproduce it within ~2 %.
+Monte Carlo ensemble. A reconciliation gate pins it to an established baseline (the demo's aggregate
+capacity, storage, and cost) within ~2 %.
 
-It is the first thermostat scenario on the v2 core (the domain the later multi-table, capstone, and
-multi-region phases reuse), and it exercises two things order-tracking did not: **mixed index projections**
+It is the foundational thermostat scenario (the domain the multi-table, capstone, and multi-region
+sections reuse), and it exercises two things order-tracking did not: **mixed index projections**
 (KeysOnly / Include / All) and an **inbound gate** (`Interface.wrap` + `ChaosGate`) on an AWS table.
 
 The example lives in the `aws/` module, package `stochastacy.aws.examples.thermostatfleet`; it drives the
@@ -51,14 +51,14 @@ The demo surfaces:
 
 ---
 
-## 2. Results — reconciliation with the legacy demo
+## 2. Results — reconciliation with the baseline
 
-The demo's reason for existing is parity: it must behave like the legacy single-region demo. The gate
-(`ThermostatFleetReconciliationSpec`) runs the v2 ensemble at the legacy's configuration (100 trials × 1200
-ticks) and compares across-trial means to a **captured legacy baseline** (the legacy code is unreferenceable
-from this module). It is a **clean equivalence** on every dimension:
+The demo is pinned to an established baseline (aggregate capacity, storage, and cost). The gate
+(`ThermostatFleetReconciliationSpec`) runs the ensemble at the reference configuration (100 trials × 1200
+ticks) and compares across-trial means to a **captured baseline**. It is a **clean equivalence** on every
+dimension:
 
-| metric | v2 vs. legacy | band |
+| metric | vs. baseline | band |
 |---|---|---|
 | mean total **write** capacity units | **−0.18%** | ±3% |
 | per-GSI **write** capacity units (customer-devices / fleet-alerts / device-status) | **≤0.2%** | ±3% |
@@ -68,23 +68,21 @@ from this module). It is a **clean equivalence** on every dimension:
 | mean total estimated cost | **−0.18%** | ±3% |
 
 The sub-2 % gaps are consistent with the sampling error of two 100-trial ensembles drawn from *independent*
-RNG streams. Three things make this a *clean* equivalence rather than the phase-3-style
-reconciliation-with-divergence:
+RNG streams. Three things make this a *clean* equivalence rather than a reconciliation-with-divergence:
 
-- **Writes + maintenance replicate the legacy math** — including the mixed-projection maintenance
+- **Writes + maintenance follow the base math** — including the mixed-projection maintenance
   (`device-status` All carries the full item, the others no-op on same-size updates).
-- **The system-error gate closes the last gap.** The legacy's `systemErrorRate = 0.001` is reproduced by an
-  inbound `ChaosGate` (Slice 6a), so there is no deferred ~0.1 % divergence on the write path.
-- **The projection-correct reads did *not* meaningfully diverge.** v2 charges reads for each GSI's
+- **The system-error gate closes the last gap.** The `systemErrorRate = 0.001` is realized by an
+  inbound `ChaosGate`, so there is no ~0.1 % divergence on the write path.
+- **The projection-correct reads did *not* meaningfully diverge.** Reads are charged for each GSI's
   *projected* bytes (KeysOnly ≈128 B, Include ≈192 B) rather than the base item's 300 B — but the read
   sizes here are small enough that RCU rounding (4 KB blocks, halved for eventual consistency) **absorbs**
   the difference, so total and per-GSI RCU still match within ~2 %. (This is the opposite outcome from the
-  indexed order-tracking demo, whose *scans grew unbounded* and so diverged by design.)
+  indexed order-tracking demo, whose *scans grew unbounded* and so diverge by design.)
 
-Two immaterial modeling differences are documented, not gated: the legacy writes a **constant** 300 B per
-telemetry item while v2 draws **±25 % uniform** (same mean, both sub-1 KB ⇒ 1 WCU/item and the same expected
-storage); and the polar-vortex `affectedFraction` default differs, but is inert while the vortex multiplier
-is 1.0 (off by default).
+One immaterial modeling detail is documented, not gated: telemetry item bytes are drawn **±25 % uniform**
+around the 300 B mean (both sub-1 KB ⇒ 1 WCU/item and the same expected storage); and the polar-vortex
+`affectedFraction` is inert while the vortex multiplier is 1.0 (off by default).
 
 To run the gate:
 ```bash
@@ -107,9 +105,9 @@ growth, telemetry rate and item bytes, the temporal-shape and alert-storm parame
 rate, the index projections, and the query/scan rates — lives in `ThermostatConfig`; edit `singleRegionDefault`
 (or `.copy(...)`) to explore other regimes.
 
-The JSONL carries the same four record kinds as the other v2 demos — `trial-time-series`, `trial-summary`,
-`aggregate-time-series`, `aggregate-summary` — in the legacy demo's record shape, so the existing Grafana
-queries bind unchanged. Per-GSI capacity uses the legacy names `GSI:<name>:ReadCapacityUnits` /
+The JSONL carries the same four record kinds as the other demos — `trial-time-series`, `trial-summary`,
+`aggregate-time-series`, `aggregate-summary` — in the standard record shape, so the Grafana
+queries bind unchanged. Per-GSI capacity uses the names `GSI:<name>:ReadCapacityUnits` /
 `WriteCapacityUnits` (and `Total…`); a **write-only** GSI (`device-status`, never read) is reported too.
 
 ---
@@ -162,7 +160,7 @@ grows during the run rather than being buffered whole (a collecting `run` varian
 ## Multi-table composition (several tables in one simulation)
 
 A second scenario, `thermostat-fleet-multi-table`, composes **several independent thermostat tables** into
-one simulation and reports them **per table**. It re-implements the legacy `MultiTableScenarioConfig.twoTableDefault`:
+one simulation and reports them **per table**. Its two tables are:
 
 - **device-registry** — a large, **read-heavy / write-light** fleet (telemetry 0.005/device, query 2.0/tick,
   scan 0.2/tick, no system errors).
@@ -174,9 +172,9 @@ one simulation and reports them **per table**. It re-implements the legacy `Mult
   the ensemble (`simulationTicks` / `trialCount` / `parallelism`). This cashes in the "table is the
   composable graph-level unit" design — there is no cross-table coupling (no shared workload, no
   transactions).
-- **Per-table reporting.** The JSONL breaks out each table's capacity/storage/cost under the legacy names
+- **Per-table reporting.** The JSONL breaks out each table's capacity/storage/cost under the names
   `Table:<name>:ReadCapacityUnits` / `…WriteCapacityUnits` / … (and `Total…`) — **base metrics only** (no
-  per-GSI-within-table, no overall cross-table roll-up), matching the legacy multi-table output.
+  per-GSI-within-table, no overall cross-table roll-up).
 
 ### Generalized harness
 The single-table harness was **generalized** to support N tables by *reusing* its primitives, not
@@ -190,7 +188,7 @@ independent of its companions and a one-table scenario identical to the single-t
 output stays byte-identical.
 
 ### Reconciliation
-`ThermostatMultiTableReconciliationSpec` reconciles v2 against the captured legacy `twoTableDefault` baseline
+`ThermostatMultiTableReconciliationSpec` reconciles against the captured `twoTableDefault` baseline
 (100 × 1200), **per table** — a clean equivalence like the single-region gate:
 
 | table | RCU | WCU | storage | cost |
@@ -213,8 +211,7 @@ Same flags as the single-region demo; the console summary shows a per-table tota
 ## Mixed-mode (provisioned capacity + throttling + reconfiguration)
 
 A third scenario, `thermostat-fleet-mixed-mode`, runs the single-region telemetry workload through a
-**mid-run billing-mode change** — the legacy "right-sizing trap." It re-implements
-`ThermostatFleetMixedModeConfig`:
+**mid-run billing-mode change** — the "right-sizing trap":
 
 - **starts on-demand** (uncapped);
 - **`SwitchBillingMode` → `Provisioned(250 RCU, 125 WCU)` at tick 400** — reserved capacity, billed by the
@@ -239,21 +236,20 @@ provisioning to ~the mean throttles the bursts on-demand absorbed.
   `TotalProvisioned{Read,Write}CapacityUnitTicks` and `TotalThrottledRequests`.
 
 ### Reconciliation
-`ThermostatMixedModeReconciliationSpec` reconciles against the captured legacy `mixed-mode` baseline. The
+`ThermostatMixedModeReconciliationSpec` reconciles against the captured `mixed-mode` baseline. The
 **simulation matches cleanly** — consumed RCU/WCU and final storage all within ~1 %:
 
-| metric | v2 vs legacy |
+| metric | vs. baseline |
 |---|---|
 | consumed read capacity units  | +0.52% |
 | consumed write capacity units | −0.46% |
 | final storage bytes           | +0.10% |
 
-**Cost is a documented divergence** (v2 ≈ −8.6%). v2 uses a clean per-tick billing attribution (on-demand
-ticks by consumption, provisioned ticks by capacity-hours — never double-counted); the legacy's mixed-cost
-accounting is internally inconsistent (its per-tick capacity series does not sum to its own summary total), so
-it is not a clean cost reference — v2 correctly bills the throttled/provisioned window by *reserved* capacity
-rather than would-be consumption. As in phases 2–3, we keep the improved model and document the gap rather
-than reproduce the legacy's inconsistency.
+**Cost reflects a clean per-tick billing attribution** — on-demand ticks by consumption, provisioned ticks by
+capacity-hours, never double-counted — so the throttled/provisioned window is billed by *reserved* capacity
+rather than would-be consumption. This keeps mixed-mode cost ≈8.6% below a naive consumption-based baseline: a
+consistent per-tick attribution, where a consumption-priced accounting of the throttled/provisioned window
+would over-count.
 
 ### Running it
 ```bash
@@ -273,7 +269,7 @@ write 150)` — plus the two mechanisms that decide whether a spike actually thr
 
 - **Burst capacity** (`burstWindowTicks = 300`): the per-tick throttle budget banks up to `ceiling × 300` of
   unused capacity, so a short spike is absorbed from the bank before it throttles.
-- **Reactive auto-scaling** (`autoScalingPolicy`, the legacy capstone's values — target 70 %, 60-tick window,
+- **Reactive auto-scaling** (`autoScalingPolicy` — target 70 %, 60-tick window,
   2-min scale-up / 15-min scale-down, base write in `[50, 5000]`): `onTick` tracks rolling utilization and
   moves the **base** write capacity toward `consumed / target` after a reaction lag. The scaled capacity is
   emitted each tick as a `ProvisionedCapacitySnapshot`, so the cost accounting bills the actual trace.
@@ -288,8 +284,8 @@ write 150)` — plus the two mechanisms that decide whether a spike actually thr
   Residual throttling in the auto-scaling arm is the reaction-lag window, exactly as on real DynamoDB.
 
 Scope: **base-table** auto-scaling only (per-GSI auto-scaling is out of scope; the GSIs ride the base
-ceiling), **table-level** burst (per-partition burst arrives with hot-partition modeling). The full legacy
-reconcile of the auto-scaling telemetry table is the phase-9 capstone.
+ceiling), **table-level** burst (per-partition burst arrives with hot-partition modeling). The full
+reconcile of the auto-scaling telemetry table is covered by the capstone.
 
 ### Running it
 ```bash

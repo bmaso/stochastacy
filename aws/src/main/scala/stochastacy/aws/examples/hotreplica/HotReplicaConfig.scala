@@ -26,10 +26,10 @@ final case class RegionConfig(
   require(growthPerTick >= 0.0, "growthPerTick must be non-negative")
 
   /** The reused thermostat telemetry scenario for this region — its fleet size, growth and billing mode,
-   *  everything else the thermostat single-region default (so arm A reconciles directly against the legacy
-   *  telemetry table). The vortex/spikes ride along from the default; the shared simulation horizon is
-   *  stamped in by the ensemble. No system-error `ChaosGate` is attached in the multi-region graph (the
-   *  ~0.1 % the legacy models is well within the reconcile tolerance). */
+   *  everything else the thermostat single-region default (so arm A reconciles directly against the
+   *  single-region telemetry baseline). The vortex/spikes ride along from the default; the shared simulation
+   *  horizon is stamped in by the ensemble. No system-error `ChaosGate` is attached in the multi-region graph
+   *  (the modeled ~0.1 % transient-failure rate is well within the reconcile tolerance). */
   def thermostat(simulationTicks: Long): ThermostatConfig =
     ThermostatConfig(
       scenarioId          = s"hot-replica-$regionName",
@@ -57,15 +57,15 @@ final case class RegionConfig(
  * (replication, rWCU billing + throttling, cross-region transfer, and the per-region + per-link metrics).
  *
  * Two arms ship:
- *   - [[HotReplicaConfig.reconcileDefault]] — all on-demand, the legacy `multiRegionDefault` fleets
+ *   - [[HotReplicaConfig.reconcileDefault]] — all on-demand, the multi-region reference fleets
  *     (1800 / 900 / 300); healthy replication (`PendingReplicationCount` ≈ 0, `ReplicationLatency` ≈ the
- *     link-lag mean). Reconciled per-region against the legacy in Slice 5.
+ *     link-lag mean). Reconciled per-region against the established per-region baseline in Slice 5.
  *   - [[HotReplicaConfig.depletionDefault]] — an **8 : 1** fleet discrepancy (2000 / 250 / 300) whose small
  *     `ap-southeast-1` replica is **provisioned with an inbound rWCU ceiling below its ~2250 combined inbound
  *     rate**, so **both** inbound links back up. A modestly longer `us-east-1 → ap-southeast-1` link lag plus
  *     the fair-share drain make the two inbound links **diverge**: the heavy `us-east-1` stream builds the
  *     deeper, slower queue (pending ≈ 8× and latency above the light `eu-west-1` stream). The two large
- *     regions stay healthy by contrast. A v2 showcase, not reconciled (the legacy decouples these metrics).
+ *     regions stay healthy by contrast. A v2 showcase, not reconciled (these coupled metrics stand on their own).
  */
 final case class HotReplicaConfig(
   scenarioId:       String,
@@ -100,9 +100,9 @@ object HotReplicaConfig:
   val EuWest     = "eu-west-1"
   val ApSoutheast = "ap-southeast-1"
 
-  // Legacy per-region on-demand pricing (from `ThermostatFleetScenarioConfig.multiRegionDefault`'s
-  // `PricingSchedule.byRegion`): us-east is the shared phase-1 default; eu-west and ap-southeast carry their
-  // own (higher) regional rates. Matched so arm A's per-region cost reconciles.
+  // Per-region on-demand pricing (1800 / 900 / 300 device fleets): us-east is the shared phase-1 default;
+  // eu-west and ap-southeast carry their own (higher) regional rates. Matched so arm A's per-region cost
+  // reconciles.
   private val UsEastRates = Pricing.phase1Default
   private val EuWestRates = Rates(
     rcuPrice                 = BigDecimal("0.000000283"),
@@ -113,8 +113,8 @@ object HotReplicaConfig:
     wcuPrice                 = BigDecimal("0.000001690"),
     storagePricePerGiBSecond = BigDecimal("0.000000125"))
 
-  /** Link lag samplers: `LogNormal(0, 1)` floored to ticks on every link (≈ 1-tick base lag), matching the
-   *  legacy default — except a modestly longer `us-east-1 → ap-southeast-1` link in the depletion arm. */
+  /** Link lag samplers: `LogNormal(0, 1)` floored to ticks on every link (≈ 1-tick base lag) — except a
+   *  modestly longer `us-east-1 → ap-southeast-1` link in the depletion arm. */
   private def uniformLag: StatelessSampler[Double]  = LogNormalSampler.constant(math.log(1.4), 0.0) // ⌊1.4⌋ = 1
   private def longerLag:  StatelessSampler[Double]  = LogNormalSampler.constant(math.log(2.6), 0.0) // ⌊2.6⌋ = 2
 
@@ -125,7 +125,7 @@ object HotReplicaConfig:
 
   private val regionOrder = Vector(UsEast, EuWest, ApSoutheast)
 
-  /** The healthy reconcile arm: all on-demand, legacy fleets 1800 / 900 / 300. */
+  /** The healthy reconcile arm: all on-demand, reference fleets 1800 / 900 / 300. */
   def reconcileDefault(simulationTicks: Long = 600L, trialCount: Int = 100, parallelism: Int = 8): HotReplicaConfig =
     HotReplicaConfig(
       scenarioId      = "hot-replica-reconcile",

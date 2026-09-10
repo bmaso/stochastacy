@@ -2,9 +2,7 @@ ThisBuild / scalaVersion := "3.3.1"
 
 lazy val Versions = new {
   val pekkoStreamVersion = "1.1.3"
-  val pekkoHttpVersion = "1.1.0"
   val json4sVersion = "4.0.7"
-  val pekkoHttpJsonVersion = "3.0.0"
   val typesafeConfigVersion = "1.4.2"
   val commonsStatsDistributions = "1.1"
   val commonsRngSampling = "1.6"
@@ -19,13 +17,11 @@ lazy val core = (project in file("core"))
     name := "stochastacy",
     version := "0.0.1",
     libraryDependencies ++= Seq(
-      // Pekko -- streaming, actors, and HTTP server
+      // Pekko -- streaming
       "org.apache.pekko" %% "pekko-stream" % Versions.pekkoStreamVersion,
-      "org.apache.pekko" %% "pekko-http" % Versions.pekkoHttpVersion,
 
-      // JSON and JSON-Pekko support
+      // JSON support (used by the demos' JSONL staging)
       "org.json4s" %% "json4s-jackson" % Versions.json4sVersion,
-      "com.github.pjfanning" %% "pekko-http-json4s" % Versions.pekkoHttpJsonVersion, // JSON support
 
       // Typesafe config for application configuration
       "com.typesafe" % "config" % Versions.typesafeConfigVersion, // Config loading
@@ -38,9 +34,6 @@ lazy val core = (project in file("core"))
       "org.apache.commons" % "commons-rng-simple" % Versions.commonsRngSimple,
                                                                   // Apache-provided RNG algos
 
-      // YAML parsing for workload DSL
-      "org.yaml" % "snakeyaml" % "2.2",
-
       // Logging
       "com.typesafe.scala-logging" %% "scala-logging" % Versions.scalaLoggingVersion,
       "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion,
@@ -52,9 +45,7 @@ lazy val core = (project in file("core"))
   )
 
 lazy val examples = (project in file("examples"))
-  // aws (dependsOn core) brings core transitively AND places the v2 `stochastacy.aws.dynamodb` ahead of
-  // core's legacy same-named package on the classpath (the two collide on a case-insensitive filesystem);
-  // the legacy is deleted in the phase-12 close-out, after which the ordering no longer matters.
+  // the demos drive the AWS simulator in the `aws` module, which brings the `core` engine transitively.
   .dependsOn(aws)
   .settings(
     name := "stochastacy-examples",
@@ -83,22 +74,8 @@ lazy val aws = (project in file("aws"))
     )
   )
 
-lazy val visualizer = (project in file("visualizer"))
-  .dependsOn(core)
-  .settings(
-    name := "stochastacy-visualizer",
-    version := "0.0.1",
-    libraryDependencies ++= Seq(
-      "ch.qos.logback" % "logback-classic" % Versions.logbackClassicVersion,
-      "org.apache.pekko" %% "pekko-testkit"      % Versions.pekkoStreamVersion % "test",
-      "org.apache.pekko" %% "pekko-http-testkit" % Versions.pekkoHttpVersion   % "test",
-      "org.scalatest" %% "scalatest" % Versions.scalatestVersion % "test"
-    ),
-    Test / classLoaderLayeringStrategy := ClassLoaderLayeringStrategy.Flat
-  )
-
 lazy val root = (project in file("."))
-  .aggregate(core, examples, visualizer, aws)
+  .aggregate(core, examples, aws)
   .settings(
     publish / skip := true
   )

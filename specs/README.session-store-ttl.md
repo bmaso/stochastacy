@@ -78,5 +78,5 @@ Flags (all optional): `--output <path>` `--seed <long>` `--trials <int>` `--tick
   freeing with no capacity consumed, **an item deleted before its TTL is freed exactly once** (the expiring
   cohort shrinks — no double-free), and TTL-off byte-identity.
 
-The full legacy reconcile of TTL happens in the phase-8 capstone; this demo validates the mechanism and its
+The full reconcile of TTL is covered by the capstone; this demo validates the mechanism and its
 storage effect directly.

@@ -62,7 +62,7 @@ class MonteCarloAggregationSpec extends AnyWordSpec with should.Matchers:
       MonteCarloAggregation.gsiNames(Vector(gsiTrial(0, 1, 1))) shouldBe Vector("g")
     }
 
-    "aggregate per-GSI summary metrics under the legacy names" in {
+    "aggregate per-GSI summary metrics under the GSI:<name>:… names" in {
       val agg = MonteCarloAggregation.summary(Vector(gsiTrial(0, 10, 2), gsiTrial(1, 20, 4)))
       agg.collectFirst { case AggregateSummaryValue("GSI:g:TotalReadCapacityUnits",  AggregateStatistic.Mean, v) => v } shouldBe Some(BigDecimal(15))
       agg.collectFirst { case AggregateSummaryValue("GSI:g:TotalWriteCapacityUnits", AggregateStatistic.Mean, v) => v } shouldBe Some(BigDecimal(3))

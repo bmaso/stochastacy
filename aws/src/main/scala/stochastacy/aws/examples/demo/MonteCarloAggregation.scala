@@ -3,7 +3,7 @@ package stochastacy.aws.examples.demo
 /**
  * Across-trial aggregation for the Order-Tracking ensemble. For each `(tick, metric)` time-series point
  * and each summary metric, it reduces the ensemble to a mean and a (population) standard deviation —
- * matching the legacy demo's `{mean, stddev}` statistic set. The metric name lists here are the single
+ * a `{mean, stddev}` statistic set. The metric name lists here are the single
  * source of truth for both the per-trial and the aggregate JSONL records.
  */
 object MonteCarloAggregation:
@@ -51,7 +51,7 @@ object MonteCarloAggregation:
     trials.exists(_.summary.totalPitrCost > 0)
 
   /** The per-tick metrics — base plus a per-GSI RCU/WCU pair — as the single source of truth for both the
-   *  per-trial and the aggregate records (metric names match the legacy `GSI:<name>:…`). */
+   *  per-trial and the aggregate records (metric names are `GSI:<name>:…`). */
   def timeSeriesMetrics(gsiNames: Vector[String]): Vector[(String, TrialTimeSeriesPoint => BigDecimal)] =
     baseTimeSeriesMetrics ++ gsiNames.flatMap { n =>
       Vector(
@@ -81,4 +81,4 @@ object MonteCarloAggregation:
     if trials.isEmpty then Vector.empty else aggregatorFor(trials).timeSeries
 
   def summary(trials: Vector[TrialResult]): Vector[AggregateSummaryValue] =
-    aggregatorFor(trials).summary // empty trials → base metrics at zero (matches the legacy convention)
+    aggregatorFor(trials).summary // empty trials → base metrics at zero (the zero-trial convention)

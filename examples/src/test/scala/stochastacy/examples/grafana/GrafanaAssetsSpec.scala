@@ -7,7 +7,7 @@ import org.scalatest.wordspec.AnyWordSpec
 
 /**
  * Locks the Grafana pipeline assets the v2 bridge lands on — the docker-compose stack, the Postgres schema,
- * Grafana provisioning, and the (reused, legacy-matched) order-tracking dashboards — plus the panel titles and
+ * Grafana provisioning, and the order-tracking dashboards — plus the panel titles and
  * metric selectors each dashboard queries. Pure file-content assertions; the live round-trip is
  * [[GrafanaBridgeSpec]] (against H2). Slices 2–3 extend this with the thermostat dashboards.
  */

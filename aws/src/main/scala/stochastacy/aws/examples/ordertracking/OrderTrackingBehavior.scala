@@ -8,7 +8,7 @@ import stochastacy.core.sampler.PoissonSampler
 
 /**
  * The Order-Tracking domain behavior on the v2 [[TableBehavior]] interface — the stochastic decisions
- * the generic table injects (minus the legacy `LogicalPartitionAccess` footprint, which needed a
+ * the generic table injects (without a per-partition access footprint, which would need a
  * hot-partition / throttling model this scope omits).
  *
  *   - a get finds its item with `getHitProbability` (a miss on an empty table), returning bytes jittered
@@ -77,7 +77,7 @@ final class OrderTrackingBehavior(config: OrderTrackingConfig) extends TableBeha
       val returnedItems  = math.round(evaluatedItemCount * config.returnedFraction)
       ReadShape(evaluatedItemCount, evaluatedBytes, returnedItems, returnedItems * avgBytes)
 
-  /** Jitter an item size uniformly by ±25% around `mean` (at least one byte) — the legacy `sampleBytes`. */
+  /** Jitter an item size uniformly by ±25% around `mean` (at least one byte). */
   private def sampleBytes(mean: Long, rng: UniformRandomProvider): Long =
     val scale = BigDecimal(0.75 + (rng.nextDouble() * 0.5))
     math.max(1L, (BigDecimal(mean) * scale).setScale(0, BigDecimal.RoundingMode.HALF_UP).toLong)

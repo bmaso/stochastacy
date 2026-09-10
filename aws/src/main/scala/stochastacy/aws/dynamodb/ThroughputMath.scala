@@ -1,7 +1,7 @@
 package stochastacy.aws.dynamodb
 
 /**
- * DynamoDB capacity-unit arithmetic — a clean re-creation of the legacy `TableThroughputMath`.
+ * DynamoDB capacity-unit arithmetic.
  *
  *   - Reads round item size up to 4 KB chunks; strongly-consistent reads cost 1 RCU per chunk,
  *     eventually-consistent reads 0.5.
