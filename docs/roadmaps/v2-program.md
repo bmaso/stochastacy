@@ -156,12 +156,14 @@ by priority.
   and cost (v2's correct rWCU pricing) are **documented, bounded divergences** with a residual summary-model
   saturation-pollution discrepancy logged in the catalog's Known-discrepancies section. **Single-region +
   multi-region parity reached.**
-- **v2/phase12 — Grafana delivery + legacy retirement. DONE — the finish line.** Ported the
+- **v2/phase12 — Grafana delivery + legacy retirement. DONE (5 slices) — the finish line.** Ported the
   `generate → stage → view` Postgres/Grafana pipeline to the v2 demos (a shared `GrafanaDemoBridge` hosted in
   `examples`, which gained `dependsOn(aws)` — no separate module), matching the six dashboards; then **deleted the
   legacy `stochastacy.aws` / `stochastacy.workload` code, the legacy `examples` demos, the `visualizer` module, and
   every purely-legacy doc**, and **erased all "legacy" framing from code + living docs** so the simulator stands on
-  its own terms. **The v2 line is complete; the repository is v2-only.**
+  its own terms — the repository is v2-only. **Slice 5** added a `device-events` table to the capstone so TTL expiry is
+  genuinely demonstrated (the telemetry table's saturated, continuously-overwritten fleet never ages out). **The v2
+  line is complete.**
 
 **Reorder notes.** The polar-vortex spike is not its own phase (workload config). Grafana delivery
 (phase 12) is orthogonal to the simulation features and can be pulled forward as a standalone bridge phase

@@ -78,12 +78,19 @@ class GrafanaAssetsSpec extends AnyWordSpec with should.Matchers:
       json should include ("Table:device-telemetry:WriteCapacityUnits")
     }
 
-    "ship the capstone dashboard with the native TTL-deletion flow, no unsupported panels" in {
+    "ship the capstone dashboard with the append-only Events TTL showcase + per-table series" in {
       val json = read("examples/grafana/thermostat-fleet-capstone-dashboard.json")
-      json should include ("TTL Deleted Item Count per Window")
-      json should include ("Table:device-telemetry:TimeToLiveDeletedItemCount")
+      // TTL is demonstrated on the append-only device-events table (the telemetry table's saturated fleet never ages out):
+      json should include ("Device Events: TTL Deleted Item Count per Window")
+      json should include ("Table:device-events:TimeToLiveDeletedItemCount")
+      json should include ("Device Events: Storage (TTL-bounded plateau)")
+      json should include ("Table:device-events:StorageBytes")
+      // device-events joins the per-table panels:
+      json should include ("Table:device-events:CumulativeEstimatedCost")
+      json should include ("Table:device-events:WriteCapacityUnits")
+      // the TTL panel no longer points at the (inert) telemetry TTL metric:
+      json should not include ("Table:device-telemetry:TimeToLiveDeletedItemCount")
       json should include ("Throttle Count per Table per Window")
-      json should include ("Storage Bytes by Table")
       json should include ("Table:device-telemetry:ProvisionedWriteCapacityUnits")
       // dropped — the item-count *stock* (only a special-API estimate, not a native metric) and Tier-2/3 panels:
       json should not include ("EstimatedItemCount")

@@ -1,6 +1,6 @@
 # v2/phase12 — Grafana delivery + legacy retirement
 
-**Status: COMPLETE** — the **final phase** of the v2 line. Two efforts, done in order:
+**Status: COMPLETE (Slices 1–5)** — the **final phase** of the v2 line. Two efforts, done in order:
 
 1. **Grafana delivery** — port the legacy `generate → stage → view` Postgres/Grafana pipeline to the **v2 AWS
    demos**, so each legacy-dashboarded demo has a v2 path that lands the **same dashboard**.
@@ -60,6 +60,7 @@ deleted and the build/tests are green without them.
 | 2 | Thermostat single-region + mixed-mode | **Done** | registered both demos; a small Tier-1 accounting extension (per-tick provisioned capacity + throttle count, from facts already folded to summary) so the mixed-mode **right-sizing-trap** story is visible; both dashboards adapted to v2's metric set (dropped latency/returned/system-error/multi-region panels); H2 round-trips incl. the provisioned throttle path |
 | 3 | Thermostat multi-table + capstone | **Done** | a multi-table bridge path (`adaptMultiTable`/`generateMultiTable` over `MultiTableMonteCarloRunner`) + a sealed `DemoKind` (Single \| Multi) registry, wiring both demos; one new **native** metric `TimeToLiveDeletedItemCount` (the TTL-deletion flow, an already-computed value); capstone dashboard swaps the item-count *stock* panel for the TTL-deletion flow and drops latency/system-error; multi-table dashboard unchanged; H2 round-trip witnessing real TTL deletions |
 | 4 | Legacy **core** retirement + close-out | **Done** | deleted the legacy **core** `stochastacy/aws` + `stochastacy/workload` (incl. the `samplerExports` shim), the orphaned `visualizer` module (a DSL front-end) and dead `stochastacy.app` scaffolding; pruned the build (snakeyaml / pekko-http); **erased every "legacy" reference from code + living docs** (per Brian: describe the simulator on its own terms) — the 8 reconcile specs reframed as `*BaselineSpec`, comments/CLAUDE.md/specs/README scrubbed, purely-legacy docs (ips roadmaps, `docs/architecture`, `docs/specs`, ips handoff) deleted; runbook + CLAUDE.md workflows moved to the v2 `GrafanaDemoBridge`; full `sbt test` green (290). Roadmaps retain "legacy" as archival record |
+| 5 | Capstone TTL showcase — a `device-events` table | **Done** | added an insert-only **`device-events`** 5th capstone table (append-only + TTL 720, no GSIs, on-demand) via two defaulted `ThermostatConfig` flags (`appendOnly`, `secondaryIndexesEnabled`) + a one-condition behavior change; appended **last** so the four existing tables stayed byte-identical (their baselines pass unchanged). TTL now genuinely fires (baseline run: ~1.74 M deletions across 30 trials); the capstone dashboard's TTL panel repointed to `device-events`, a companion storage-plateau panel added, and `device-events` joined the per-table panels. Full `sbt test` green (292); **live-verified** — the deletion flow rises from zero at tick 720 and storage plateaus there |
 
 ### Slice 1 — Delete legacy examples demos + pipeline foundation + order-tracking
 The heavy slice. **Forced reorder (Brian-approved):** `examples.dependsOn(aws)` puts the v2 `stochastacy.aws.dynamodb`
@@ -153,7 +154,33 @@ runbook and CLAUDE.md's demo workflows now drive the v2 `GrafanaDemoBridge` (`--
 
 **Gated.** Full `sbt test` green (290 aws + core + examples; the four aws specs whose expiry-tick assertions the
 Slice-3 TTL fact touched, and the reframed baseline specs, all pass). The repo-wide "legacy" sweep is empty outside
-the archival roadmaps. Close-out coda: this roadmap COMPLETE, `v2-program.md` at its finish line, memory.
+the archival roadmaps. Close-out coda: this roadmap COMPLETE through Slice 4, `v2-program.md`, memory.
+
+### Slice 5 — Capstone TTL showcase (a `device-events` table)
+**Motivation.** Live viewing in Slice 4 revealed the capstone's `TimeToLiveDeletedItemCount` panel is flat-zero. The
+`device-telemetry` table models **latest-reading-per-device**: once the 5 000-device fleet is saturated (the capstone
+sets `deviceGrowthPerTick = 0`), every write is an **overwrite**, which refreshes the item into the current TTL cohort
+(`recordDelete + recordWrite`). Each device is rewritten every ~30 ticks — far inside the 720-tick TTL — so no item
+ever ages out; the TTL config there is vestigial. Demonstrating TTL needs a workload where items are **written once
+and left to age**.
+
+**Approach (Brian's call — option B).** Add a **5th capstone table**, `device-events`: an **insert-only** event stream
+(alerts / state-changes appended, never overwritten) with a TTL. Because events are never refreshed, expiry genuinely
+fires — storage grows to the retention window then **plateaus**, and the per-table TTL-deletion flow reads a steady
+non-zero rate. This puts a real TTL story *in the capstone* without redesigning `device-telemetry` or shifting the four
+existing tables' baselines.
+
+**Delivered.** Two defaulted `ThermostatConfig` flags — `appendOnly` (the behavior resolves every `PutItem` as an
+insert, extending the existing commands-mode insert path by one condition) and `secondaryIndexesEnabled` (`false` drops
+the 3 GSIs + 1 LSI for a clean base-table story) — so every other config stays byte-identical. `device-events` is
+appended **last** in `capstone()` (on-demand, TTL 720, ~50 events/tick, bursty); because per-table seeds are positional
+(`SeedSequence.derive`, table `i` → `(3i,3i+1,3i+2)`), tables 0–3 are untouched and their baselines pass unchanged.
+TTL fires: the baseline run sheds ~1.74 M items across 30 trials (rcu 0 — write-only; storage plateaus ~18.6 MB).
+`ThermostatCapstoneBaselineSpec` gained the `device-events` baseline + a TTL assertion (`device-events` deletions > 0,
+`device-telemetry` = 0); `GrafanaBridgeSpec` asserts its staged deletion flow. The capstone dashboard repoints the TTL
+panel to `Table:device-events:TimeToLiveDeletedItemCount`, adds a "Storage (TTL-bounded plateau)" panel, and joins
+`device-events` into the per-table cost/storage/capacity panels. Full `sbt test` green (292); live-verified against
+Postgres/Grafana — the deletion flow rises from zero at tick 720 and storage plateaus there.
 
 ## Scope boundary
 

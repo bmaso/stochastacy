@@ -60,7 +60,9 @@ final case class ThermostatConfig(
   override val ttlPeriodTicks:      Option[Int]                 = None,
   override val pointInTimeRecoveryEnabled: Boolean              = false,
   transactWriteItemsPerItemBytes:   Option[Vector[Long]]        = None,
-  useTransactions:                  Boolean                     = true
+  useTransactions:                  Boolean                     = true,
+  appendOnly:                       Boolean                     = false,
+  secondaryIndexesEnabled:          Boolean                     = true
 ) extends SingleTableScenario:
   require(scenarioId.nonEmpty,                          "scenarioId must be non-empty")
   require(simulationTicks >= 1L,                        "simulationTicks must be at least 1")
@@ -93,14 +95,16 @@ final case class ThermostatConfig(
     case Left(message) => throw new IllegalArgumentException(message)
     case Right(_)      => ()
 
-  def globalSecondaryIndexes: Vector[GlobalSecondaryIndex] = Vector(
-    GlobalSecondaryIndex(ThermostatConfig.CustomerDevicesGsiName, IndexProjection.KeysOnly),
-    GlobalSecondaryIndex(ThermostatConfig.FleetAlertsGsiName,     IndexProjection.Include(ThermostatConfig.FleetAlertsProjectedNonKeyBytes)),
-    GlobalSecondaryIndex(ThermostatConfig.DeviceStatusGsiName,    IndexProjection.All)
-  )
-  def localSecondaryIndexes: Vector[LocalSecondaryIndex] = Vector(
-    LocalSecondaryIndex(ThermostatConfig.ReadingTypeHistoryLsiName, IndexProjection.All)
-  )
+  def globalSecondaryIndexes: Vector[GlobalSecondaryIndex] =
+    if !secondaryIndexesEnabled then Vector.empty
+    else Vector(
+      GlobalSecondaryIndex(ThermostatConfig.CustomerDevicesGsiName, IndexProjection.KeysOnly),
+      GlobalSecondaryIndex(ThermostatConfig.FleetAlertsGsiName,     IndexProjection.Include(ThermostatConfig.FleetAlertsProjectedNonKeyBytes)),
+      GlobalSecondaryIndex(ThermostatConfig.DeviceStatusGsiName,    IndexProjection.All)
+    )
+  def localSecondaryIndexes: Vector[LocalSecondaryIndex] =
+    if !secondaryIndexesEnabled then Vector.empty
+    else Vector(LocalSecondaryIndex(ThermostatConfig.ReadingTypeHistoryLsiName, IndexProjection.All))
 
   /** The table starts empty and fills as devices report telemetry. */
   def initialTableState: TableSummaryState = TableSummaryState.empty

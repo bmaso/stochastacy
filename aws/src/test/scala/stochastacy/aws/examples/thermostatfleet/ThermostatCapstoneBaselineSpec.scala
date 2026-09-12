@@ -12,7 +12,7 @@ import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.aws.examples.demo.*
 
 /**
- * Baseline (characterization) gate for the **4-table capstone**, pinning the demo's per-table behavior to an
+ * Baseline (characterization) gate for the **5-table capstone**, pinning the demo's per-table behavior to an
  * established baseline captured from its own output.
  *
  * **What holds cleanly.** Every table's **read path** (`TotalReadCapacityUnits`) holds within ~2 %, and the two
@@ -27,6 +27,9 @@ import stochastacy.aws.examples.demo.*
  *     capacity-hours, not by would-be consumption (the same clean per-tick attribution as the mixed-mode gate).
  *   - **Telemetry WCU sits ~15 % above a no-TTL baseline** — under TTL the fleet's item count is held below
  *     saturation, so a larger fraction of writes are inserts (each maintaining every GSI).
+ *   - **Events demonstrate TTL** — the append-only `device-events` table inserts and never overwrites, so items
+ *     age to their 720-tick TTL and expire: the per-tick TTL-deletion flow is steadily non-zero and storage
+ *     plateaus at the retention window (it does not grow unbounded).
  *
  * Provisioned capacity-ticks / throttle count / PITR cost are provisioned-mode / PITR additions, so they are
  * exercised by `ThermostatCapstoneSpec`, not compared here.
@@ -49,6 +52,8 @@ class ThermostatCapstoneBaselineSpec extends AnyWordSpec with should.Matchers wi
     val telemetry = Map("rcu" -> BigDecimal("350.62"),  "wcu" -> BigDecimal("718158.10"), "storage" -> BigDecimal("10693833.73"), "cost" -> BigDecimal("0.89778762"))
     val commands  = Map("rcu" -> BigDecimal("3620.45"), "wcu" -> BigDecimal("93380.40"),  "storage" -> BigDecimal("12709207.77"), "cost" -> BigDecimal("0.11763225"))
     val alerts    = Map("rcu" -> BigDecimal("899.13"),  "wcu" -> BigDecimal("307939.03"), "storage" -> BigDecimal("6100735.70"),  "cost" -> BigDecimal("0.38515006"))
+    // device-events: append-only + TTL, write-only (rcu = 0), storage plateaus at the retention window.
+    val events    = Map("rcu" -> BigDecimal("0"),       "wcu" -> BigDecimal("119819.17"), "storage" -> BigDecimal("18579117.37"), "cost" -> BigDecimal("0.14977568"))
 
   private lazy val result: MultiTableMonteCarloResult =
     Await.result(new MultiTableMonteCarloRunner().run(ThermostatMultiTableConfig.capstone(5000L).withEnsemble(30, 1440, 4), masterSeed = 20260418L), 20.minutes)
@@ -63,17 +68,22 @@ class ThermostatCapstoneBaselineSpec extends AnyWordSpec with should.Matchers wi
   private def storage(t: String) = mean(t, "FinalStorageBytes")
   private def cost(t: String)    = mean(t, "TotalEstimatedCost")
 
+  /** Total items expired by TTL for `t`, summed over every trial's per-tick series (0 when no item ever ages out). */
+  private def ttlDeleted(t: String): Long =
+    result.trials.map(_.perTable.collectFirst { case (`t`, tr) => tr.timeSeries.map(_.ttlDeletedItemCount).sum }.getOrElse(0L)).sum
+
   /** `actual` within `tol` (fractional) of `expected`. */
   private def near(actual: BigDecimal, expected: BigDecimal, tol: BigDecimal): Boolean =
     expected != 0 && (actual / expected - 1).abs <= tol
 
-  "The 4-table capstone, pinned to its baseline," should {
+  "The 5-table capstone, pinned to its baseline," should {
 
     "hold every table's read path (RCU) to the baseline within ~2 %" in {
       near(rcu("device-registry"),  Baseline.registry("rcu"),  BigDecimal("0.03")) shouldBe true
       near(rcu("device-telemetry"), Baseline.telemetry("rcu"), BigDecimal("0.03")) shouldBe true
       near(rcu("device-commands"),  Baseline.commands("rcu"),  BigDecimal("0.03")) shouldBe true
       near(rcu("device-alerts"),    Baseline.alerts("rcu"),    BigDecimal("0.03")) shouldBe true
+      rcu("device-events") shouldBe BigDecimal(0) // write-only event stream
     }
 
     "hold the on-demand Registry and Alerts tables to the baseline within ~8 % (WCU / storage / cost)" in {
@@ -97,5 +107,18 @@ class ThermostatCapstoneBaselineSpec extends AnyWordSpec with should.Matchers wi
       val c = cost("device-telemetry") / Baseline.telemetry("cost")
       c should (be > BigDecimal("0.20") and be < BigDecimal("0.40")) // ~72 % lower: provisioned capacity-hours
       near(wcu("device-telemetry"), Baseline.telemetry("wcu"), BigDecimal("0.20")) shouldBe true // bounded ~+15 %
+    }
+
+    "hold the append-only Events table (WCU / storage / cost) to the baseline within ~8 %" in {
+      near(wcu("device-events"),     Baseline.events("wcu"),     BigDecimal("0.08")) shouldBe true
+      near(storage("device-events"), Baseline.events("storage"), BigDecimal("0.08")) shouldBe true
+      near(cost("device-events"),    Baseline.events("cost"),    BigDecimal("0.08")) shouldBe true
+    }
+
+    "demonstrate TTL on the Events table — items age out and expire (deletion flow non-zero)" in {
+      // The append-only stream never overwrites, so items reach their 720-tick TTL and are deleted; the
+      // saturated, continuously-overwritten telemetry table (by contrast) ages nothing out.
+      ttlDeleted("device-events")    should be > 0L
+      ttlDeleted("device-telemetry") shouldBe 0L
     }
   }

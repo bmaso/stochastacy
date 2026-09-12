@@ -225,7 +225,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Table:device-registry:CumulativeEstimatedCost' then \"value\" end) as \"device-registry\",\n  avg(case when metric = 'Table:device-telemetry:CumulativeEstimatedCost' then \"value\" end) as \"device-telemetry\",\n  avg(case when metric = 'Table:device-commands:CumulativeEstimatedCost' then \"value\" end) as \"device-commands\",\n  avg(case when metric = 'Table:device-alerts:CumulativeEstimatedCost' then \"value\" end) as \"device-alerts\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:CumulativeEstimatedCost',\n    'Table:device-telemetry:CumulativeEstimatedCost',\n    'Table:device-commands:CumulativeEstimatedCost',\n    'Table:device-alerts:CumulativeEstimatedCost'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Table:device-registry:CumulativeEstimatedCost' then \"value\" end) as \"device-registry\",\n  avg(case when metric = 'Table:device-telemetry:CumulativeEstimatedCost' then \"value\" end) as \"device-telemetry\",\n  avg(case when metric = 'Table:device-commands:CumulativeEstimatedCost' then \"value\" end) as \"device-commands\",\n  avg(case when metric = 'Table:device-alerts:CumulativeEstimatedCost' then \"value\" end) as \"device-alerts\",\n  avg(case when metric = 'Table:device-events:CumulativeEstimatedCost' then \"value\" end) as \"device-events\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:CumulativeEstimatedCost',\n    'Table:device-telemetry:CumulativeEstimatedCost',\n    'Table:device-commands:CumulativeEstimatedCost',\n    'Table:device-alerts:CumulativeEstimatedCost',\n    'Table:device-events:CumulativeEstimatedCost'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
           "refId": "A"
         }
       ],
@@ -294,7 +294,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select\n  split_part(metric, ':', 2) as \"Table\",\n  avg(\"value\") as \"Mean Total Cost\"\nfrom stochastacy_demo.trial_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:TotalEstimatedCost',\n    'Table:device-telemetry:TotalEstimatedCost',\n    'Table:device-commands:TotalEstimatedCost',\n    'Table:device-alerts:TotalEstimatedCost'\n  )\ngroup by metric\norder by split_part(metric, ':', 2);",
+          "rawSql": "select\n  split_part(metric, ':', 2) as \"Table\",\n  avg(\"value\") as \"Mean Total Cost\"\nfrom stochastacy_demo.trial_summary\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:TotalEstimatedCost',\n    'Table:device-telemetry:TotalEstimatedCost',\n    'Table:device-commands:TotalEstimatedCost',\n    'Table:device-alerts:TotalEstimatedCost',\n    'Table:device-events:TotalEstimatedCost'\n  )\ngroup by metric\norder by split_part(metric, ':', 2);",
           "refId": "A"
         }
       ],
@@ -599,7 +599,7 @@
         "type": "postgres",
         "uid": "stochastacy-postgres"
       },
-      "description": "Items deleted by TTL for device-telemetry (the native CloudWatch TimeToLiveDeletedItemCount), summed per window and averaged across trials. Rises as the 720-tick cohort begins expiring.",
+      "description": "Items deleted by TTL on the append-only device-events table (the native CloudWatch TimeToLiveDeletedItemCount), summed per window, averaged across trials. Because events are inserted and never overwritten, they age to the 720-tick TTL and expire \u2014 a steady non-zero flow.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -679,11 +679,11 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"TTL Deleted Items\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-telemetry:TimeToLiveDeletedItemCount'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"TTL Deleted Items\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-events:TimeToLiveDeletedItemCount'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
           "refId": "A"
         }
       ],
-      "title": "Telemetry: TTL Deleted Item Count per Window",
+      "title": "Device Events: TTL Deleted Item Count per Window",
       "type": "timeseries"
     },
     {
@@ -816,7 +816,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Table:device-registry:StorageBytes' then \"value\" end) as \"device-registry\",\n  avg(case when metric = 'Table:device-telemetry:StorageBytes' then \"value\" end) as \"device-telemetry\",\n  avg(case when metric = 'Table:device-commands:StorageBytes' then \"value\" end) as \"device-commands\",\n  avg(case when metric = 'Table:device-alerts:StorageBytes' then \"value\" end) as \"device-alerts\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:StorageBytes',\n    'Table:device-telemetry:StorageBytes',\n    'Table:device-commands:StorageBytes',\n    'Table:device-alerts:StorageBytes'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Table:device-registry:StorageBytes' then \"value\" end) as \"device-registry\",\n  avg(case when metric = 'Table:device-telemetry:StorageBytes' then \"value\" end) as \"device-telemetry\",\n  avg(case when metric = 'Table:device-commands:StorageBytes' then \"value\" end) as \"device-commands\",\n  avg(case when metric = 'Table:device-alerts:StorageBytes' then \"value\" end) as \"device-alerts\",\n  avg(case when metric = 'Table:device-events:StorageBytes' then \"value\" end) as \"device-events\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:StorageBytes',\n    'Table:device-telemetry:StorageBytes',\n    'Table:device-commands:StorageBytes',\n    'Table:device-alerts:StorageBytes',\n    'Table:device-events:StorageBytes'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
           "refId": "A"
         }
       ],
@@ -829,7 +829,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 50
       },
       "id": 50,
       "panels": [],
@@ -939,7 +939,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 43
+        "y": 51
       },
       "id": 51,
       "options": {
@@ -966,7 +966,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Table:device-registry:WriteCapacityUnits' then \"value\" end) as \"device-registry\",\n  avg(case when metric = 'Table:device-telemetry:WriteCapacityUnits' then \"value\" end) as \"device-telemetry\",\n  avg(case when metric = 'Table:device-commands:WriteCapacityUnits' then \"value\" end) as \"device-commands\",\n  avg(case when metric = 'Table:device-alerts:WriteCapacityUnits' then \"value\" end) as \"device-alerts\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:WriteCapacityUnits',\n    'Table:device-telemetry:WriteCapacityUnits',\n    'Table:device-commands:WriteCapacityUnits',\n    'Table:device-alerts:WriteCapacityUnits'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Table:device-registry:WriteCapacityUnits' then \"value\" end) as \"device-registry\",\n  avg(case when metric = 'Table:device-telemetry:WriteCapacityUnits' then \"value\" end) as \"device-telemetry\",\n  avg(case when metric = 'Table:device-commands:WriteCapacityUnits' then \"value\" end) as \"device-commands\",\n  avg(case when metric = 'Table:device-alerts:WriteCapacityUnits' then \"value\" end) as \"device-alerts\",\n  avg(case when metric = 'Table:device-events:WriteCapacityUnits' then \"value\" end) as \"device-events\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:WriteCapacityUnits',\n    'Table:device-telemetry:WriteCapacityUnits',\n    'Table:device-commands:WriteCapacityUnits',\n    'Table:device-alerts:WriteCapacityUnits',\n    'Table:device-events:WriteCapacityUnits'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
           "refId": "A"
         }
       ],
@@ -1076,7 +1076,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 43
+        "y": 51
       },
       "id": 52,
       "options": {
@@ -1103,11 +1103,87 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Table:device-registry:ReadCapacityUnits' then \"value\" end) as \"device-registry\",\n  avg(case when metric = 'Table:device-telemetry:ReadCapacityUnits' then \"value\" end) as \"device-telemetry\",\n  avg(case when metric = 'Table:device-commands:ReadCapacityUnits' then \"value\" end) as \"device-commands\",\n  avg(case when metric = 'Table:device-alerts:ReadCapacityUnits' then \"value\" end) as \"device-alerts\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:ReadCapacityUnits',\n    'Table:device-telemetry:ReadCapacityUnits',\n    'Table:device-commands:ReadCapacityUnits',\n    'Table:device-alerts:ReadCapacityUnits'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(case when metric = 'Table:device-registry:ReadCapacityUnits' then \"value\" end) as \"device-registry\",\n  avg(case when metric = 'Table:device-telemetry:ReadCapacityUnits' then \"value\" end) as \"device-telemetry\",\n  avg(case when metric = 'Table:device-commands:ReadCapacityUnits' then \"value\" end) as \"device-commands\",\n  avg(case when metric = 'Table:device-alerts:ReadCapacityUnits' then \"value\" end) as \"device-alerts\",\n  avg(case when metric = 'Table:device-events:ReadCapacityUnits' then \"value\" end) as \"device-events\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric in (\n    'Table:device-registry:ReadCapacityUnits',\n    'Table:device-telemetry:ReadCapacityUnits',\n    'Table:device-commands:ReadCapacityUnits',\n    'Table:device-alerts:ReadCapacityUnits',\n    'Table:device-events:ReadCapacityUnits'\n  )\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
           "refId": "A"
         }
       ],
       "title": "RCU Consumed by Table per Window",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "stochastacy-postgres"
+      },
+      "description": "Stored bytes on the append-only device-events table. Storage climbs as events are inserted, then plateaus at the 720-tick retention window as TTL expiry balances new writes \u2014 it does not grow unbounded.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "mappings": [],
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "id": 43,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "stochastacy-postgres"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "select to_timestamp(window_start_tick) as \"time\",\n  avg(\"value\") as \"Live Storage Bytes\"\nfrom stochastacy_demo.trial_window_time_series\nwhere batch_id = '${batch_id}'\n  and scenario_id = '${scenarioId}'\n  and metric = 'Table:device-events:StorageBytes'\n  and window_size_seconds = cast('${windowSizeSeconds}' as integer)\ngroup by window_start_tick order by window_start_tick;",
+          "refId": "A"
+        }
+      ],
+      "title": "Device Events: Storage (TTL-bounded plateau)",
       "type": "timeseries"
     }
   ],

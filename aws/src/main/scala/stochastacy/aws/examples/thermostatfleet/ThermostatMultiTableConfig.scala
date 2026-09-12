@@ -69,11 +69,12 @@ object ThermostatMultiTableConfig:
     )
   )
 
-  /** The full **4-table capstone** (single-region): a
+  /** The full **5-table capstone** (single-region): a
    *  fixed fleet across a Registry (on-demand, read-heavy), a Telemetry table (provisioned + burst +
    *  auto-scaling + TTL + PITR, under a polar-vortex + alert-storm workload), a Commands table (transactional
-   *  command dispatch), and an Alerts table (storm + vortex). The integration proof. `initialDeviceCount` is
-   *  parameterized; the reconcile pins a smaller fleet on both sides. */
+   *  command dispatch), an Alerts table (storm + vortex), and an Events table (append-only + TTL — the TTL
+   *  showcase: events are inserted and never overwritten, so they age to their TTL and expire, and storage
+   *  plateaus at the retention window). The integration proof. `initialDeviceCount` is parameterized. */
   def capstone(initialDeviceCount: Long = 5000L): ThermostatMultiTableConfig =
     val ticks = 1440L
     def base(name: String) = ThermostatConfig(
@@ -116,6 +117,18 @@ object ThermostatMultiTableConfig:
           customerSupportQueryRatePerTick  = 0.5, fleetDashboardScanRatePerTick = 0.1,
           alertStormProbabilityPerTick     = 0.01, alertStormWriteMultiplier = 8.0,
           polarVortexWriteMultiplier       = 3.0, polarVortexAffectedFraction = 0.40, polarVortexTickRange = (600L, 700L)
+        ),
+        // Events: on-demand, **append-only** event stream with TTL — inserted, never overwritten, so items age
+        // out and expire. Storage climbs to the retention window then plateaus; the TTL-deletion flow is steady
+        // and non-zero. No secondary indexes (a clean base-table TTL/storage showcase). Appended LAST so the four
+        // tables above keep their per-table seeds (and baselines) unchanged.
+        "device-events" -> base("device-events").copy(
+          appendOnly                       = true,
+          secondaryIndexesEnabled          = false,
+          ttlPeriodTicks                   = Some(720),
+          telemetryReportsPerDevicePerTick = 0.01, // ~50 events/tick at a 5 000-device fleet
+          customerSupportQueryRatePerTick  = 0.0, fleetDashboardScanRatePerTick = 0.0, // write-only
+          alertStormProbabilityPerTick     = 0.01, alertStormWriteMultiplier = 4.0     // bursty inserts
         )
       )
     )

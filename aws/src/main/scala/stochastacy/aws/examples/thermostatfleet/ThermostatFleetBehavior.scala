@@ -25,10 +25,13 @@ final class ThermostatFleetBehavior(config: ThermostatConfig) extends TableBehav
   def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider, tick: Long): OperationOutcome =
     request match
       case PutItemRequest(itemBytes) =>
-        // In commands mode (transactional writes configured) a put is an append (like a transaction sub-item),
-        // so the useTransactions=false baseline matches the transactions footprint; otherwise telemetry's
+        // An append-only table (an event stream) never overwrites — every put is an insert, so items age to
+        // their TTL and expire. Commands mode is likewise an append (each put is a transaction sub-item, so the
+        // useTransactions=false baseline matches the transactions footprint). Otherwise telemetry's
         // insert-or-overwrite saturation applies.
-        val previous = if config.transactWriteItemsPerItemBytes.isDefined then None else telemetryPrevious(state, rng, tick)
+        val previous =
+          if config.appendOnly || config.transactWriteItemsPerItemBytes.isDefined then None
+          else telemetryPrevious(state, rng, tick)
         OperationOutcome.Put(writtenItemBytes = itemBytes, previousItemBytes = previous)
       case q: QueryRequest =>
         OperationOutcome.Query(q.target, q.consistency, queryShape(state, rng))

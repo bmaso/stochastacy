@@ -103,12 +103,13 @@ class GrafanaBridgeSpec extends AnyWordSpec with should.Matchers with BeforeAndA
     }
 
     "generate + stage the capstone multi-table demo so per-table records (incl. the native TTL-deletion flow) populate" in {
-      // The capstone's four tables at a small fleet + short horizon; the telemetry table's TTL is shortened to
-      // 4 ticks so items written early actually expire within the run (its native TimeToLiveDeletedItemCount > 0).
+      // The capstone's five tables at a small fleet + short horizon; the two TTL tables (device-telemetry and the
+      // append-only device-events) have their TTL shortened to 4 ticks so items written early actually expire
+      // within the run (their native TimeToLiveDeletedItemCount > 0).
       val base    = ThermostatMultiTableConfig.capstone(initialDeviceCount = 500L)
       val shortTtl = base.copy(tableConfigs = base.tableConfigs.map {
-        case (n, c) if n == "device-telemetry" => (n, c.copy(ttlPeriodTicks = Some(4)))
-        case other                             => other
+        case (n, c) if n == "device-telemetry" || n == "device-events" => (n, c.copy(ttlPeriodTicks = Some(4)))
+        case other                                                     => other
       })
       val scenario = shortTtl.withEnsemble(trials = 2, ticks = 12L, par = 1)
       val jsonl    = Files.createTempFile("grafana-bridge-capstone-", ".jsonl")
@@ -124,15 +125,17 @@ class GrafanaBridgeSpec extends AnyWordSpec with should.Matchers with BeforeAndA
 
       val verify = DriverManager.getConnection(dbUrl, "sa", "")
       try
-        // Per-table base metrics populate for every one of the four tables:
-        for t <- Seq("device-registry", "device-telemetry", "device-commands", "device-alerts") do
+        // Per-table base metrics populate for every one of the five tables:
+        for t <- Seq("device-registry", "device-telemetry", "device-commands", "device-alerts", "device-events") do
           withClue(s"$t WCU: ")(
             scalarLong(verify, s"select count(*) from stochastacy_demo.demo_records where metric = 'Table:$t:WriteCapacityUnits'") should be > 0L)
         // The provisioned telemetry table surfaces reserved capacity + throttle (emitted per tick, 0 when idle):
         scalarLong(verify, "select count(*) from stochastacy_demo.demo_records where metric = 'Table:device-telemetry:ProvisionedWriteCapacityUnits'") should be > 0L
         scalarLong(verify, "select count(*) from stochastacy_demo.demo_records where metric = 'Table:device-telemetry:ThrottleCount'")                should be > 0L
-        // The native TTL-deletion flow — present, and actually non-zero (items expired within the run):
+        // The native TTL-deletion flow — non-zero on both TTL tables (items expired within the run). The
+        // append-only device-events table is the deliberate TTL showcase (inserts age out and expire):
         scalarLong(verify, "select sum(\"value\") from stochastacy_demo.demo_records where record_type = 'trial-time-series' and metric = 'Table:device-telemetry:TimeToLiveDeletedItemCount'") should be > 0L
+        scalarLong(verify, "select sum(\"value\") from stochastacy_demo.demo_records where record_type = 'trial-time-series' and metric = 'Table:device-events:TimeToLiveDeletedItemCount'") should be > 0L
         // A non-TTL table emits no TTL-deletion metric at all:
         scalarLong(verify, "select count(*) from stochastacy_demo.demo_records where metric = 'Table:device-registry:TimeToLiveDeletedItemCount'") shouldBe 0L
         // The item-count *stock* is gone (not a native CloudWatch metric):
