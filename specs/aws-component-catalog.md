@@ -178,9 +178,15 @@ expiry is deterministic, so no behavior hook is needed: an immutable `Vector`-ba
 re-ages the item; an explicit delete removes one from the soonest-to-expire slot), and `onTick` drains the
 cohort written `ttlPeriodTicks` ago — using the core's [tick-boundary consumption emission](component-catalog.md)
 to free **base and per-index** storage as negative, target-tagged `StorageBytesDelta` facts (projection-sized,
-the exact inverse of write-time index maintenance), **consuming no capacity**. Pre-loaded items carry no
-write tick, so they never TTL-expire. A table with no `ttlPeriodTicks` is byte-identical to one before TTL
-existed. See the [session-store demo](README.session-store-ttl.md).
+the exact inverse of write-time index maintenance), **consuming no capacity**. The drained cohort's item count
+is also emitted as a `TimeToLiveDeletedItemCount(count)` fact — the native CloudWatch TTL-deletion metric — so
+the deletion *flow* can be reported alongside the freed storage. Pre-loaded items carry no write tick, so they
+never TTL-expire, and — because an overwrite **re-ages** an item — TTL only expires items left un-rewritten for
+the full period: a continuously-overwritten working set (a saturated latest-state table) ages nothing out, while
+an **insert-only** stream does. To demonstrate TTL a workload must therefore be insert-heavy — see the capstone's
+append-only `device-events` table (the demo config's `appendOnly` makes every put an insert). A table with no
+`ttlPeriodTicks` is byte-identical to one before TTL existed. See the
+[session-store demo](README.session-store-ttl.md).
 
 **Transactions** (`TransactWriteItems` / `TransactGetItems`). A transactional write carries several sub-item
 writes applied **all-or-nothing** (one `Emission`; under provisioned billing the whole transaction is
@@ -216,11 +222,13 @@ arms contrasting adaptive-on / adaptive-off / well-distributed); `aws/…/Dynamo
 projected GSI, control-event preservation, determinism); `aws/…/DynamoDbTableTtlSpec.scala` and
 `aws/…/TtlRingBufferSpec.scala` (TTL expiry timing, base + per-index freeing, delete-vs-expire, TTL-off
 byte-identity); `aws/…/DynamoDbTableTransactionSpec.scala` (base/LSI 2× + GSI 1×, atomic all-or-nothing, TTL
-over sub-writes); the `OrderTrackingEquivalenceSpec.scala`,
-`OrderTrackingIndexedReconciliationSpec.scala`, and `ThermostatFleetReconciliationSpec.scala` (reconcile
-against the captured baselines); `aws/…/PartitionTopologySpec.scala`, `HotPartitionSpec.scala`, `HeatSplitSpec.scala`
+over sub-writes); the **5-table capstone** (`aws/…/ThermostatCapstoneBaselineSpec.scala`)
+integrating on-demand + provisioned/auto-scaling/burst + transactions + PITR + TTL, and an **append-only
+`device-events`** table that demonstrates TTL expiry (storage plateaus, deletion flow non-zero); the
+`OrderTrackingBaselineSpec.scala`, `OrderTrackingIndexedBaselineSpec.scala`, and `ThermostatFleetBaselineSpec.scala`
+(pin the demos to their captured baselines); `aws/…/PartitionTopologySpec.scala`, `HotPartitionSpec.scala`, `HeatSplitSpec.scala`
 (derived topology, per-partition throttle, adaptive on/off ceilings, sustained-heat splitting), and
-`aws/…/hotkey/HotKeySpec.scala` + `HotKeyReconciliationSpec.scala` (the hot-key demo + its hybrid reconcile).
+`aws/…/hotkey/HotKeySpec.scala` + `HotKeyBaselineSpec.scala` (the hot-key demo + its hybrid baseline).
 
 ### Supporting types
 
@@ -267,7 +275,10 @@ lag); an LSI shares the base partition and is maintained synchronously. `IndexPr
 `DynamoDbResponse` are **timeless** payloads — timing lives on the `Timed[E]` envelope. `DynamoDbTarget`
 (`Table` | `Gsi(name)` | `Lsi(name)`) names the store a request/fact concerns. `DynamoDbConsumption` is the
 metric plane, each fact tagged with its `target`: `ReadCapacityConsumed(units, consistency, target)`,
-`WriteCapacityConsumed(units, target)`, `StorageBytesDelta(bytesDelta, target)`. `ReadConsistency` sets the
+`WriteCapacityConsumed(units, target)`, `StorageBytesDelta(bytesDelta, target)`, plus the feature-specific facts
+`RequestThrottled(target)` (provisioned throttling), `ProvisionedCapacitySnapshot(read, write)` (auto-scaling's
+per-tick reserved capacity), `TimeToLiveDeletedItemCount(count)` (the TTL deletion flow), and
+`ReplicatedWriteCapacityConsumed(units, target)` (multi-region rWCU). `ReadConsistency` sets the
 RCU multiplier (strong ×1, eventual ×0.5), applied by `ThroughputMath` (4 KB read / 1 KB write chunks,
 one-chunk minimum).
 
@@ -319,7 +330,7 @@ in a cyclic `GraphDSL`. A single-region table uses the ordinary `DynamoDbTable.c
 off, byte-identical to a plain table).
 
 **Exercised by.** The [hot-replica demo](README.hot-replica.md) (`GlobalTableSpec`, `HotReplicaSpec`,
-`HotReplicaReconciliationSpec`).
+`HotReplicaBaselineSpec`).
 
 ### `ReplicationCoordinator`
 
