@@ -1,6 +1,6 @@
 package stochastacy.aws.examples.demo
 
-/** The across-trial statistics emitted for each metric — matching the legacy demo's set. */
+/** The across-trial statistics emitted for each metric. */
 enum AggregateStatistic:
   case Mean
   case StdDev

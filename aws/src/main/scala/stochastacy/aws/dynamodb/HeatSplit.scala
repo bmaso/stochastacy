@@ -6,10 +6,10 @@ package stochastacy.aws.dynamodb
  * the per-partition physical max). We model this at partition-key granularity as a **permanent bump to the
  * effective partition count**: a hot range of many keys re-hashes across the split-created partitions and so
  * escapes a single partition's physical-max ceiling, up toward the table total. A lone super-hot key cannot
- * spread (it still hashes to one partition — the AWS single-item limit). A faithful analogue of the legacy
- * `maybeGrowTopology` (`partitionCount += 1` on `consecutiveHotTicks ≥ window`).
+ * spread (it still hashes to one partition — the AWS single-item limit). The effective count grows by one
+ * once a partition stays hot for the sustain window (`consecutiveHotTicks ≥ window`).
  *
- * Opt-in (like the legacy `dynamicPartitionTopologyConfig`): the policy bundles the sustain window, the
+ * Opt-in: the policy bundles the sustain window, the
  * per-partition "hot" trigger (default = the physical max — a partition is hot once it saturates), and a
  * hard cap on the effective count (bounding runaway on an unspittable single key). Meaningful only under
  * adaptive capacity: with adaptive off the per-partition ceiling is the fair share (`capacity / count`),

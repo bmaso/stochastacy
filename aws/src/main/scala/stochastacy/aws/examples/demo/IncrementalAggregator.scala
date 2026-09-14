@@ -8,7 +8,7 @@ import scala.collection.mutable
  * point and each summary metric it keeps a running `(count, sum, sumOfSquares)`, from which mean and
  * population standard deviation fall out in one pass:
  *
- *   mean = sum / count,   variance = sumSq / count − mean²   (= Σ(x−mean)²/count, the legacy convention)
+ *   mean = sum / count,   variance = sumSq / count − mean²   (= Σ(x−mean)²/count, population variance)
  *
  * This is algebraically identical to the batch [[MonteCarloAggregation]] two-pass computation (means are
  * exact; the variance identity matches to `BigDecimal` precision), so the two agree — the batch API is a

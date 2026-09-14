@@ -13,7 +13,7 @@ import stochastacy.core.run.MonteCarlo
 /**
  * Runs a [[MultiTableScenario]] as a Monte Carlo ensemble: `trialCount` reproducible trials from one master
  * seed (via [[MonteCarlo]].stream), aggregating **per table** across trials. Each table folds into its own
- * [[IncrementalAggregator]] over the base metric set (no per-GSI breakout), matching the legacy multi-table
+ * [[IncrementalAggregator]] over the base metric set (no per-GSI breakout), producing the multi-table
  * `Table:<name>:…` reporting.
  *
  * Mirrors [[SingleTableMonteCarloRunner]]: [[run]] collects the per-trial results (tests/gates at bounded

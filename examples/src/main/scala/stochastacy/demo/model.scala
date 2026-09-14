@@ -45,7 +45,6 @@ enum DemoMetric:
   case LatencyP50(operation: String)
   case LatencyP95(operation: String)
   case LatencyP99(operation: String)
-  case EstimatedItemCount
   // Per-table metrics (multi-table demos)
   case TableReadCapacityUnits(tableName: String)
   case TableWriteCapacityUnits(tableName: String)
@@ -59,9 +58,9 @@ enum DemoMetric:
   case TableThrottleCount(tableName: String)
   case TableProvisionedReadCapacityUnits(tableName: String)
   case TableProvisionedWriteCapacityUnits(tableName: String)
-  case TableEstimatedItemCount(tableName: String)
   case TableSystemErrorCount(tableName: String)
   case TablePITRCumulativeCost(tableName: String)
+  case TableTimeToLiveDeletedItemCount(tableName: String)
 
   def exportName: String =
     this match
@@ -107,7 +106,6 @@ enum DemoMetric:
       case DemoMetric.LatencyP50(op) => s"LatencyP50:$op"
       case DemoMetric.LatencyP95(op) => s"LatencyP95:$op"
       case DemoMetric.LatencyP99(op) => s"LatencyP99:$op"
-      case DemoMetric.EstimatedItemCount => "EstimatedItemCount"
       case DemoMetric.TableReadCapacityUnits(t)       => s"Table:$t:ReadCapacityUnits"
       case DemoMetric.TableWriteCapacityUnits(t)      => s"Table:$t:WriteCapacityUnits"
       case DemoMetric.TableStorageBytes(t)            => s"Table:$t:StorageBytes"
@@ -120,9 +118,9 @@ enum DemoMetric:
       case DemoMetric.TableThrottleCount(t)                => s"Table:$t:ThrottleCount"
       case DemoMetric.TableProvisionedReadCapacityUnits(t) => s"Table:$t:ProvisionedReadCapacityUnits"
       case DemoMetric.TableProvisionedWriteCapacityUnits(t)=> s"Table:$t:ProvisionedWriteCapacityUnits"
-      case DemoMetric.TableEstimatedItemCount(t)           => s"Table:$t:EstimatedItemCount"
       case DemoMetric.TableSystemErrorCount(t)             => s"Table:$t:SystemErrorCount"
       case DemoMetric.TablePITRCumulativeCost(t)           => s"Table:$t:PITRCumulativeCost"
+      case DemoMetric.TableTimeToLiveDeletedItemCount(t)   => s"Table:$t:TimeToLiveDeletedItemCount"
 
   def sortKey: (Int, String) =
     this match
@@ -168,7 +166,6 @@ enum DemoMetric:
       case DemoMetric.LatencyP50(op) => (36, op)
       case DemoMetric.LatencyP95(op) => (37, op)
       case DemoMetric.LatencyP99(op) => (38, op)
-      case DemoMetric.EstimatedItemCount              => (42, "")
       case DemoMetric.TableReadCapacityUnits(t)       => (43, t)
       case DemoMetric.TableWriteCapacityUnits(t)      => (44, t)
       case DemoMetric.TableStorageBytes(t)            => (45, t)
@@ -181,9 +178,9 @@ enum DemoMetric:
       case DemoMetric.TableThrottleCount(t)                => (52, t)
       case DemoMetric.TableProvisionedReadCapacityUnits(t) => (53, t)
       case DemoMetric.TableProvisionedWriteCapacityUnits(t)=> (54, t)
-      case DemoMetric.TableEstimatedItemCount(t)           => (55, t)
       case DemoMetric.TableSystemErrorCount(t)             => (56, t)
       case DemoMetric.TablePITRCumulativeCost(t)           => (57, t)
+      case DemoMetric.TableTimeToLiveDeletedItemCount(t)   => (58, t)
 
 enum WindowSizeSeconds(val seconds: Int):
   case OneMinute extends WindowSizeSeconds(60)

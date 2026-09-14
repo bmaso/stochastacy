@@ -59,8 +59,8 @@ and bills differently — so they live in the `Config`, never as separate graph 
 **Properties.**
 - **Generic mechanics, injected domain.** The table owns the *mechanics* — capacity math, storage
   evolution, index maintenance, response shaping — and takes the *domain* as a plug-in
-  [`TableBehavior`](#tablebehavior) (the v2 counterpart to the legacy `DynamoDbTable` + `UseCaseSampler`
-  split). The same component serves any single-table workload.
+  [`TableBehavior`](#tablebehavior), separating the table's mechanics from its domain-specific outcomes.
+  The same component serves any single-table workload.
 - **Composite stochastic-summary state.** State is a [`TableState`](#tablesummarystate--tablestate) — the
   base [`TableSummaryState`](#tablesummarystate--tablestate) plus one summary per secondary index (each an
   item count + total-bytes figure), never a per-key map. Cost is near-constant in request volume and
@@ -135,7 +135,7 @@ tick's utilization (admitted base capacity ÷ current ceiling), keeps a rolling 
 window, and when the average crosses the scale-up (`> target`) or scale-down (`< target ×
 scaleDownThresholdFactor`) threshold — and the direction's cooldown has elapsed — schedules a target-tracking
 change (`ceil(consumed / target)`, clamped to `[min, max]`) that applies after a reaction delay
-(scale-up-fast / scale-down-slow). A faithful port of the legacy auto-scaler's logic, but as pure `onTick`
+(scale-up-fast / scale-down-slow). Implemented as pure `onTick`
 mechanics (state threaded in `TableState`), **mutually exclusive** with a `ReconfigurationSchedule`. Base-table
 only (per-GSI auto-scaling is out of scope). The scaled capacity drives both throttling *and* cost: because it
 is chosen at runtime rather than from a static schedule, `onTick` emits the tick's reserved capacity as a
@@ -154,7 +154,7 @@ per-partition ceiling depends on **adaptive capacity** — the `adaptiveCapacity
 table capacity up to the physical limit (the "bounded by the table total" half is already enforced by the
 table-level `ThrottleBudget.overBudget` check). With adaptive **off**, the ceiling is the **fair share**
 (`capacity / partitionCount`) — the without-adaptive baseline (real DynamoDB is always-on; this is the demo's
-comparison arm and models the legacy's *lagged* adaptive only in the limit). The state is bounded by the
+comparison arm). The state is bounded by the
 partition count, never the key space. Behaviors that emit no partition access (the default) keep the
 table-level-only throttle path, byte-identical.
 
@@ -168,8 +168,8 @@ never merged back (matching DynamoDB). A **lone** super-hot key cannot spread �
 topology (`HeatSplitState` in `TableState`), never per-key. Requires `adaptiveCapacity` (with the fair-share
 ceiling, growing the count only shrinks it); `None` = off, byte-identical. AWS's LSI limitation — no split
 *within an item collection* under an LSI — governs *sort-key*-granularity splits **below** this partition-key
-model, so it is documented, not gated. A faithful analogue of the legacy `maybeGrowTopology`, which the phase-10
-reconcile matches in *direction* (v2 derives the base count the legacy configures).
+model, so it is documented, not gated. The base partition count is *derived* from capacity + storage rather than
+configured.
 
 **TTL (time-to-live storage expiry)** (intrinsic config, not a gate). A `ttlPeriodTicks` on the `Config`
 makes each written item expire that many ticks after it is written. It is **generic table mechanics** — the
@@ -178,9 +178,15 @@ expiry is deterministic, so no behavior hook is needed: an immutable `Vector`-ba
 re-ages the item; an explicit delete removes one from the soonest-to-expire slot), and `onTick` drains the
 cohort written `ttlPeriodTicks` ago — using the core's [tick-boundary consumption emission](component-catalog.md)
 to free **base and per-index** storage as negative, target-tagged `StorageBytesDelta` facts (projection-sized,
-the exact inverse of write-time index maintenance), **consuming no capacity**. Pre-loaded items carry no
-write tick, so they never TTL-expire. A table with no `ttlPeriodTicks` is byte-identical to one before TTL
-existed. See the [session-store demo](README.session-store-ttl.md).
+the exact inverse of write-time index maintenance), **consuming no capacity**. The drained cohort's item count
+is also emitted as a `TimeToLiveDeletedItemCount(count)` fact — the native CloudWatch TTL-deletion metric — so
+the deletion *flow* can be reported alongside the freed storage. Pre-loaded items carry no write tick, so they
+never TTL-expire, and — because an overwrite **re-ages** an item — TTL only expires items left un-rewritten for
+the full period: a continuously-overwritten working set (a saturated latest-state table) ages nothing out, while
+an **insert-only** stream does. To demonstrate TTL a workload must therefore be insert-heavy — see the capstone's
+append-only `device-events` table (the demo config's `appendOnly` makes every put an insert). A table with no
+`ttlPeriodTicks` is byte-identical to one before TTL existed. See the
+[session-store demo](README.session-store-ttl.md).
 
 **Transactions** (`TransactWriteItems` / `TransactGetItems`). A transactional write carries several sub-item
 writes applied **all-or-nothing** (one `Emission`; under provisioned billing the whole transaction is
@@ -188,8 +194,7 @@ throttled as a unit, mutating nothing); a transactional read groups several stro
 follows **AWS's two-phase-commit billing**, which is *target-dependent*: the base-table write and its
 **synchronous, co-located LSI** maintenance are billed **2×**, while a **GSI** back-fill — which propagates
 *asynchronously after* the commit — is billed at the standard **1×**; transactional reads are 2× strongly
-consistent per item. (This deliberately diverges from the legacy simulator, which billed both index types at
-1×.) Each sub-write flows through the same storage, per-index maintenance, and TTL machinery as a single write.
+consistent per item. Each sub-write flows through the same storage, per-index maintenance, and TTL machinery as a single write.
 See the [payments-ledger demo](README.payments-transactions.md).
 
 **Point-In-Time Recovery** (a cost dimension, not a table mechanic). A `pointInTimeRecoveryEnabled` flag on the
@@ -217,11 +222,13 @@ arms contrasting adaptive-on / adaptive-off / well-distributed); `aws/…/Dynamo
 projected GSI, control-event preservation, determinism); `aws/…/DynamoDbTableTtlSpec.scala` and
 `aws/…/TtlRingBufferSpec.scala` (TTL expiry timing, base + per-index freeing, delete-vs-expire, TTL-off
 byte-identity); `aws/…/DynamoDbTableTransactionSpec.scala` (base/LSI 2× + GSI 1×, atomic all-or-nothing, TTL
-over sub-writes); the `OrderTrackingEquivalenceSpec.scala`,
-`OrderTrackingIndexedReconciliationSpec.scala`, and `ThermostatFleetReconciliationSpec.scala` (reconcile
-against the legacy demos); `aws/…/PartitionTopologySpec.scala`, `HotPartitionSpec.scala`, `HeatSplitSpec.scala`
+over sub-writes); the **5-table capstone** (`aws/…/ThermostatCapstoneBaselineSpec.scala`)
+integrating on-demand + provisioned/auto-scaling/burst + transactions + PITR + TTL, and an **append-only
+`device-events`** table that demonstrates TTL expiry (storage plateaus, deletion flow non-zero); the
+`OrderTrackingBaselineSpec.scala`, `OrderTrackingIndexedBaselineSpec.scala`, and `ThermostatFleetBaselineSpec.scala`
+(pin the demos to their captured baselines); `aws/…/PartitionTopologySpec.scala`, `HotPartitionSpec.scala`, `HeatSplitSpec.scala`
 (derived topology, per-partition throttle, adaptive on/off ceilings, sustained-heat splitting), and
-`aws/…/hotkey/HotKeySpec.scala` + `HotKeyReconciliationSpec.scala` (the hot-key demo + its hybrid reconcile).
+`aws/…/hotkey/HotKeySpec.scala` + `HotKeyBaselineSpec.scala` (the hot-key demo + its hybrid baseline).
 
 ### Supporting types
 
@@ -268,7 +275,10 @@ lag); an LSI shares the base partition and is maintained synchronously. `IndexPr
 `DynamoDbResponse` are **timeless** payloads — timing lives on the `Timed[E]` envelope. `DynamoDbTarget`
 (`Table` | `Gsi(name)` | `Lsi(name)`) names the store a request/fact concerns. `DynamoDbConsumption` is the
 metric plane, each fact tagged with its `target`: `ReadCapacityConsumed(units, consistency, target)`,
-`WriteCapacityConsumed(units, target)`, `StorageBytesDelta(bytesDelta, target)`. `ReadConsistency` sets the
+`WriteCapacityConsumed(units, target)`, `StorageBytesDelta(bytesDelta, target)`, plus the feature-specific facts
+`RequestThrottled(target)` (provisioned throttling), `ProvisionedCapacitySnapshot(read, write)` (auto-scaling's
+per-tick reserved capacity), `TimeToLiveDeletedItemCount(count)` (the TTL deletion flow), and
+`ReplicatedWriteCapacityConsumed(units, target)` (multi-region rWCU). `ReadConsistency` sets the
 RCU multiplier (strong ×1, eventual ×0.5), applied by `ThroughputMath` (4 KB read / 1 KB write chunks,
 one-chunk minimum).
 
@@ -320,7 +330,7 @@ in a cyclic `GraphDSL`. A single-region table uses the ordinary `DynamoDbTable.c
 off, byte-identical to a plain table).
 
 **Exercised by.** The [hot-replica demo](README.hot-replica.md) (`GlobalTableSpec`, `HotReplicaSpec`,
-`HotReplicaReconciliationSpec`).
+`HotReplicaBaselineSpec`).
 
 ### `ReplicationCoordinator`
 
@@ -340,8 +350,8 @@ replicated writes (routed back to peers' feedback inputs) plus the transfer + re
 - **Depletion-coupled metrics.** `ReplicationLatency` is the **measured** release − enqueue latency (= link
   lag with no backlog; link lag + backlog wait under depletion); `PendingReplicationCount` is the **in-flight
   count** sampled at window close. Under an inbound ceiling below the offered rate both grow, the heavier
-  source stream diverging above the lighter one, and drain on recovery — the true indicators of rWCU depletion
-  (a v2 improvement; the legacy decouples these from throttling).
+  source stream diverging above the lighter one, and drain on recovery — the true indicators of rWCU depletion,
+  measured directly from the release schedule rather than decoupled from throttling.
 
 **Exercised by.** `RwcuThrottlingSpec` (coordinator in isolation) and `GlobalTableSpec` (the full cycle).
 
@@ -402,12 +412,12 @@ decision is made by the domain `TableBehavior` (e.g. the thermostat's fleet-satu
 the region's `TableSummaryState`. Because that state is the **combined** local + replicated summary, a region
 that receives replicated inbound writes sees an inflated `itemCount` and stops inserting its *own* new items
 too early. The converged per-region population therefore lands **between "largest single fleet" and the true
-union**, and differs between v2 and the legacy. (Replicated writes themselves are applied correctly — they
+union**. (Replicated writes themselves are applied correctly — they
 replay the source's resolved outcome via `onFeedback`; a pure-insert workload converges to the exact union.
 The residual is only in how the *source* region's own insert/overwrite mix is polluted.)
 
-**Effect vs. perfect AWS accuracy.** Per-region **final storage bytes** diverge — in the hot-replica reconcile
-arm, a uniform ≈ 16 % vs. the legacy (which has its own version of the same pollution). It is **bounded** (it
+**Effect vs. perfect AWS accuracy.** Per-region **final storage bytes** diverge from the true-union baseline —
+in the hot-replica demo, a uniform ≈ 16 %. It is **bounded** (it
 does not grow without limit) and its **cost impact is negligible**: storage cost (byte-ticks × the GiB-second
 rate) is orders of magnitude below capacity cost, so the total-cost story is unaffected. Capacity (RCU/WCU)
 and replication *volume* are unaffected and reconcile cleanly. Verified by `ControlledReplicationDiagnosticSpec`

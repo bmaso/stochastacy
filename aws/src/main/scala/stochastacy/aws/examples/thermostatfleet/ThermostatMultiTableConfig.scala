@@ -8,7 +8,7 @@ import stochastacy.aws.examples.demo.{MultiTableScenario, TableSpec}
  * tables run in one simulation and reported per table (`Table:<name>:…`). It implements
  * [[MultiTableScenario]], so the shared multi-table harness runs it.
  *
- * Reproduces the legacy `MultiTableScenarioConfig.twoTableDefault`: a `device-registry` table (a large,
+ * A two-table scenario: a `device-registry` table (a large,
  * heavily-queried, lightly-written fleet) and a `device-telemetry` table (the phase-4 single-region
  * default). Each per-table [[ThermostatConfig]] is mapped to a named [[TableSpec]]; the per-table
  * `trialCount` / `parallelism` are inert (the outer ensemble governs).
@@ -43,7 +43,7 @@ final case class ThermostatMultiTableConfig(
 
 object ThermostatMultiTableConfig:
 
-  /** The two-table scenario matching the legacy `MultiTableScenarioConfig.twoTableDefault`. */
+  /** The two-table scenario. */
   val twoTableDefault: ThermostatMultiTableConfig = ThermostatMultiTableConfig(
     scenarioId      = "thermostat-fleet-multi-table",
     simulationTicks = 1200L,
@@ -60,7 +60,7 @@ object ThermostatMultiTableConfig:
         telemetryReportsPerDevicePerTick = 0.005,
         customerSupportQueryRatePerTick  = 2.0,
         fleetDashboardScanRatePerTick    = 0.2,
-        systemErrorRate                  = 0.0 // legacy fresh-config default (device-telemetry keeps 0.001)
+        systemErrorRate                  = 0.0 // fresh-config default (device-telemetry keeps 0.001)
       ),
       "device-telemetry" -> ThermostatConfig.singleRegionDefault.copy(
         scenarioId      = "thermostat-fleet-multi-table",
@@ -69,11 +69,12 @@ object ThermostatMultiTableConfig:
     )
   )
 
-  /** The full **4-table capstone** matching the legacy `ThermostatFleetCapstoneConfig` (single-region): a
+  /** The full **5-table capstone** (single-region): a
    *  fixed fleet across a Registry (on-demand, read-heavy), a Telemetry table (provisioned + burst +
    *  auto-scaling + TTL + PITR, under a polar-vortex + alert-storm workload), a Commands table (transactional
-   *  command dispatch), and an Alerts table (storm + vortex). The integration proof. `initialDeviceCount` is
-   *  parameterized (the legacy's 50 k is arbitrary); the reconcile pins a smaller fleet on both sides. */
+   *  command dispatch), an Alerts table (storm + vortex), and an Events table (append-only + TTL — the TTL
+   *  showcase: events are inserted and never overwritten, so they age to their TTL and expire, and storage
+   *  plateaus at the retention window). The integration proof. `initialDeviceCount` is parameterized. */
   def capstone(initialDeviceCount: Long = 5000L): ThermostatMultiTableConfig =
     val ticks = 1440L
     def base(name: String) = ThermostatConfig(
@@ -116,6 +117,18 @@ object ThermostatMultiTableConfig:
           customerSupportQueryRatePerTick  = 0.5, fleetDashboardScanRatePerTick = 0.1,
           alertStormProbabilityPerTick     = 0.01, alertStormWriteMultiplier = 8.0,
           polarVortexWriteMultiplier       = 3.0, polarVortexAffectedFraction = 0.40, polarVortexTickRange = (600L, 700L)
+        ),
+        // Events: on-demand, **append-only** event stream with TTL — inserted, never overwritten, so items age
+        // out and expire. Storage climbs to the retention window then plateaus; the TTL-deletion flow is steady
+        // and non-zero. No secondary indexes (a clean base-table TTL/storage showcase). Appended LAST so the four
+        // tables above keep their per-table seeds (and baselines) unchanged.
+        "device-events" -> base("device-events").copy(
+          appendOnly                       = true,
+          secondaryIndexesEnabled          = false,
+          ttlPeriodTicks                   = Some(720),
+          telemetryReportsPerDevicePerTick = 0.01, // ~50 events/tick at a 5 000-device fleet
+          customerSupportQueryRatePerTick  = 0.0, fleetDashboardScanRatePerTick = 0.0, // write-only
+          alertStormProbabilityPerTick     = 0.01, alertStormWriteMultiplier = 4.0     // bursty inserts
         )
       )
     )

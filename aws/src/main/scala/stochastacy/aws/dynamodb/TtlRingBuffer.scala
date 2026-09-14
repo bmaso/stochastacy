@@ -3,12 +3,12 @@ package stochastacy.aws.dynamodb
 /**
  * An immutable, deterministic TTL expiry model. Item writes are bucketed per tick into a circular buffer
  * of `ttlPeriodTicks + 1` slots; at each tick boundary the slot filled `ttlPeriodTicks` ticks ago is
- * drained to yield the items expiring now. This is the functional counterpart of the legacy mutable
- * `SimpleTtlSampler` — every transition returns a new buffer, so it threads through the immutable
+ * drained to yield the items expiring now. This is a functional, immutable TTL model — every transition
+ * returns a new buffer, so it threads through the immutable
  * [[TableState]] and stays pure and reproducible.
  *
  * Intermediate deletes are approximated by removing one item from the soonest-to-expire non-empty slot (a
- * proxy for "this item would have expired next and was deleted early"), exactly as the legacy did. Backed
+ * proxy for "this item would have expired next and was deleted early"). Backed
  * by `Vector`, whose `updated` is ~O(log n), so the per-write copy cost stays negligible even at
  * `ttlPeriodTicks = 720`.
  */

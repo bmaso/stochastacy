@@ -7,8 +7,8 @@ package stochastacy.aws.dynamodb
  * against that ceiling even while the table has aggregate spare — the "hot partition" effect.
  *
  * The count is **derived** from the table's capacity and storage (the greater of the two), an evolving topology
- * that grows as capacity or storage grows — matching real DynamoDB, and a refinement over the legacy simulator
- * (which took a fixed configured partition count). Keys are hashed to a partition, so the per-partition state
+ * that grows as capacity or storage grows — matching real DynamoDB, where partition count grows with capacity
+ * and storage. Keys are hashed to a partition, so the per-partition state
  * is bounded by the partition count, never the key space.
  */
 object PartitionTopology:

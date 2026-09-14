@@ -17,7 +17,7 @@ object Pricing:
   private val SecondsPer30DayMonth = BigDecimal(3600) * BigDecimal(24) * BigDecimal(30)
   private val BytesPerGiB          = BigDecimal(1024).pow(3)
 
-  /** AWS-calibrated Standard rates (the values the legacy `phase1Default` uses): on-demand $0.25/M RCU and
+  /** AWS-calibrated Standard rates (the values the `phase1Default` scenario uses): on-demand $0.25/M RCU and
    *  $1.25/M WCU consumed, provisioned $0.00013/RCU-hr and $0.00065/WCU-hr, storage $0.25/GiB-month. */
   val phase1Default: Rates = Rates(
     rcuPrice                  = BigDecimal("0.00000025"),

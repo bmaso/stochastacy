@@ -1,7 +1,9 @@
 package stochastacy.aws.examples.demo
 
 /** One tick's slice of a trial: the capacity consumed that tick (overall, plus a per-GSI breakout), the
- *  storage held at tick close, and the running estimated cost through that tick. */
+ *  storage held at tick close, the running estimated cost through that tick, and — for provisioned tables —
+ *  the reserved capacity in force this tick and the requests throttled this tick (the temporal signal a
+ *  mixed-mode / reconfiguration story turns on). Provisioned fields are `None` under on-demand. */
 final case class TrialTimeSeriesPoint(
   tick:                    Long,
   readCapacityUnits:       BigDecimal,
@@ -9,7 +11,11 @@ final case class TrialTimeSeriesPoint(
   storageBytes:            Long,
   cumulativeEstimatedCost: BigDecimal,
   gsiReadCapacityUnits:    Map[String, BigDecimal] = Map.empty,
-  gsiWriteCapacityUnits:   Map[String, BigDecimal] = Map.empty
+  gsiWriteCapacityUnits:   Map[String, BigDecimal] = Map.empty,
+  provisionedReadCapacityUnits:  Option[Long] = None,
+  provisionedWriteCapacityUnits: Option[Long] = None,
+  throttledRequests:             Long         = 0L,
+  ttlDeletedItemCount:           Long         = 0L
 )
 
 /** A trial's roll-up totals: capacity consumed (overall — base + all indexes — plus a per-GSI breakout),

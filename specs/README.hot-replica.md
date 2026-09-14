@@ -24,7 +24,7 @@ per-link lag; every replica ends up a full copy of the whole fleet's data.
 ### Two arms
 | arm | what it isolates |
 |---|---|
-| **reconcile** | all on-demand, the legacy fleets 1800 / 900 / 300 — healthy replication: `PendingReplicationCount` bounded (≈ arrivals × lag), `ReplicationLatency` ≈ the link-lag mean on every link |
+| **reconcile** | all on-demand, fleets 1800 / 900 / 300 — healthy replication: `PendingReplicationCount` bounded (≈ arrivals × lag), `ReplicationLatency` ≈ the link-lag mean on every link |
 | **depletion** | an **8:1** fleet discrepancy (2000 / 250 / 300); `ap-southeast-1` is **provisioned with an inbound rWCU ceiling below its combined inbound**, and its `us-east-1 →` link is modestly longer — so **both** inbound links back up, and **diverge** |
 
 ### A representative depletion run (per-link, into the rWCU-capped ap-southeast-1)
@@ -50,26 +50,26 @@ pending bounded). The reconcile arm shows all links healthy.
   replica's GSIs carry their own replicated capacity in AWS).
 - **The two depletion metrics.** `ReplicationLatency` = the **measured** release − enqueue latency; 
   `PendingReplicationCount` = the **in-flight count** at window close. Under depletion both grow and the source
-  streams diverge; on recovery they drain. (This coupling to the rWCU ceiling is a v2 improvement — the legacy
-  decouples the metrics from throttling.)
+  streams diverge; on recovery they drain. (The metrics are coupled directly to the rWCU ceiling, so they
+  measure depletion rather than being decoupled from throttling.)
 - **No transfer charge.** AWS does not bill cross-region transfer for global-table replication; the demo reports
   transfer **bytes** as a volume metric, at no cost.
 
 ## 3. Reconcile + AWS-accuracy posture
 
-The reconcile arm reproduces the legacy `thermostat-fleet-multi-region` demo per region (matched fleets, growth,
-and per-region pricing). `HotReplicaReconciliationSpec` **pins RCU and WCU** (clean, ~1–4 % — validating the
-workload and replication *volume*) and **documents** storage and cost as bounded divergences:
+The reconcile arm is pinned to an established per-region baseline (matched fleets, growth, and per-region
+pricing). `HotReplicaReconciliationSpec` **pins RCU and WCU** (clean, ~1–4 % — validating the workload and
+replication *volume*) and **documents** storage and cost as bounded, intrinsic characteristics:
 
 - **Storage** (uniform ~16 %): a **summary-model saturation-pollution** limitation — a region's insert/overwrite
   heuristic reads replication-polluted state, so the converged per-region population deviates from the true
   key-space union (bounded, **negligible cost**). Recorded under
   [Known discrepancies](aws-component-catalog.md#known-discrepancies) with a fix sketch.
-- **Cost** (up to +59 % at the rWCU-heavy replica): v2 is *higher because it is more accurate* — it prices rWCU at
-  the AWS rate (rWRU = WRU), where the legacy underprices it.
+- **Cost** (up to +59 % at the rWCU-heavy replica): rWCU is priced at the AWS-correct rate (rWRU = WRU), so
+  cost sits above a baseline that underprices replicated writes.
 
-Building this arm fixed two AWS-accuracy bugs the reconcile surfaced (both grounded in the AWS docs, not the
-legacy): replicas now hold the full-copy union (replayed source outcome), and replication transfer is free.
+Two AWS-accuracy behaviors are grounded in the AWS docs: replicas hold the full-copy union (replayed source
+outcome), and replication transfer is free.
 
 ## 4. Running it
 

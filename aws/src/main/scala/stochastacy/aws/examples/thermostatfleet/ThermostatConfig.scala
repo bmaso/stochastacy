@@ -22,11 +22,11 @@ import stochastacy.core.sampler.{RandomBurstSampler, Sampler, StatelessSampler, 
  *
  * The telemetry write rate is **temporally shaped** (Slice 5): a morning and an evening triangular spike
  * (combined by `max`), a polar-vortex window multiplier, and stochastic alert-storm bursts, all on top of
- * the fleet-scaled per-device rate — reproducing the legacy `ThermostatFleetScenarioConfig` telemetry
+ * the fleet-scaled per-device rate — the single-region telemetry
  * profile. Reads (query/scan) are constant-rate. With the shipped `singleRegionDefault` the vortex is off
  * (`polarVortexWriteMultiplier == 1.0`), so a no-shape config still yields the plain fleet-scaled rate.
  *
- * A small `systemErrorRate` (default 0.001, matching the legacy) models DynamoDB's intrinsic transient
+ * A small `systemErrorRate` (default 0.001) models DynamoDB's intrinsic transient
  * failures: the harness attaches a load-independent `ChaosGate` on the table's inlet, so ~0.1 % of
  * requests are rejected with a `SystemErrorResponse` — consuming no capacity and mutating no state.
  */
@@ -60,7 +60,9 @@ final case class ThermostatConfig(
   override val ttlPeriodTicks:      Option[Int]                 = None,
   override val pointInTimeRecoveryEnabled: Boolean              = false,
   transactWriteItemsPerItemBytes:   Option[Vector[Long]]        = None,
-  useTransactions:                  Boolean                     = true
+  useTransactions:                  Boolean                     = true,
+  appendOnly:                       Boolean                     = false,
+  secondaryIndexesEnabled:          Boolean                     = true
 ) extends SingleTableScenario:
   require(scenarioId.nonEmpty,                          "scenarioId must be non-empty")
   require(simulationTicks >= 1L,                        "simulationTicks must be at least 1")
@@ -93,14 +95,16 @@ final case class ThermostatConfig(
     case Left(message) => throw new IllegalArgumentException(message)
     case Right(_)      => ()
 
-  def globalSecondaryIndexes: Vector[GlobalSecondaryIndex] = Vector(
-    GlobalSecondaryIndex(ThermostatConfig.CustomerDevicesGsiName, IndexProjection.KeysOnly),
-    GlobalSecondaryIndex(ThermostatConfig.FleetAlertsGsiName,     IndexProjection.Include(ThermostatConfig.FleetAlertsProjectedNonKeyBytes)),
-    GlobalSecondaryIndex(ThermostatConfig.DeviceStatusGsiName,    IndexProjection.All)
-  )
-  def localSecondaryIndexes: Vector[LocalSecondaryIndex] = Vector(
-    LocalSecondaryIndex(ThermostatConfig.ReadingTypeHistoryLsiName, IndexProjection.All)
-  )
+  def globalSecondaryIndexes: Vector[GlobalSecondaryIndex] =
+    if !secondaryIndexesEnabled then Vector.empty
+    else Vector(
+      GlobalSecondaryIndex(ThermostatConfig.CustomerDevicesGsiName, IndexProjection.KeysOnly),
+      GlobalSecondaryIndex(ThermostatConfig.FleetAlertsGsiName,     IndexProjection.Include(ThermostatConfig.FleetAlertsProjectedNonKeyBytes)),
+      GlobalSecondaryIndex(ThermostatConfig.DeviceStatusGsiName,    IndexProjection.All)
+    )
+  def localSecondaryIndexes: Vector[LocalSecondaryIndex] =
+    if !secondaryIndexesEnabled then Vector.empty
+    else Vector(LocalSecondaryIndex(ThermostatConfig.ReadingTypeHistoryLsiName, IndexProjection.All))
 
   /** The table starts empty and fills as devices report telemetry. */
   def initialTableState: TableSummaryState = TableSummaryState.empty
@@ -111,7 +115,7 @@ final case class ThermostatConfig(
     math.max(1L, initialDeviceCount + (deviceGrowthPerTick * tick).toLong)
 
   /** The fleet-scaled, spike- and vortex-shaped expected telemetry rate (λ) at `tick`, before alert storms.
-   *  `reportsPerDevicePerTick × max(morningSpike, eveningSpike) × vortex × fleetSize` — the legacy formula. */
+   *  `reportsPerDevicePerTick × max(morningSpike, eveningSpike) × vortex × fleetSize`. */
   private def baseTelemetryLambda: StatelessSampler[Double] = Sampler.deterministic { tick =>
     val morning = TemporalShapeFunctions.triangularFactor(
       morningSpikePeakTickRange._1, morningSpikePeakTickRange._2, morningSpikePeakMultiplier)(tick)
@@ -126,7 +130,7 @@ final case class ThermostatConfig(
   }
 
   /** The per-tick telemetry count sampler: the shaped base λ wrapped in alert-storm bursts (additive in
-   *  λ-space, stateful across ticks). Reproduces the legacy `RandomBurstSampler` telemetry rate. */
+   *  λ-space, stateful across ticks). */
   def telemetryRateSampler: RandomBurstSampler[Unit] =
     RandomBurstSampler(
       inner         = baseTelemetryLambda,
@@ -147,10 +151,10 @@ object ThermostatConfig:
   val ReadingTypeHistoryLsiName = "reading-type-history"
   val FleetAlertsProjectedNonKeyBytes = 64L
 
-  /** The single-region scenario matching the legacy `ThermostatFleetScenarioConfig.singleRegionDefault`. */
+  /** The single-region default scenario. */
   val singleRegionDefault: ThermostatConfig = ThermostatConfig()
 
-  /** The mixed-mode scenario matching the legacy `ThermostatFleetMixedModeConfig`: the single-region
+  /** The mixed-mode scenario: the single-region
    *  workload, **starting on-demand**, switched to provisioned at tick 400 and then right-sized down at
    *  tick 800 (the "right-sizing trap" — the tightened capacity throttles telemetry bursts on-demand
    *  absorbed). */
@@ -162,7 +166,7 @@ object ThermostatConfig:
     ))
   )
 
-  /** The auto-scaling policy for the telemetry table — the legacy capstone's values (target 70 %,
+  /** The auto-scaling policy for the telemetry table — the capstone's values (target 70 %,
    *  60-tick window, 2-min scale-up / 15-min scale-down at a 1-second tick). */
   val telemetryAutoScalingPolicy: AutoScalingPolicy = AutoScalingPolicy(
     targetUtilization = 0.70, evaluationWindowTicks = 60,

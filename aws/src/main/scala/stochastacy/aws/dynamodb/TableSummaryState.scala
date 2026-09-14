@@ -2,9 +2,9 @@ package stochastacy.aws.dynamodb
 
 /**
  * The stochastic-summary state of a table: an item count and a total-bytes figure, with the average item
- * size derived. This is the immutable v2 counterpart to the legacy mutable `SummaryTableState` — its
+ * size derived. This is an immutable summary of the table's contents — its
  * transitions return a new state rather than mutating vars, so it can be threaded functionally as a
- * `ComponentSampler` state (Slice 2). Transition semantics match the legacy recorder methods exactly.
+ * `ComponentSampler` state (Slice 2). Transitions apply each recorded write/delete exactly.
  */
 final case class TableSummaryState(itemCount: Long, totalItemBytes: Long):
   require(itemCount >= 0L,      s"TableSummaryState.itemCount must be non-negative, got $itemCount")
@@ -74,8 +74,7 @@ object TableState:
    * The initial whole-table state: the given base summary, with each secondary index seeded from the
    * base's pre-loaded items projected through the index — the entries a freshly-created index over an
    * existing table already holds. When `ttlPeriodTicks` is set, an empty TTL ring buffer is attached;
-   * pre-loaded items are **not** seeded into it (they carry no write tick), so they never TTL-expire —
-   * matching the legacy model.
+   * pre-loaded items are **not** seeded into it (they carry no write tick), so they never TTL-expire.
    */
   def initial(
     base:           TableSummaryState,

@@ -274,7 +274,8 @@ object DynamoDbTable:
                   (states.updated(idx.indexName, next), facts2)
               }
             val nextState = withRb.copy(base = withRb.base.applyExpiry(count, freedBase), indexes = shrunkIndexes)
-            val allFacts  = StorageBytesDelta(-freedBase, DynamoDbTarget.Table) :: indexFacts
+            // The native TimeToLiveDeletedItemCount flow, alongside the storage the cohort frees.
+            val allFacts  = TimeToLiveDeletedItemCount(count) :: StorageBytesDelta(-freedBase, DynamoDbTarget.Table) :: indexFacts
             TickEmission(nextState, snapshotFacts ++ allFacts.map(Scheduled(_, 0.0)))
 
     /** The state a request reads/decides against: an index's own summary for a GSI/LSI query or scan,

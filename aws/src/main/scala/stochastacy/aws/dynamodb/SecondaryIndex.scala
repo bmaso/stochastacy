@@ -2,8 +2,7 @@ package stochastacy.aws.dynamodb
 
 /**
  * How much of a base item a secondary index projects into its own entries — which sets the index's
- * per-entry size (and so its storage and maintenance write cost). A re-creation of the legacy
- * `IndexProjection`.
+ * per-entry size (and so its storage and maintenance write cost).
  */
 enum IndexProjection:
   /** The whole item (an entry is the base item's size). */
@@ -27,7 +26,7 @@ sealed trait SecondaryIndex:
   def maintenanceDelay: Double
 
 /** A global secondary index — maintained asynchronously after `propagationDelayTicks` (default 0, which
- *  matches the legacy's emit-at-write-time timing; raise it to model eventual-consistency lag). */
+ *  emits maintenance at write time; raise it to model eventual-consistency lag). */
 final case class GlobalSecondaryIndex(
   indexName:             String,
   projection:            IndexProjection = IndexProjection.All,

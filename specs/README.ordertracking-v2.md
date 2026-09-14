@@ -1,9 +1,9 @@
 # Order-Tracking (DynamoDB on the v2 core) — Engineer's Guide
 
-The first AWS demo re-built on the domain-agnostic v2 engine: a **single on-demand DynamoDB table** under
+The first AWS demo on the domain-agnostic v2 engine: a **single on-demand DynamoDB table** under
 a mixed read/write workload, estimating its capacity consumption, storage growth, and cost across a Monte
-Carlo ensemble. It re-implements the legacy `ordertracking` Phase-1 demo on the new `stochastacy.core`
-abstractions, and is proven — by an equivalence gate — to reproduce the legacy demo's aggregate behavior.
+Carlo ensemble. An equivalence gate pins it to an established baseline (the demo's aggregate capacity,
+storage, and cost).
 
 The example lives in the `aws/` module, package `stochastacy.aws.examples.ordertracking`; the reusable
 table component it drives lives in `stochastacy.aws.dynamodb` (see the
@@ -45,30 +45,30 @@ The demo surfaces four things:
 
 ## 2. Results
 
-### Equivalence with the legacy demo
-The demo's reason for existing is parity: it must behave like the legacy Phase-1 demo. The gate
-(`OrderTrackingEquivalenceSpec`) runs the v2 ensemble at the legacy's configuration (100 trials × 30
-ticks) and compares across-trial means to a **captured legacy baseline**:
+### Equivalence with the baseline
+The demo is pinned to an established baseline (aggregate capacity, storage, and cost). The gate
+(`OrderTrackingEquivalenceSpec`) runs the ensemble at the reference configuration (100 trials × 30
+ticks) and compares across-trial means to a **captured baseline**:
 
-| metric | v2 vs. legacy | band |
+| metric | vs. baseline | band |
 |---|---|---|
 | mean total read capacity units | **2.4%** | ±5% |
 | mean total write capacity units | **1.8%** | ±5% |
 | mean total estimated cost | **1.2%** | ±5% |
-| mean final storage bytes (vs. legacy + initial) | **0.9%** | ±10% |
+| mean final storage bytes (vs. baseline + initial) | **0.9%** | ±10% |
 
 The ~2% gaps are consistent with the sampling error of two 100-trial ensembles drawn from *independent*
-RNG streams (v2 and legacy share the workload rates and per-op math, so only their expectations coincide,
+RNG streams (they share the workload rates and per-op math, so only their expectations coincide,
 not their exact draws). This is genuine equivalence, not a loose pass.
 
-### A legacy bug, fixed
-The storage row is compared against **legacy + initial storage** on purpose. The legacy demo integrated
-storage from zero and only ever moved it by operation deltas — so the table's *pre-loaded* items (10 ×
-768 B = 7 680 B) were **never billed**: `FinalStorageBytes`, byte-ticks, and storage cost all reflected
+### Billing all stored data
+The storage row is compared against **baseline + initial storage** on purpose. A model that integrates
+storage from zero and only ever moves it by operation deltas would **never bill** the table's *pre-loaded*
+items (10 × 768 B = 7 680 B): `FinalStorageBytes`, byte-ticks, and storage cost would reflect
 only the net change during the run, not the bytes actually stored. Against real DynamoDB (which bills all
-stored data) that undercounts. The v2 accounting **seeds the fold with the table's initial storage**, so
-it bills correctly. The gate confirms the correction: v2's final storage exceeds the legacy's by ≈ the
-7 680-byte initial term. (`TotalStorageByteTicks` is intentionally *not* gated — the legacy's own summary
+stored data) that undercounts. This accounting **seeds the fold with the table's initial storage**, so
+it bills correctly, matching real DynamoDB — final storage exceeds a delta-only baseline by ≈ the
+7 680-byte initial term. (`TotalStorageByteTicks` is intentionally *not* gated — the baseline's own summary
 and time-series paths disagree on their accrual count, so it carries no clean signal.)
 
 ---
@@ -77,8 +77,7 @@ and time-series paths disagree on their accrual count, so it carries no clean si
 
 A second scenario, `indexedDefault`, extends the same table with the read side of an order-tracking
 service: **Query and Scan** over **two GSIs** — `customerId-status` (a customer's orders by status) and
-`sellerId-createdAt` (a seller's orders by time) — and **one LSI**, `createdAt-priority`. It re-implements
-the legacy `order-tracking-phase2` scenario.
+`sellerId-createdAt` (a seller's orders by time) — and **one LSI**, `createdAt-priority`.
 
 ### What it adds
 - **Secondary indexes, declared on the table.** Each write fans out maintenance to every index (its own
@@ -86,29 +85,27 @@ the legacy `order-tracking-phase2` scenario.
   Indexes are configured on the `DynamoDbTable`, never wired as graph nodes — see the
   [AWS component catalog](aws-component-catalog.md#dynamodbtable).
 - **Query/Scan with per-index metrics.** Reads target the base table or a GSI (GSI reads are eventually
-  consistent). The JSONL breaks out per-GSI capacity under the legacy names
+  consistent). The JSONL breaks out per-GSI capacity under the names
   `GSI:<name>:ReadCapacityUnits` / `WriteCapacityUnits` (and `Total…`).
 
-### The improved read model (why v2 diverges from legacy, on purpose)
+### The read model
 A read consults **the target's own state**: a **scan evaluates the whole target** (its item count and
-projected bytes — so scan cost *grows with the table*), and a **query** evaluates a bounded page (a Poisson
-selectivity draw capped at the target's population). The legacy modeled every read as a capped few items
-(4–6) off the base table's size — so its scan cost never grew with the data, and projection was ignored.
-We deliberately fixed this; the assumptions are explicit config (`queryEvaluatedItemsMean`,
-`returnedFraction`), not magic constants.
+projected bytes — so scan cost *grows with the table*, matching real DynamoDB), and a **query** evaluates a
+bounded page (a Poisson selectivity draw capped at the target's population). The assumptions are explicit
+config (`queryEvaluatedItemsMean`, `returnedFraction`), not magic constants.
 
-### Reconciliation with legacy
-Because the read model changed on purpose, the gate (`OrderTrackingIndexedReconciliationSpec`) is a
-**reconciliation, not a blind match** — equivalence on the faithful path, quantified divergence where we
-improved (100 trials × 30 ticks):
+### Reconciliation with the baseline
+Because the read model evaluates the whole target, the gate (`OrderTrackingIndexedReconciliationSpec`) is a
+**reconciliation, not a blind match** — equivalence on the write path, quantified difference on the read path
+(100 trials × 30 ticks):
 
-| metric | v2 vs legacy | verdict |
+| metric | vs. baseline | verdict |
 |---|---|---|
-| total **write** capacity units | **−1.5%** (band ±5%) | equivalent — writes + index maintenance replicate the legacy math |
+| total **write** capacity units | **−1.5%** (band ±5%) | equivalent — writes + index maintenance follow the base math |
 | per-GSI **write** capacity units | **−1.6%** (band ±10%) | equivalent — index maintenance matches |
-| total **read** capacity units | **+41%** | *deliberate* — scans now read the whole target |
-| final storage bytes | ≈ legacy **+ all-targets initial** (≈30.7 KB), within ±15% | *corrected* — v2 bills every target's pre-loaded storage the legacy dropped |
-| total estimated cost | **+1.7%** | mostly write-driven; the read divergence is a small share of the bill |
+| total **read** capacity units | **+41%** | scans read the whole target, so read cost grows with the table |
+| final storage bytes | ≈ baseline **+ all-targets initial** (≈30.7 KB), within ±15% | bills every target's pre-loaded storage |
+| total estimated cost | **+1.7%** | mostly write-driven; the read difference is a small share of the bill |
 
 ### Running it
 ```bash
@@ -134,7 +131,7 @@ existing-item probabilities, flow rates, item-byte ranges — lives in `OrderTra
 
 The JSONL carries four record kinds — `trial-time-series`, `trial-summary`, `aggregate-time-series`,
 `aggregate-summary` — keyed by `scenarioId` / `trialId` (or `trialCount`) / `tick` / `metric` /
-`statistic`, in the legacy demo's record shape, so the existing Grafana queries bind unchanged. Metric
+`statistic`, in the standard record shape, so the Grafana queries bind unchanged. Metric
 names are `ReadCapacityUnits` / `WriteCapacityUnits` / `StorageBytes` / `CumulativeEstimatedCost`
 (per-tick) and `Total…` / `FinalStorageBytes` / `TotalEstimatedCost` (summary); aggregate statistics are
 `mean` and `stddev`.
@@ -150,15 +147,15 @@ sbt 'aws/testOnly stochastacy.aws.examples.ordertracking.OrderTrackingEquivalenc
 
 ### 4.1 The table and its domain
 The table is the reusable `DynamoDbTable` component (`stochastacy.aws.dynamodb`) — generic mechanics with
-an injected `TableBehavior`. This demo supplies `OrderTrackingBehavior`, a faithful port of the legacy
-`UseCaseSampler`: a get hits with probability 0.85 (returning a jittered ±25 % item size, else a miss); a
+an injected `TableBehavior`. This demo supplies `OrderTrackingBehavior`: a get hits with probability 0.85
+(returning a jittered ±25 % item size, else a miss); a
 put always writes a new item; an update / delete targets an existing item with probability 0.9 / 0.75
 (else an upsert / no-op). The behavior draws the *outcome*; `TableMechanics.resolve` turns it into the
 response, the RCU/WCU/storage facts, and the next `TableSummaryState`. See the
 [AWS component catalog](aws-component-catalog.md) for the component's contract.
 
 ### 4.2 The workload
-`OrderTrackingWorkload.arrivals` generates the Phase-1 traffic directly (no ips `WorkloadDsl`): four
+`OrderTrackingWorkload.arrivals` generates the Phase-1 traffic directly: four
 Poisson flows — put (λ 0.8, items U(672, 1120) B), get (λ 2.5), update (λ 1.2, items U(768, 1280) B),
 delete (λ 0.4) — emitted per tick with a uniform-random intra-tick position, tagged with the scenario id.
 `TickFraming` frames the arrivals into the `Tick`-windowed, `EndOfTime`-terminated stream the table

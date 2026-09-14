@@ -6,8 +6,8 @@ import stochastacy.aws.dynamodb.*
 import stochastacy.aws.dynamodb.TableMechanics.{OperationOutcome, ReadShape}
 
 /**
- * The Thermostat-fleet domain behavior on the v2 [[TableBehavior]] interface — a faithful port of the
- * legacy `ThermostatFleetBehavior` (single-region), minus the partition-footprint / item-collection
+ * The Thermostat-fleet domain behavior on the v2 [[TableBehavior]] interface — the single-region fleet
+ * behavior, without the partition-footprint / item-collection
  * bookkeeping this scope omits.
  *
  *   - a **telemetry write** either creates a new device record or overwrites an existing one, chosen by
@@ -25,10 +25,13 @@ final class ThermostatFleetBehavior(config: ThermostatConfig) extends TableBehav
   def outcomeFor(request: DynamoDbRequest, state: TableSummaryState, rng: UniformRandomProvider, tick: Long): OperationOutcome =
     request match
       case PutItemRequest(itemBytes) =>
-        // In commands mode (transactional writes configured) a put is an append (like a transaction sub-item),
-        // so the useTransactions=false baseline matches the transactions footprint; otherwise telemetry's
+        // An append-only table (an event stream) never overwrites — every put is an insert, so items age to
+        // their TTL and expire. Commands mode is likewise an append (each put is a transaction sub-item, so the
+        // useTransactions=false baseline matches the transactions footprint). Otherwise telemetry's
         // insert-or-overwrite saturation applies.
-        val previous = if config.transactWriteItemsPerItemBytes.isDefined then None else telemetryPrevious(state, rng, tick)
+        val previous =
+          if config.appendOnly || config.transactWriteItemsPerItemBytes.isDefined then None
+          else telemetryPrevious(state, rng, tick)
         OperationOutcome.Put(writtenItemBytes = itemBytes, previousItemBytes = previous)
       case q: QueryRequest =>
         OperationOutcome.Query(q.target, q.consistency, queryShape(state, rng))
@@ -36,7 +39,7 @@ final class ThermostatFleetBehavior(config: ThermostatConfig) extends TableBehav
         OperationOutcome.Scan(s.target, s.consistency, scanShape(state, rng))
       case TransactWriteItemsRequest(perItemBytes) =>
         // A device-command dispatch: each sub-item (status update + audit entry) is a new record (insert),
-        // its size drawn from the configured bytes ± the telemetry byte variance (matching the legacy).
+        // its size drawn from the configured bytes ± the telemetry byte variance.
         OperationOutcome.TransactWrite(perItemBytes.map { b =>
           val v     = config.telemetryItemBytesVariance
           val scale = 1.0 - v + rng.nextDouble() * 2.0 * v
