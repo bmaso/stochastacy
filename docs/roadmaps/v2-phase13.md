@@ -1,6 +1,6 @@
 # v2/phase13 — Closed-loop circuits
 
-**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slice 1 done). Gives `stochastacy.core` **closed feedback
+**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–2 done). Gives `stochastacy.core` **closed feedback
 loops by composition** — including loops that close *inside* a tick — proven by the **MM1 demo** (an M/M/1 queue
 with Bernoulli feedback, checked against its closed-form solution). **Immediately after this phase, work resumes on
 `tailgate`** (the throttle-comparison simulator for Brian's article, on hold until this lands), so the close-out
@@ -105,7 +105,7 @@ Ticks are 1 s; a session makes several loop round trips inside one tick.
 | # | Slice | Status | Proof (target) |
 |---|---|---|---|
 | 1 | Sampler contract: input time + emitting feedback | **Done** | `at` passed to `sample`/`onFeedback`; `FeedbackEmission` with optional output; both transducer stages updated; every existing scenario **byte-identical** (all baseline specs unchanged); full `sbt test` |
-| 2 | Circuit engine | Planned | calendar stage over erased nodes: zero-delay self-loop ordered exactly; cross-tick loop; `onTick` order; residue; runaway cap; determinism; **a one-node circuit ≡ `componentOf`** byte-identically |
+| 2 | Circuit engine | **Done** | calendar stage over erased nodes: zero-delay self-loop ordered exactly; cross-tick loop; `onTick` order; residue; runaway cap; determinism; **a one-node circuit ≡ `componentOf`** byte-identically |
 | 3 | Typed circuit builder + wiretap | Planned | typed ports/edges/transforms; external routing; consumption mapping; per-node states + RNGs; build-time validation; wiretap; tailgate-shaped unit wiring (gate Admit/Reject edges, tap self-edge timeout); `Interface.wrap` around a circuit |
 | 4 | MM1 demo | Planned | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
 | 5 | Theory baseline | Planned | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
@@ -160,6 +160,31 @@ residue is counted, not emitted; the runaway cap fails the stage with a clear er
 and the anchor invariant — **a one-node circuit wired in → node → out is byte-identical to
 `ScheduleReleaseTransducer.componentOf`** on the existing transducer spec fixtures. A throughput microbenchmark
 (events/s through the calendar) is recorded for later tailgate sizing.
+
+**Delivered.** Package `stochastacy.core.component.circuit`, purely additive (no existing file changed). Public:
+`CircuitResult` (node final states in declaration order, `CircuitResidue`, per-plane `UnroutedCount`s,
+`unroutedInputs`) and `CircuitPlane` (`Out` / `Taps` / `Consumption`). Internal (`private[stochastacy]`, for Slice 3's
+typed builder): `CircuitPlan` (erased nodes + routes keyed by source, each route a target plus a filtering transform;
+structural `require`s — the input feeds only node ports, `Out`/`Taps` feed node ports or the forward outlet,
+consumption feeds only the consumption outlet), `ErasedNode` (any `LoopbackComponentSampler` behind a cast adapter,
+with its own RNG; stateless — the stage owns state), and `CircuitStage.componentOf(plan)`. The stage places external
+inputs on a calendar at their conceptual time; at `Tick(t)` it dispatches every event before `t` in `(tick,
+intraTick, seq)` order — events it creates that also land before `t` join the same pass, which is how a loop closes
+inside the tick — then releases outlet items before `t`, runs every node's `onTick(t)` (boundary facts stamped at
+`(t, 0) + delay`), and forwards the tick: the transducer's own order. Approved decisions as implemented: D1
+conceptual-time dispatch of external inputs (a dedicated spec documents the difference from the transducer's
+arrival order on unsorted input); D2 a negative delay fails the stage; D3 unrouted emissions are dropped and counted;
+D4 a per-window dispatch cap (default 10 M) fails a runaway zero-delay cycle; D5 tight visibility. A node exception
+fails the stage naming the node and port. `CircuitStageSpec` (13), `CircuitAnchorSpec` (5 — delayed outputs, residue,
+boundary facts, per-tick reset, RNG-drawn delays), and **`CircuitAnchorDynamoDbSpec` (2) — a one-node circuit hosting
+the real `DynamoDbTableSampler` is byte-identical to `DynamoDbTable.componentOf`** on the single-region thermostat
+table (GSIs + LSI) and the auto-scaling telemetry table (`onTick`-heavy); the table's taps, unrouted, are the only
+unrouted plane. Full `sbt test` green (560). Benchmark (`CircuitThroughputBenchmark`, a `main` in core test sources,
+not part of `sbt test`; Apple M3 Max, one warm-up pass then one timed pass): **~37 M dispatches/s** through the calendar
+(a zero-delay two-node relay, 10,000,020 dispatches verified from node states), and on 1 M framed inputs a one-node
+circuit runs **~1.65 M events/s vs ~1.12 M for `componentOf`** — per-element stream overhead, not the calendar,
+dominates. Rough tailgate sizing: Stage 2's ~6 × 10⁹ arrivals at ~1.6 M/s is ~1 CPU-hour, before per-request internal
+dispatches (cheap by (a)) and trial parallelism.
 
 ### Slice 3 — Typed circuit builder + wiretap
 
