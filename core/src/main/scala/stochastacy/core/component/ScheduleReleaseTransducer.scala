@@ -41,7 +41,13 @@ object ScheduleReleaseTransducer:
    *  inlet and a tap outlet (see [[LoopbackShape]]). `in` is the sole tick clock; `tapOut` forwards `Tick(t)`
    *  eagerly so the component can sit in a delayed self-loop without deadlock; `fbIn` events are dispatched to
    *  the sampler's `onFeedback`. A window `t-1` closes (its fwd/cons outputs release) only once **both** `in`
-   *  and `fbIn` have reached `Tick(t)`, so a fed-back effect for that window is applied before its outputs. */
+   *  and `fbIn` have reached `Tick(t)`, so a fed-back effect for that window is applied before its outputs.
+   *
+   *  A feedback's optional forward output and consumption are scheduled exactly like a sample's. Within a window,
+   *  primary and fed-back inputs are absorbed in **arrival order** (outputs are still released in time order). A
+   *  tap emitted **from feedback** must be stamped at a later tick than the fed-back item — the tap window is
+   *  released eagerly, before that window's remaining feedback — and the stage fails with an
+   *  `IllegalStateException` otherwise. */
   def loopbackComponentOf[S, In, Fb, Out, Cons, Tap](
     sampler: LoopbackComponentSampler[S, In, Fb, Out, Cons, Tap],
     rng:     UniformRandomProvider
@@ -84,7 +90,7 @@ object ScheduleReleaseTransducer:
           (inEventTime.ticks + floor.toLong, raw - floor)
 
         private def runSampler(timedIn: Timed[In]): Unit =
-          val Emission(ns, out, conss) = sampler.sample(timedIn.event, state, rng)
+          val Emission(ns, out, conss) = sampler.sample(timedIn.event, SimInstant(timedIn.eventTime.ticks, timedIn.intraTick), state, rng)
           state = ns
           val (rt, ri) = stamp(timedIn.eventTime, timedIn.intraTick, out.delay)
           pending.enqueue(Pending(rt, ri, seq, Left(Timed(out.event, SimTime.of(rt), ri, timedIn.usecase)))); seq += 1
@@ -197,7 +203,7 @@ object ScheduleReleaseTransducer:
           buf.toList
 
         private def runSample(ti: Timed[In]): Unit =
-          val e = sampler.sample(ti.event, state, rng)
+          val e = sampler.sample(ti.event, SimInstant(ti.eventTime.ticks, ti.intraTick), state, rng)
           state = e.newState
           val (rt, ri) = stamp(ti.eventTime, ti.intraTick, e.output.delay)
           fwdQ.enqueue(P(rt, ri, seq, Timed(e.output.event, SimTime.of(rt), ri, ti.usecase))); seq += 1
@@ -205,9 +211,25 @@ object ScheduleReleaseTransducer:
           e.taps.foreach       { p => val (pt, pi) = stamp(ti.eventTime, ti.intraTick, p.delay); tapQ.enqueue(P(pt, pi, seq, Timed(p.event, SimTime.of(pt), pi, ti.usecase))); seq += 1 }
 
         private def runFeedback(tf: Timed[Fb]): Unit =
-          val te = sampler.onFeedback(tf.event, state, rng)
-          state = te.newState
-          te.consumption.foreach { c => val (ct, ci) = stamp(tf.eventTime, tf.intraTick, c.delay); consQ.enqueue(P(ct, ci, seq, Timed(c.event, SimTime.of(ct), ci, tf.usecase))); seq += 1 }
+          val fe = sampler.onFeedback(tf.event, SimInstant(tf.eventTime.ticks, tf.intraTick), state, rng)
+          state = fe.newState
+          fe.output.foreach      { o => val (ot, oi) = stamp(tf.eventTime, tf.intraTick, o.delay); fwdQ.enqueue(P(ot, oi, seq, Timed(o.event, SimTime.of(ot), oi, tf.usecase))); seq += 1 }
+          fe.consumption.foreach { c => val (ct, ci) = stamp(tf.eventTime, tf.intraTick, c.delay); consQ.enqueue(P(ct, ci, seq, Timed(c.event, SimTime.of(ct), ci, tf.usecase))); seq += 1 }
+          // A feedback tap must reach a LATER tick than its fed-back item. This stage releases a tap window as soon as
+          // `in` reaches the next Tick — possibly before that window's remaining feedback is absorbed. But a fed-back
+          // item of window `w` is always absorbed before `in` can pass Tick(w + 1) (that tick is held until both inlets
+          // reach it), so a tap stamped at tick >= w + 1 is always released in its own window. The rule is checked here,
+          // deterministically, rather than by detecting an actually-late tap (which would depend on scheduling).
+          val stampedTaps = fe.taps.map(p => (stamp(tf.eventTime, tf.intraTick, p.delay), p.event))
+          stampedTaps.collectFirst { case ((pt, pi), _) if pt <= tf.eventTime.ticks => (pt, pi) } match
+            case Some((pt, pi)) =>
+              val ex = new IllegalStateException(
+                s"onFeedback tap stamped at ($pt, $pi) would land in tick $pt, whose tap window may already be released; " +
+                  "a tap emitted from feedback must reach a later tick (delay >= 1 - intraTick), or model the loop in a circuit")
+              resultPromise.tryFailure(ex)
+              failStage(ex)
+            case None =>
+              stampedTaps.foreach { case ((pt, pi), ev) => tapQ.enqueue(P(pt, pi, seq, Timed(ev, SimTime.of(pt), pi, tf.usecase))); seq += 1 }
 
         /** Pull whichever inlet is idle and not currently holding a Tick (a held Tick waits for its match). */
         private def pump(): Unit =

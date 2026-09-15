@@ -1,6 +1,7 @@
 package stochastacy.core.component
 
 import org.apache.commons.rng.UniformRandomProvider
+import stochastacy.sim.SimInstant
 
 /** A latency/offset expressed in **fractional ticks**. The transducer converts a delay into
  *  an absolute `(eventTime, intraTick)` via `rawOffset = triggeringIntraTick + delay`. Samplers
@@ -36,35 +37,53 @@ object Emission:
   def unapply[S, Out, Cons](e: Emission[S, Out, Cons]): Some[(S, Scheduled[Out], List[Scheduled[Cons]])] =
     Some((e.newState, e.output, e.consumption))
 
-/** What a component produces at a **tick boundary** or when **absorbing a fed-back effect** (`onFeedback`):
- *  the advanced state plus zero or more scheduled consumption facts. Consumption **only** — neither a tick
- *  boundary nor an inbound replicated effect has a request to answer, so it never emits a forward output,
+/** What a component produces at a **tick boundary**: the advanced state plus zero or more scheduled consumption
+ *  facts. Consumption **only** — a tick boundary has no request to answer, so it never emits a forward output,
  *  and the 1:1 request/response invariant holds by construction. */
 final case class TickEmission[S, Cons](newState: S, consumption: List[Scheduled[Cons]])
+
+/**
+ * What a loopback component produces when **absorbing a fed-back (loop-in) item** via `onFeedback`: the advanced
+ * state, an **optional** forward output, consumption facts, and taps. Unlike `sample` — which answers every primary
+ * input with exactly one output — a fed-back item may answer nothing (a replicated write: `output = None`) or
+ * trigger a request (a retry, a next page: `output = Some(…)`).
+ *
+ * A tap emitted from feedback must be stamped at a **later tick** than the fed-back item: the Pekko loopback stage
+ * releases each tap window as soon as the primary input reaches the next tick, which can precede the window's
+ * remaining feedback (see `ScheduleReleaseTransducer.loopbackComponentOf`; the stage fails on a violation).
+ */
+final case class FeedbackEmission[S, Out, Cons, Tap](
+  newState:    S,
+  output:      Option[Scheduled[Out]] = None,
+  consumption: List[Scheduled[Cons]]  = Nil,
+  taps:        List[Scheduled[Tap]]   = Nil
+)
 
 /** The `usecase` stamped on a fact a component emits at a tick boundary — there is no triggering request. */
 case object TickBoundaryUsecase
 
 /**
- * A component's behavior, in its **loopback-capable** general form: given one timeless input payload and
- * current state, produce a [[LoopbackEmission]] (forward output + consumption + taps). A component wired
- * into a feedback loop additionally consumes fed-back effects on its loop-in input via [[onFeedback]] and
- * publishes loop-out effects as the `taps` of its emissions; an external stage (e.g. a replication
- * coordinator) carries taps back to peers' feedback inputs after a delay. The schedule-and-release
- * transducer is the generic machinery that runs it and owns all timing/ordering.
+ * A component's behavior, in its **loopback-capable** general form: given one timeless input payload, the input's
+ * conceptual time, and current state, produce a [[LoopbackEmission]] (forward output + consumption + taps). A
+ * component wired into a feedback loop additionally consumes fed-back items on its loop-in input via
+ * [[onFeedback]] and publishes loop-out effects as the `taps` of its emissions; an external stage carries taps back
+ * to feedback inputs after a delay. The schedule-and-release transducer is the generic machinery that runs it and
+ * owns all timing/ordering.
  *
- * `In`/`Fb`/`Out`/`Tap` are timeless payloads — the wire carries `Timed[…]`. The common case with **no
- * loop** is [[ComponentSampler]], the pinned-`Nothing` subtype.
+ * `In`/`Fb`/`Out`/`Tap` are timeless payloads — the wire carries `Timed[…]`. `at` is the input's conceptual time
+ * (`eventTime + intraTick`), for behavior that depends on *when* an input happened; outputs are still scheduled by
+ * delay. The common case with **no loop** is [[ComponentSampler]], the pinned-`Nothing` subtype.
  */
 trait LoopbackComponentSampler[S, In, Fb, Out, Cons, Tap]:
   def initialState: S
 
-  /** Produce the outcome constellation for one primary input — state, forward output, consumption, taps. */
-  def sample(in: In, state: S, rng: UniformRandomProvider): LoopbackEmission[S, Out, Cons, Tap]
+  /** Produce the outcome constellation for one primary input at conceptual time `at` — state, forward output,
+   *  consumption, taps. */
+  def sample(in: In, at: SimInstant, state: S, rng: UniformRandomProvider): LoopbackEmission[S, Out, Cons, Tap]
 
-  /** Absorb one fed-back (loop-in) effect: advance state and optionally emit consumption facts. A replica
-   *  never re-replicates, so this emits no forward output and no taps — loop-prevention is structural. */
-  def onFeedback(fb: Fb, state: S, rng: UniformRandomProvider): TickEmission[S, Cons]
+  /** Absorb one fed-back (loop-in) item at conceptual time `at`: advance state and optionally emit a forward output,
+   *  consumption facts, and taps (see [[FeedbackEmission]] for the tap timing rule). */
+  def onFeedback(fb: Fb, at: SimInstant, state: S, rng: UniformRandomProvider): FeedbackEmission[S, Out, Cons, Tap]
 
   /** Advance state at a tick boundary, before that tick's inputs are sampled, and optionally emit boundary
    *  consumption facts (e.g. a storage delta for TTL expiry). Defaulted to a no-op. Called once per `Tick`. */
@@ -73,7 +92,7 @@ trait LoopbackComponentSampler[S, In, Fb, Out, Cons, Tap]:
 /**
  * A component with **no feedback loop** — the common case: `Fb`/`Tap` pinned to `Nothing`. `sample` returns
  * an [[Emission]] (the tap-less view of [[LoopbackEmission]]); `onFeedback` is never called (there are no
- * `Nothing` values). Existing components implement exactly this interface, unchanged.
+ * `Nothing` values).
  */
 trait ComponentSampler[S, In, Out, Cons] extends LoopbackComponentSampler[S, In, Nothing, Out, Cons, Nothing]:
-  def onFeedback(fb: Nothing, state: S, rng: UniformRandomProvider): TickEmission[S, Cons] = fb
+  def onFeedback(fb: Nothing, at: SimInstant, state: S, rng: UniformRandomProvider): FeedbackEmission[S, Out, Cons, Nothing] = fb

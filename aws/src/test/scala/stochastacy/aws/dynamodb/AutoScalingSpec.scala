@@ -1,5 +1,7 @@
 package stochastacy.aws.dynamodb
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
@@ -104,7 +106,7 @@ class AutoScalingSpec extends AnyWordSpec with should.Matchers:
       var st = s.initialState
       (1 to 10).foreach { t =>
         (1 to 3).foreach { _ => // admit the full ceiling (3 WCU) → util 1.0
-          val e = s.sample(PutItemRequest(1024L), st, rng)
+          val e = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng)
           if e.output.event.isInstanceOf[PutItemResponse] then st = e.newState
         }
         st = s.onTick(t.toLong, st).newState
@@ -117,7 +119,7 @@ class AutoScalingSpec extends AnyWordSpec with should.Matchers:
       var st = s.initialState
       (1 to 10).foreach { t =>
         (1 to 3).foreach { _ =>
-          val e = s.sample(PutItemRequest(1024L), st, rng)
+          val e = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng)
           if e.output.event.isInstanceOf[PutItemResponse] then st = e.newState
         }
         st = s.onTick(t.toLong, st).newState

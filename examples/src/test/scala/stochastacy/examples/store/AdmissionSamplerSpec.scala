@@ -1,5 +1,7 @@
 package stochastacy.examples.store
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
@@ -16,7 +18,7 @@ class AdmissionSamplerSpec extends AnyWordSpec with should.Matchers:
     var st  = start
     val out = Vector.newBuilder[AdmissionOutcome]
     (0 until n).foreach { _ =>
-      val e = admission.sample(Get(), st, rng)
+      val e = admission.sample(Get(), SimInstant(0L, 0.0), st, rng)
       out += e.output.event
       st = e.newState
     }
@@ -30,19 +32,19 @@ class AdmissionSamplerSpec extends AnyWordSpec with should.Matchers:
     }
 
     "preserve the request payload on the admitted branch" in {
-      val e = admission.sample(Put(2048L), admission.initialState, rng)
+      val e = admission.sample(Put(2048L), SimInstant(0L, 0.0), admission.initialState, rng)
       e.output.event shouldBe Admitted(Put(2048L))
     }
 
     "stamp every emission at the admission latency and emit latency + decision observations" in {
-      val admitted = admission.sample(Get(), AdmissionState(0), rng)
+      val admitted = admission.sample(Get(), SimInstant(0L, 0.0), AdmissionState(0), rng)
       admitted.output.delay shouldBe cfg.admissionLatencyTicks
       admitted.consumption shouldBe List(
         Scheduled(AdmissionLatency(cfg.admissionLatencyTicks), cfg.admissionLatencyTicks),
         Scheduled(AdmissionDecision(false), cfg.admissionLatencyTicks)
       )
 
-      val throttled = admission.sample(Get(), AdmissionState(cfg.capacityPerTick), rng)
+      val throttled = admission.sample(Get(), SimInstant(0L, 0.0), AdmissionState(cfg.capacityPerTick), rng)
       throttled.output.event shouldBe Throttled
       throttled.consumption shouldBe List(
         Scheduled(AdmissionLatency(cfg.admissionLatencyTicks), cfg.admissionLatencyTicks),

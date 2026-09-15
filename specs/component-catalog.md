@@ -191,18 +191,23 @@ The substrate the gates build on. Brief here — enough to make the gates' prope
 guides show these in use.
 
 - **`ComponentSampler[S, In, Out, Cons]`** (`core/component/SamplerContract.scala`) — the production
-  function every component implements: `initialState`, `sample(in, state, rng): Emission[S, Out, Cons]`,
+  function every component implements: `initialState`, `sample(in, at, state, rng): Emission[S, Out, Cons]`,
   and a defaulted `onTick(tick, state): TickEmission[S, Cons]` for tick-boundary state plus scheduled
-  consumption facts. An **`Emission`** carries the new state, one **`Scheduled`** forward output, and
-  zero-or-more scheduled consumption facts; a **`Scheduled[E](event, delay)`** pairs a timeless payload
-  with a latency in fractional ticks. Samplers speak only in delays — never absolute time.
+  consumption facts. `at` is the input's conceptual time — a **`SimInstant(tick, intraTick)`**
+  (`stochastacy.sim`) — for behavior that depends on *when* an input happened. An **`Emission`** carries the
+  new state, one **`Scheduled`** forward output, and zero-or-more scheduled consumption facts; a
+  **`Scheduled[E](event, delay)`** pairs a timeless payload with a latency in fractional ticks. Samplers
+  schedule outputs only by delay — never by absolute time.
 - **`LoopbackComponentSampler[S, In, Fb, Out, Cons, Tap]`** (same file) — the **feedback-capable** base
   `ComponentSampler` extends (with `Fb` / `Tap` pinned to `Nothing`, so an ordinary component is
-  byte-identical). It adds a second input — `onFeedback(fb, state, rng): TickEmission[S, Cons]` — and a
-  `Tap` output channel on the emission (`LoopbackEmission`, of which `Emission` is the `Tap = Nothing`
-  alias). This is what lets a component sit in a **cycle**: it emits taps out one edge and consumes
-  feedback on another. (AWS's `GlobalTable` uses it — a table taps admitted writes and applies replicated
-  writes via `onFeedback`.)
+  byte-identical). It adds a second input — `onFeedback(fb, at, state, rng): FeedbackEmission[S, Out, Cons, Tap]`
+  — and a `Tap` output channel on the emission (`LoopbackEmission`, of which `Emission` is the `Tap = Nothing`
+  alias). A **`FeedbackEmission`** carries the new state, an **optional** forward output (a fed-back item may
+  answer nothing, or trigger a request such as a retry), consumption facts, and taps. This is what lets a
+  component sit in a **cycle**: it emits taps out one edge and consumes feedback on another. In the loopback
+  stage a tap emitted *from feedback* must be stamped at a later tick than the fed-back item (the stage fails
+  otherwise), and feedback within a window is absorbed in arrival order. (AWS's `GlobalTable` uses it — a
+  table taps admitted writes and applies replicated writes via `onFeedback`, answering nothing.)
 - **`ScheduleReleaseTransducer`** (`core/component/ScheduleReleaseTransducer.scala`) — the generic
   machinery that turns a `ComponentSampler` into a running Pekko graph stage: it unwraps the envelope,
   runs the sampler, stamps each output's absolute time from its delay, buffers, **releases in time order

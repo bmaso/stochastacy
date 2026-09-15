@@ -1,5 +1,7 @@
 package stochastacy.aws.dynamodb
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
@@ -68,7 +70,7 @@ class ReconfigurationSpec extends AnyWordSpec with should.Matchers:
         billingMode = BillingMode.OnDemand, reconfigurationSchedule = schedule
       ))
       var st = s.initialState
-      def put() = { val e = s.sample(PutItemRequest(1024L), st, rng); st = e.newState; e }
+      def put() = { val e = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng); st = e.newState; e }
 
       // on-demand: no cap — 5 writes in a tick all admit
       (1 to 5).foreach(_ => put().output.event shouldBe a[PutItemResponse])

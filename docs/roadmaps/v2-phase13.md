@@ -1,6 +1,6 @@
 # v2/phase13 — Closed-loop circuits
 
-**Status: PLANNED** (roadmap drafted 2026-09-15, awaiting approval). Gives `stochastacy.core` **closed feedback
+**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slice 1 done). Gives `stochastacy.core` **closed feedback
 loops by composition** — including loops that close *inside* a tick — proven by the **MM1 demo** (an M/M/1 queue
 with Bernoulli feedback, checked against its closed-form solution). **Immediately after this phase, work resumes on
 `tailgate`** (the throttle-comparison simulator for Brian's article, on hold until this lands), so the close-out
@@ -45,8 +45,8 @@ Proposed (confirm with the roadmap):
 
 - **D-input-time (resolves C1).** `sample` and `onFeedback` receive the input's **conceptual time** as a new
   parameter (a small `SimInstant(tick: Long, intraTick: Double)` value) — a clean single-contract change rather
-  than an additive overload. Migration is mechanical: 13 `sample` implementations (4 core gates, the interface
-  plumbing, `DynamoDbTable`, 4 store samplers, test toys) plus one production `onFeedback` (`DynamoDbTable`).
+  than an additive overload. Migration is mechanical: 15 `sample` implementations — 9 production (4 core gates,
+  `DynamoDbTable`, 4 store samplers) and 6 test toys — plus one production `onFeedback` (`DynamoDbTable`).
 - **D-feedback-emission.** `onFeedback` returns `FeedbackEmission(newState, output: Option[Scheduled[Out]],
   consumption, taps)`: `None` when a fed-back item answers nothing (phase-11 replicated writes), `Some(request)`
   when it triggers one (a retry, a next page). `sample` stays strictly 1:1. The Pekko loopback stage supports the
@@ -104,7 +104,7 @@ Ticks are 1 s; a session makes several loop round trips inside one tick.
 
 | # | Slice | Status | Proof (target) |
 |---|---|---|---|
-| 1 | Sampler contract: input time + emitting feedback | Planned | `at` passed to `sample`/`onFeedback`; `FeedbackEmission` with optional output; both transducer stages updated; every existing scenario **byte-identical** (all baseline specs unchanged); full `sbt test` |
+| 1 | Sampler contract: input time + emitting feedback | **Done** | `at` passed to `sample`/`onFeedback`; `FeedbackEmission` with optional output; both transducer stages updated; every existing scenario **byte-identical** (all baseline specs unchanged); full `sbt test` |
 | 2 | Circuit engine | Planned | calendar stage over erased nodes: zero-delay self-loop ordered exactly; cross-tick loop; `onTick` order; residue; runaway cap; determinism; **a one-node circuit ≡ `componentOf`** byte-identically |
 | 3 | Typed circuit builder + wiretap | Planned | typed ports/edges/transforms; external routing; consumption mapping; per-node states + RNGs; build-time validation; wiretap; tailgate-shaped unit wiring (gate Admit/Reject edges, tap self-edge timeout); `Interface.wrap` around a circuit |
 | 4 | MM1 demo | Planned | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
@@ -128,6 +128,24 @@ test toys.
 feedback also forwarded. **Every existing scenario byte-identical**: the store demos' specs, the AWS baseline specs,
 and the hot-replica specs pass unchanged. Gate on the **full `sbt test`** (a shared-contract change — grep all three
 modules for implementors first).
+
+**Delivered.** New `stochastacy.sim.SimInstant(tick, intraTick)` — ordering, `toDouble`, `of(TimedEvent)`, and `plus(delay)`
+(the rawOffset rule, ready for the Slice-2 calendar); a `require` enforces `intraTick ∈ [0, 1)`. The contract is now
+`sample(in, at, state, rng)` and `onFeedback(fb, at, state, rng): FeedbackEmission(newState, output: Option[…],
+consumption, taps)`; `onTick` and `TickEmission` are unchanged. Both transducer stages pass each input's conceptual time;
+the loopback stage schedules a feedback's optional output, consumption, and taps exactly like a sample's. **Feedback-tap
+guard (the approved D1 refinement):** because the tap window is released eagerly on `in`'s `Tick(w+1)` — but a window-`w`
+fed-back item is always absorbed before `in` can pass that tick — a feedback tap is safe iff stamped at tick `≥ w + 1`;
+the stage checks this at emission and fails **deterministically** (`IllegalStateException`, materialized future failed)
+rather than detecting a scheduling-dependent late tap. Migrated 9 production samplers (4 gates, `DynamoDbTable` —
+`onFeedback` → `FeedbackEmission(…, None, facts, Nil)` — and 4 store samplers) plus 6 test toys; the compile also
+surfaced **50 direct `sample`/`onFeedback` call sites in unit specs** (gate, DynamoDB, store specs), updated mechanically
+with a fixed `SimInstant(0L, 0.0)`. New tests: `SimInstantSpec` (5), the `at` case in `ScheduleReleaseTransducerSpec`, and
+four `LoopbackTransducerSpec` cases (both-path `at`; feedback forward output + consumption released in time order inside
+their windows; later-tick feedback taps sustain a multi-hop loop; a same-tick feedback tap fails the stage). Doc signature
+references fixed in `CLAUDE.md`, `specs/component-catalog.md`, and `specs/README.store-demo.md`. **Full `sbt test` green
+(540)**, and four demo JSONLs — store, store-v2, hot-replica (loopback path), capstone — are **byte-identical** to captures
+taken before the change.
 
 ### Slice 2 — Circuit engine
 

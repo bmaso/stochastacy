@@ -1,5 +1,7 @@
 package stochastacy.core.component.gate
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
@@ -17,19 +19,19 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
 
     "reject with the configured response when the failure draw is certain" in {
       val gate = ChaosGate.constant[Req, Resp](1.0, fail503)
-      val e = gate.sample(Req(1), gate.initialState, rng)
+      val e = gate.sample(Req(1), SimInstant(0L, 0.0), gate.initialState, rng)
       e.output.event shouldBe Reject(fail503)
       e.consumption shouldBe Nil
     }
 
     "admit when the failure draw never fires" in {
       val gate = ChaosGate.constant[Req, Resp](0.0, fail503)
-      gate.sample(Req(1), gate.initialState, rng).output.event shouldBe Admit(Req(1))
+      gate.sample(Req(1), SimInstant(0L, 0.0), gate.initialState, rng).output.event shouldBe Admit(Req(1))
     }
 
     "produce a mix of outcomes at an intermediate probability" in {
       val gate = ChaosGate.constant[Req, Resp](0.5, fail503)
-      val outcomes = (0 until 200).map(i => gate.sample(Req(i), gate.initialState, rng).output.event)
+      val outcomes = (0 until 200).map(i => gate.sample(Req(i), SimInstant(0L, 0.0), gate.initialState, rng).output.event)
       outcomes.exists(_.isInstanceOf[Admit[?]]) shouldBe true
       outcomes.exists(_.isInstanceOf[Reject[?]]) shouldBe true
     }
@@ -38,9 +40,9 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
       // Fails only from tick 10 onward.
       val gate  = new ChaosGate[Req, Resp](BernoulliSampler(t => if t >= 10L then 1.0 else 0.0), fail503)
       val atT5  = gate.onTick(5L, gate.initialState).newState
-      gate.sample(Req(0), atT5, rng).output.event shouldBe Admit(Req(0))
+      gate.sample(Req(0), SimInstant(0L, 0.0), atT5, rng).output.event shouldBe Admit(Req(0))
       val atT10 = gate.onTick(10L, atT5).newState
-      gate.sample(Req(0), atT10, rng).output.event shouldBe Reject(fail503)
+      gate.sample(Req(0), SimInstant(0L, 0.0), atT10, rng).output.event shouldBe Reject(fail503)
     }
   }
 
@@ -59,11 +61,11 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
         so = outer.onTick(i + 1L, so).newState
         si = inner.onTick(i + 1L, si).newState
         (0 until n).foreach { _ =>
-          val eo = outer.sample(Req(0), so, rng); so = eo.newState
+          val eo = outer.sample(Req(0), SimInstant(0L, 0.0), so, rng); so = eo.newState
           eo.output.event match
             case _: Reject[?] => outerRej += 1
             case _: Admit[?] =>
-              val ei = inner.sample(Req(0), si, rng); si = ei.newState
+              val ei = inner.sample(Req(0), SimInstant(0L, 0.0), si, rng); si = ei.newState
               ei.output.event match
                 case _: Reject[?] => innerRej += 1
                 case _: Admit[?]  => served += 1

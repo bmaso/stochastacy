@@ -7,9 +7,9 @@ import org.apache.pekko.stream.{FanOutShape2, Graph}
 import org.apache.pekko.stream.scaladsl.{GraphDSL, Sink, Source}
 
 import stochastacy.aws.dynamodb.TableMechanics.OperationOutcome
-import stochastacy.core.component.{ComponentResult, LoopbackComponentSampler, LoopbackEmission, LoopbackShape, Scheduled, ScheduleReleaseTransducer, TickEmission, Timed}
+import stochastacy.core.component.{ComponentResult, FeedbackEmission, LoopbackComponentSampler, LoopbackEmission, LoopbackShape, Scheduled, ScheduleReleaseTransducer, TickEmission, Timed}
 import stochastacy.core.sampler.StatelessSampler
-import stochastacy.sim.TimedElement
+import stochastacy.sim.{SimInstant, TimedElement}
 
 /**
  * A single DynamoDB table as a v2 component. The generic table mechanics live here; a demo supplies its
@@ -92,6 +92,7 @@ object DynamoDbTable:
 
     def sample(
       in:    DynamoDbRequest,
+      at:    SimInstant,
       state: TableState,
       rng:   UniformRandomProvider
     ): LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] =
@@ -295,9 +296,10 @@ object DynamoDbTable:
      *  a write that inserted a new item at the source inserts it here too and every replica converges to the
      *  same full dataset (the AWS global-table guarantee). It runs the write's mechanics (storage + index
      *  maintenance + TTL, exactly as a local write) and bills **rWCU** — every `WriteCapacityConsumed` becomes
-     *  `ReplicatedWriteCapacityConsumed`. It has no client, so it emits no forward output; it never re-replicates,
-     *  so it emits no tap (loop-prevention is structural). rWCU is applied here (coordinator-gated upstream). */
-    override def onFeedback(fb: ReplicationWrite, state: TableState, rng: UniformRandomProvider): TickEmission[TableState, DynamoDbConsumption] =
+     *  `ReplicatedWriteCapacityConsumed`. It has no client, so it emits no forward output (`output = None`); it never
+     *  re-replicates, so it emits no tap (loop-prevention by construction). rWCU is applied here (coordinator-gated
+     *  upstream). */
+    override def onFeedback(fb: ReplicationWrite, at: SimInstant, state: TableState, rng: UniformRandomProvider): FeedbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] =
       val outcome    = fb.outcome
       val resolution = TableMechanics.resolve(outcome, state.base)
 
@@ -328,7 +330,7 @@ object DynamoDbTable:
 
       val facts = (resolution.consumption.map(Scheduled(_, 0.0)) ++ indexScheduled)
         .map(s => Scheduled(asReplicated(s.event), s.delay))
-      TickEmission(state.copy(base = resolution.state, indexes = nextIndexes, ttl = nextTtl), facts)
+      FeedbackEmission(state.copy(base = resolution.state, indexes = nextIndexes, ttl = nextTtl), output = None, consumption = facts, taps = Nil)
 
     /** WCU → rWCU relabelling for a replicated write's consumption facts. */
     private def asReplicated(c: DynamoDbConsumption): DynamoDbConsumption = c match

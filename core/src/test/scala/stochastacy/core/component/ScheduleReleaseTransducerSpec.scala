@@ -31,7 +31,7 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
   private final class ToySampler(latency: Double, consDelay: Double = 0.0)
       extends ComponentSampler[Int, ToyReq, ToyResp, ToyCons]:
     def initialState: Int = 0
-    def sample(in: ToyReq, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
+    def sample(in: ToyReq, at: SimInstant, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
       Emission(state + 1, Scheduled(ToyResp(state), latency), List(Scheduled(ToyCons("work"), consDelay)))
 
   /** Emits one `ToyCons("tick-<t>")` at each tick boundary (delay 0); its `sample` emits a response plus a
@@ -39,7 +39,7 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
    *  ahead of that tick's request-driven facts. */
   private final class ToyTickSampler extends ComponentSampler[Int, ToyReq, ToyResp, ToyCons]:
     def initialState: Int = 0
-    def sample(in: ToyReq, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
+    def sample(in: ToyReq, at: SimInstant, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
       Emission(state, Scheduled(ToyResp(state), 0.0), List(Scheduled(ToyCons("req"), 0.0)))
     override def onTick(tick: Long, state: Int): TickEmission[Int, ToyCons] =
       TickEmission(state, List(Scheduled(ToyCons(s"tick-$tick"), 0.0)))
@@ -198,7 +198,7 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
       // A per-tick counter: sample emits the current count and increments; onTick resets it to 0.
       val counting = new ComponentSampler[Int, ToyReq, ToyResp, ToyCons]:
         def initialState: Int = 0
-        def sample(in: ToyReq, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
+        def sample(in: ToyReq, at: SimInstant, state: Int, rng: UniformRandomProvider): Emission[Int, ToyResp, ToyCons] =
           Emission(state + 1, Scheduled(ToyResp(state), 0.0), Nil)
         override def onTick(tick: Long, state: Int): TickEmission[Int, ToyCons] = TickEmission(0, Nil)
 
@@ -208,5 +208,27 @@ class ScheduleReleaseTransducerSpec extends AnyWordSpec with should.Matchers wit
 
       // Without the reset the second tick would continue 3,4; the reset restarts it at 0.
       timedOnly(resp).map(_.event) shouldBe Seq(ToyResp(0), ToyResp(1), ToyResp(2), ToyResp(0), ToyResp(1))
+    }
+
+    "pass each input's conceptual time to sample as `at`" in {
+      // A toy whose response IS the `at` it was sampled with.
+      val atEcho = new ComponentSampler[Unit, ToyReq, SimInstant, ToyCons]:
+        def initialState: Unit = ()
+        def sample(in: ToyReq, at: SimInstant, state: Unit, rng: UniformRandomProvider): Emission[Unit, SimInstant, ToyCons] =
+          Emission((), Scheduled(at, 0.0), Nil)
+
+      val input = TickFraming.frame(Vector(req(2, 0.25), req(2, 0.75), req(5)).iterator, 6).toVector
+      val graph = RunnableGraph.fromGraph(
+        GraphDSL.createGraph(Sink.seq[TimedElement[Timed[SimInstant]]]) { implicit b => respSink =>
+          import GraphDSL.Implicits.*
+          val td = b.add(ScheduleReleaseTransducer.componentOf(atEcho, RandomSource.KISS.create(1L)))
+          b.add(Source(input)) ~> td.in
+          td.out0 ~> respSink.in
+          td.out1 ~> b.add(Sink.ignore)
+          ClosedShape
+        }
+      )
+      timedOnly(Await.result(graph.run(), 5.seconds)).map(_.event) shouldBe
+        Seq(SimInstant(2L, 0.25), SimInstant(2L, 0.75), SimInstant(5L, 0.0))
     }
   }

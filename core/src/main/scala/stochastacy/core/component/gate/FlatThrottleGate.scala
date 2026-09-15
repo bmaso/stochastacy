@@ -2,6 +2,7 @@ package stochastacy.core.component.gate
 
 import org.apache.commons.rng.UniformRandomProvider
 import stochastacy.core.component.{Admit, Emission, InterfaceSampler, Reject, Scheduled, TickEmission}
+import stochastacy.sim.SimInstant
 
 /** A flat per-tick rate gate: admits the first `capacityPerTick` requests to arrive in a tick and
  *  rejects the rest, resetting the counter at each tick boundary. The domain supplies the response a
@@ -21,7 +22,7 @@ final class FlatThrottleGate[Req, Resp](
   override def onTick(tick: Long, state: FlatThrottleGate.State): TickEmission[FlatThrottleGate.State, Nothing] =
     TickEmission(FlatThrottleGate.State(0), Nil)
 
-  def sample(req: Req, state: FlatThrottleGate.State, rng: UniformRandomProvider) =
+  def sample(req: Req, at: SimInstant, state: FlatThrottleGate.State, rng: UniformRandomProvider) =
     if state.admittedThisTick < capacityPerTick then
       Emission(FlatThrottleGate.State(state.admittedThisTick + 1), Scheduled(Admit(req), latencyTicks), Nil)
     else

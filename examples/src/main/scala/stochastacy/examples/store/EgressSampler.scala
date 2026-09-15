@@ -2,6 +2,7 @@ package stochastacy.examples.store
 
 import org.apache.commons.rng.UniformRandomProvider
 import stochastacy.core.component.{ComponentSampler, Emission, Scheduled}
+import stochastacy.sim.SimInstant
 
 /** The service egress: maps each datastore `StoreResponse` into the client-facing `ApiResponse` (its
  *  forward **output**), adds egress service latency, and emits a latency observation. Stateless —
@@ -14,7 +15,7 @@ final class EgressSampler(cfg: ServiceConfig)
 
   def initialState: Unit = ()
 
-  def sample(in: StoreResponse, state: Unit, rng: UniformRandomProvider): Emission[Unit, ApiResponse, ServiceConsumption] =
+  def sample(in: StoreResponse, at: SimInstant, state: Unit, rng: UniformRandomProvider): Emission[Unit, ApiResponse, ServiceConsumption] =
     val lat = cfg.egressLatencyTicks
     Emission((), Scheduled(toApiResponse(in), lat), List(Scheduled(ServiceLatency(lat), lat)))
 

@@ -1,5 +1,7 @@
 package stochastacy.aws.dynamodb
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
@@ -35,7 +37,7 @@ class ThrottlingSpec extends AnyWordSpec with should.Matchers:
       var st = s.initialState
 
       def put(): LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] =
-        val e = s.sample(PutItemRequest(1024L), st, rng); st = e.newState; e
+        val e = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng); st = e.newState; e
 
       (1 to 3).foreach { _ =>
         val e = put()
@@ -60,7 +62,7 @@ class ThrottlingSpec extends AnyWordSpec with should.Matchers:
       val s   = sampler(BillingMode.Provisioned(readCapacityUnits = 100, writeCapacityUnits = 100,
                           gsiWriteCapacityUnits = Map("g" -> 2L)), gsis = Vector(gsi)) // base huge, GSI "g" = 2 WCU/tick
       var st  = s.initialState
-      def put() = { val e = s.sample(PutItemRequest(1024L), st, rng); st = e.newState; e }
+      def put() = { val e = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng); st = e.newState; e }
 
       put().output.event shouldBe a[PutItemResponse] // GSI "g" consumed 1
       put().output.event shouldBe a[PutItemResponse] // GSI "g" consumed 2
@@ -75,7 +77,7 @@ class ThrottlingSpec extends AnyWordSpec with should.Matchers:
       val s = sampler(BillingMode.OnDemand)
       var st = s.initialState
       (1 to 20).foreach { _ =>
-        val e = s.sample(PutItemRequest(1024L), st, rng); st = e.newState
+        val e = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng); st = e.newState
         e.output.event shouldBe a[PutItemResponse]
       }
       st.base.itemCount shouldBe 20L

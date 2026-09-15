@@ -2,6 +2,7 @@ package stochastacy.core.component.gate
 
 import org.apache.commons.rng.UniformRandomProvider
 import stochastacy.core.component.{Admit, Emission, InterfaceSampler, Reject, Scheduled, TickEmission}
+import stochastacy.sim.SimInstant
 
 /** A token-bucket rate gate: admits a request when a token is available (spending one) and rejects
  *  otherwise. `refillPerTick` tokens are added at each tick boundary, capped at `capacity` — so the
@@ -26,7 +27,7 @@ final class TokenBucketGate[Req, Resp](
   override def onTick(tick: Long, state: TokenBucketGate.State): TickEmission[TokenBucketGate.State, Nothing] =
     TickEmission(TokenBucketGate.State(math.min(capacity, state.tokens + refillPerTick)), Nil)
 
-  def sample(req: Req, state: TokenBucketGate.State, rng: UniformRandomProvider) =
+  def sample(req: Req, at: SimInstant, state: TokenBucketGate.State, rng: UniformRandomProvider) =
     if state.tokens >= 1.0 then
       Emission(TokenBucketGate.State(state.tokens - 1.0), Scheduled(Admit(req), latencyTicks), Nil)
     else
