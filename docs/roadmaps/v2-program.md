@@ -165,6 +165,17 @@ by priority.
   genuinely demonstrated (the telemetry table's saturated, continuously-overwritten fleet never ages out). **The v2
   line is complete.**
 
+## Beyond parity
+
+- **v2/phase13 — Closed-loop circuits. PLANNED (roadmap drafted 2026-09-15).** The first phase driven by a
+  **downstream project**: `tailgate` (a throttle-comparison simulator built outside this repo) needs a client retry
+  loop that closes within a tick, which the core could not compose. A **circuit** — one transducer stage hosting
+  sampler nodes and a cyclic wiring, run by an internal calendar ordered by conceptual time — makes such loops
+  exact while presenting an ordinary component outside. Opens with a sampler contract change (input time passed
+  to samplers; `onFeedback` may emit a request). Proven by the **MM1 demo** (M/M/1 with Bernoulli feedback) against
+  its closed-form solution. Tailgate resumes immediately after. Roadmap: `v2-phase13.md`; design exploration:
+  `v2-phase13-design.md`.
+
 **Reorder notes.** The polar-vortex spike is not its own phase (workload config). Grafana delivery
 (phase 12) is orthogonal to the simulation features and can be pulled forward as a standalone bridge phase
 whenever visualization is wanted. Burst pairs with auto-scaling (phase 8) because it is what makes the
