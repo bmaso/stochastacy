@@ -1,6 +1,6 @@
 # v2/phase13 — Closed-loop circuits
 
-**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–3 done). Gives `stochastacy.core` **closed feedback
+**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–5 done). Gives `stochastacy.core` **closed feedback
 loops by composition** — including loops that close *inside* a tick — proven by the **MM1 demo** (an M/M/1 queue
 with Bernoulli feedback, checked against its closed-form solution). **Immediately after this phase, work resumes on
 `tailgate`** (the throttle-comparison simulator for Brian's article, on hold until this lands), so the close-out
@@ -108,7 +108,7 @@ Ticks are 1 s; a session makes several loop round trips inside one tick.
 | 2 | Circuit engine | **Done** | calendar stage over erased nodes: zero-delay self-loop ordered exactly; cross-tick loop; `onTick` order; residue; runaway cap; determinism; **a one-node circuit ≡ `componentOf`** byte-identically |
 | 3 | Typed circuit builder + wiretap | **Done** | typed ports/edges/transforms; external routing; consumption mapping; per-node states + RNGs; build-time validation; wiretap; tailgate-shaped unit wiring (gate Admit/Reject edges, tap self-edge timeout); `Interface.wrap` around a circuit |
 | 4 | Gates in circuits | **Done** | correlated `Reject(request, response)` across all four gates; a continuous-refill token bucket (backlog C2, pulled forward); gate wiring sugar; `Circuit.buildWith` handles; each gate proven in a retry loop; demo JSONLs byte-identical |
-| 5 | MM1 demo | Planned | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
+| 5 | MM1 demo | **Done** | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
 | 6 | Theory baseline | Planned | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
 | 7 | Docs + close-out | Planned | catalog circuit + gate sections; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C2/C3/C5 closed; program roadmap; memory; full `sbt test`; `sbt publishLocal` for tailgate |
 
@@ -276,6 +276,42 @@ printing estimate vs theory with confidence intervals for both arms, plus per-tr
 
 **Validated by:** a demo smoke-run; determinism (same seed → identical output); conservation (sessions in =
 completed + in-flight residue; page requests = page responses + residue).
+
+**Delivered.** `stochastacy.examples.mm1`, all new code: `MM1Config` (derives `λ_eff`, `ρ`; **refuses an unstable
+server**; defines the measured window once), a Poisson workload of exponential inter-arrivals placed at exact intra-tick
+positions, a stateless `ClientNode` (a session's start time rides on the request, so the next page comes from
+`onFeedback` at the response's own instant), a `ServerNode` computing each start as `max(arrival, freeAt)` — queue
+waiting exact, never sampled — and integrating ∫N dt and busy time per closed window exactly, `MM1Circuit` (built with
+`Circuit.buildWith`), incremental trial and Monte Carlo runners (mean ± standard error), `MM1Theory`, and
+`@main MM1Demo` (estimate vs theory with a within-CI column, one JSONL line per trial). Decisions as approved: D1
+server-side integration, D2 20 % warm-up, D3 in-flight sessions excluded and counted, D4 exponential think time;
+P1 number *in system* (`ρ/(1−ρ)`), P2 per-page sojourn facts, P3 cohort = sessions started in the measured window.
+Tests: `MM1WorkloadSpec` (3), `ServerNodeSpec` (4 — hand-worked starts, sojourns, and window integrals), `MM1DemoSpec`
+(6). Full `sbt test` green (595).
+
+**A bias the demo caught, fixed before commit.** The first full run put busy fraction at **0.7971 ± 0.0008** against
+ρ = 0.8 in both arms (~3.6 standard errors), with mean number in system low by the same proportion. An exact
+per-trial count — not a statistical probe — showed every measured window's integral arrived **except the final one**:
+the server integrates a window when it closes and stamps the result at the next boundary, and the window closed by the
+flush tick has no later boundary, so it is post-horizon residue (the engine's documented rule). The runner divided by
+240 measured ticks while receiving 239. Fixed by dividing by the windows actually received, recorded per trial as
+`windowsMeasured` and pinned by a regression test. (An earlier statistical probe of the effect was poorly designed —
+its horizons shared random streams and it used too few trials — and was set aside rather than read either way.)
+
+Full-size run after the fix — 200 trials × 300 ticks, warm-up 60, λ = 40, μ = 125, p = 0.6 (λ_eff = 100, ρ = 0.8),
+**every metric within its confidence interval in both arms**:
+
+| metric | immediate | think time 0.02 | theory |
+|---|---|---|---|
+| pages per session | 2.4992 ± 0.0014 | 2.4987 ± 0.0014 | 2.5000 |
+| mean number in system | 4.0012 ± 0.0263 | 3.9851 ± 0.0251 | 4.0000 |
+| time per page | 0.0400 ± 0.0002 | 0.0398 ± 0.0002 | 0.0400 |
+| session duration | 0.0998 ± 0.0006 | 0.1295 ± 0.0006 | 0.1000 / 0.1300 |
+| busy fraction | 0.8005 ± 0.0008 | 0.8003 ± 0.0008 | 0.8000 |
+| page rate | 100.02 ± 0.09 | 100.01 ± 0.09 | 100.00 |
+
+About 1.92 M sessions measured per arm; 794 and 1,032 excluded as still in flight at the horizon. As the product-form
+theory predicts, think time lengthened sessions by ≈ 30 ms while leaving the server's own numbers unchanged.
 
 ### Slice 6 — Theory baseline
 
