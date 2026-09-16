@@ -96,6 +96,17 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
 - **Fix (options):** a configurable bucket base, or an exact/HDR-style quantile accumulator alongside it.
 - **Downstream impact:** tailgate computes within-trial percentiles exactly (sorted samples). Not blocking.
 
+### C5. Core gates reject with a constant response that can't identify the request
+- **Found:** v2/phase13 Slice 3, wiring a `FlatThrottleGate` node inside a circuit for the tailgate-shaped test
+  (2026-09-15).
+- **Issue:** `FlatThrottleGate`, `TokenBucketGate`, and `ChaosGate` take a fixed `rejectResponse: Resp` value, so every
+  rejection is the same object. A client that retries rejected requests (tailgate's retry loop) cannot tell *which*
+  request was rejected — it can only count rejections.
+- **Fix (options):** a `reject: Req => Resp` function (constant rejection as the special case), keeping the existing
+  constructors as overloads; or a correlated `Reject(request, response)` outcome.
+- **Downstream impact:** tailgate's own throttles (the future C2 harvest) should build the rejection from the request.
+  Not blocking — tailgate implements its throttles itself.
+
 ## Documentation
 
 ### D1. Stale `CLAUDE.md` facts

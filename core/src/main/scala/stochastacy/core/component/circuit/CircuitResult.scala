@@ -12,7 +12,7 @@ final case class CircuitResidue(calendarEvents: Long, forwardOutputs: Long, cons
 
 /** Emissions on one node plane that no route accepted (no route on the plane, or every route's transform declined)
  *  — dropped, and counted here. Filtering is a legitimate use of routes, so a non-zero count is a diagnostic, not an
- *  error. */
+ *  error. A wiretap copy does not count as routing an emission. */
 final case class UnroutedCount(node: Int, nodeName: String, plane: CircuitPlane, count: Long)
 
 /**
@@ -25,4 +25,7 @@ final case class CircuitResult(
   residue:        CircuitResidue,
   unrouted:       Vector[UnroutedCount],
   unroutedInputs: Long
-)
+):
+  /** The final state of `node`, typed by its handle. The handle must come from the circuit that produced this result
+   *  (states are looked up by declaration index). */
+  def stateOf[S](node: CircuitNode[S, ?, ?, ?, ?, ?]): S = nodeStates(node.index).asInstanceOf[S]

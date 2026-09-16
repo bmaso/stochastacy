@@ -58,3 +58,22 @@ object CircuitTestSupport:
 
   def timedOnly[E](s: Seq[TimedElement[Timed[E]]]): Seq[Timed[E]] =
     s.collect { case x: Timed[E] @unchecked => x }
+
+  // --- a shared anchor fixture: RNG-drawn delays over dense, within-tick-sorted input ---
+
+  final case class AnchorReq(n: Int)
+  final case class AnchorResp(id: Int)
+  final case class AnchorCons(kind: String)
+
+  /** Response and consumption delays drawn from the node's RNG; state counts requests. */
+  final class RandomLatencyToy extends stochastacy.core.component.ComponentSampler[Int, AnchorReq, AnchorResp, AnchorCons]:
+    def initialState: Int = 0
+    def sample(in: AnchorReq, at: stochastacy.sim.SimInstant, s: Int, rng: org.apache.commons.rng.UniformRandomProvider)
+        : stochastacy.core.component.Emission[Int, AnchorResp, AnchorCons] =
+      stochastacy.core.component.Emission(s + 1,
+        stochastacy.core.component.Scheduled(AnchorResp(s), rng.nextDouble() * 2.5),
+        List(stochastacy.core.component.Scheduled(AnchorCons("work"), rng.nextDouble())))
+
+  /** 400 requests, 20 per tick, sorted within each tick, over 25 ticks. */
+  val denseAnchorInput: Vector[TimedElement[Timed[AnchorReq]]] =
+    framed((1 to 400).map(i => (((i - 1) / 20 + 1).toLong, ((i - 1) % 20) / 20.0 + 0.01, AnchorReq(i))), horizon = 25L)

@@ -171,7 +171,7 @@ private[stochastacy] object CircuitStage:
               val r = routes(i)
               r.transform(sch.event) match
                 case Some(v) =>
-                  delivered = true
+                  if !r.wiretap then delivered = true // a wiretap copy observes the emission; it doesn't route it
                   r.target match
                     case RouteTarget.NodePort(m, p) =>
                       calendar.enqueue(Event(when.tick, when.intraTick, nextSeq(), v, m, p, usecase))

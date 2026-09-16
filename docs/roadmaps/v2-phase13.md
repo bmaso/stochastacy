@@ -1,6 +1,6 @@
 # v2/phase13 — Closed-loop circuits
 
-**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–2 done). Gives `stochastacy.core` **closed feedback
+**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–3 done). Gives `stochastacy.core` **closed feedback
 loops by composition** — including loops that close *inside* a tick — proven by the **MM1 demo** (an M/M/1 queue
 with Bernoulli feedback, checked against its closed-form solution). **Immediately after this phase, work resumes on
 `tailgate`** (the throttle-comparison simulator for Brian's article, on hold until this lands), so the close-out
@@ -106,7 +106,7 @@ Ticks are 1 s; a session makes several loop round trips inside one tick.
 |---|---|---|---|
 | 1 | Sampler contract: input time + emitting feedback | **Done** | `at` passed to `sample`/`onFeedback`; `FeedbackEmission` with optional output; both transducer stages updated; every existing scenario **byte-identical** (all baseline specs unchanged); full `sbt test` |
 | 2 | Circuit engine | **Done** | calendar stage over erased nodes: zero-delay self-loop ordered exactly; cross-tick loop; `onTick` order; residue; runaway cap; determinism; **a one-node circuit ≡ `componentOf`** byte-identically |
-| 3 | Typed circuit builder + wiretap | Planned | typed ports/edges/transforms; external routing; consumption mapping; per-node states + RNGs; build-time validation; wiretap; tailgate-shaped unit wiring (gate Admit/Reject edges, tap self-edge timeout); `Interface.wrap` around a circuit |
+| 3 | Typed circuit builder + wiretap | **Done** | typed ports/edges/transforms; external routing; consumption mapping; per-node states + RNGs; build-time validation; wiretap; tailgate-shaped unit wiring (gate Admit/Reject edges, tap self-edge timeout); `Interface.wrap` around a circuit |
 | 4 | MM1 demo | Planned | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
 | 5 | Theory baseline | Planned | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
 | 6 | Docs + close-out | Planned | catalog circuit section; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C3 closed; program roadmap; memory; full `sbt test`; `sbt publishLocal` for tailgate |
@@ -198,6 +198,30 @@ node's typed final state.
 tap self-edge that fires a timeout probe back into its own node (the tailgate client's shape, unit-level only); a
 wiretap delivering an internal edge's events on the consumption outlet in time order; `Interface.wrap` around a
 circuit; per-node RNG derivation deterministic and independent of wiring order changes that don't reorder nodes.
+
+**Delivered.** Public API in `stochastacy.core.component.circuit`: `Circuit[In, Out, Cons]` (an immutable, reusable
+blueprint; `Circuit.build { b => … }` validates, `Circuit.componentOf(circuit, rng)` materializes an ordinary
+`FanOutShape2` component with a `Future[CircuitResult]`), `CircuitBuilder`, and typed `CircuitNode` handles whose
+ports (`InPort[-A]`, `FbPort[-A]`) and planes (`OutPlane[+A]`, `TapPlane[+A]`, `ConsumptionPlane[+A]`) carry the node
+sampler's types — the variances make mismatched wiring a compile error, a plain sampler's `FbPort[Nothing]` unconnectable,
+and consumption impossible to `connect` or wiretap. Wiring: `connect`/`connectVia`, `input`/`inputVia`,
+`output`/`outputVia`, `consumption`/`consumptionVia`, `ignore`, `wiretap`, `maxEventsPerWindow` (P1: distinct `…Via`
+names for partial-function transforms; P5: the cap as a builder setter). Validation — at the call: a handle from
+another builder, routing an ignored consumption plane or ignoring a routed one; at build: no nodes, no input route,
+duplicate names, a node with no inbound route (D3), and a node with real consumption neither routed nor ignored (D4 —
+decided at compile time by a `ConsumptionDemand` given, so `Nothing`-consumption nodes such as gates need no `ignore`).
+RNGs (D2 / P2): a seed is drawn from `componentOf`'s RNG for **every** node in declaration order and each node uses its
+optional pinned `rngSeed` or the drawn seed, in a fresh KISS per materialization. `CircuitResult.stateOf(node)` gives a
+typed final state. Engine edits: `Route` gained a `wiretap` flag — `Out`/`Taps` → consumption outlet is permitted only
+as a wiretap, and a wiretap copy does not count as routing (P4). `TrialRunner.run` now accepts any component `Future[R]`
+(P3; `SingleTrialRunner` unchanged). Tests: `CircuitBuilderSpec` (7 — a typed two-node paging loop, every wiring form,
+wiretap ordering + unrouted accounting, every build error, `Nothing`-consumption gate, RNG derivation / pinning,
+blueprint reuse), `CircuitTailgateShapesSpec` (2 — a `FlatThrottleGate` node's admit/reject split along filtered edges;
+a client timeout probe on a tap self-edge that retries at send + 0.5, re-arms, and ignores late or resolved events),
+`CircuitInteropSpec` (3 — typed anchor ≡ `componentOf`, behind `Interface.wrap`, under `TrialRunner`). Full `sbt test`
+green (572). Findings: handles must be captured outside the `build` block (e.g. a `var`) to call `stateOf` after a run
+— an ergonomics gap to settle before the MM1 demo; and core gates reject with a *constant* response that cannot
+identify the rejected request (stochastacy backlog C5).
 
 ### Slice 4 — MM1 demo
 
