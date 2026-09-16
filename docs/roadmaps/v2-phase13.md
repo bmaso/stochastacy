@@ -1,6 +1,6 @@
 # v2/phase13 — Closed-loop circuits
 
-**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–6 done). Gives `stochastacy.core` **closed feedback
+**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–7 done; Slice 7b and close-out remaining). Gives `stochastacy.core` **closed feedback
 loops by composition** — including loops that close *inside* a tick — proven by the **MM1 demo** (an M/M/1 queue
 with Bernoulli feedback, checked against its closed-form solution). **Immediately after this phase, work resumes on
 `tailgate`** (the throttle-comparison simulator for Brian's article, on hold until this lands), so the close-out
@@ -110,7 +110,8 @@ Ticks are 1 s; a session makes several loop round trips inside one tick.
 | 4 | Gates in circuits | **Done** | correlated `Reject(request, response)` across all four gates; a continuous-refill token bucket (backlog C2, pulled forward); gate wiring sugar; `Circuit.buildWith` handles; each gate proven in a retry loop; demo JSONLs byte-identical |
 | 5 | MM1 demo | **Done** | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
 | 6 | Theory baseline | **Done** | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
-| 7 | Docs + close-out | Planned | catalog circuit + gate sections; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C2/C3/C5 closed; program roadmap; memory; full `sbt test`; `sbt publishLocal` for tailgate |
+| 7 | Circuit docs + MM1 guide | **Done** | core catalog circuits section with the circuit-vs-direct-wiring **rubric** + gate updates; AWS catalog; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C2/C3/C5 closed, C6 logged; every relative link and anchor resolves; full `sbt test` |
+| 7b | DynamoDB correlated throttle + close-out | Planned | `ThrottledResponse(request)` (backlog C6); byte-identical demos and baselines; a retrying client against a table in a circuit; AWS catalog; version `0.0.2`; full `sbt test`; `sbt publishLocal`; phase COMPLETE; PR |
 
 ## Slices
 
@@ -358,15 +359,59 @@ metrics are unchanged to the last digit and its session metrics moved toward the
   front and applied to every load, `MM1Theory.adequateQueueLevels`: individual levels only while `P(N = n) ≥ 1 %`, then a
   tail — 7 slots at ρ = 0.5 and 12 at ρ = 0.8 / 0.9. Seeds, α and ensemble sizes were not changed.
 
-### Slice 7 — Docs + close-out
+### Slice 7 — Circuit docs + MM1 guide
 
 `specs/component-catalog.md` gains a circuits section: what a circuit is, when to use a circuit vs the Pekko graph,
 calendar ordering and tie-breaks, the within-window arrival-order limitation of the Pekko loopback stage, the new
 `at` / `FeedbackEmission` contract, and wiretaps — plus a **gates** update: correlated rejection, the continuous-refill
-bucket, and when to use a gate as a circuit node vs. inline under `Interface.wrap`. New `specs/README.mm1-demo.md`.
-CLAUDE.md: engine section, current position, and an MM1 demo workflow. Backlog: C1, C2, C3 and C5 closed (C2 and C5
-land in Slice 4). Program roadmap + memory. Full `sbt test`. **`sbt publishLocal`** so tailgate can resume on
-the new core (tailgate verifies the dependency resolves before its own work continues).
+bucket, and when to use a gate as a circuit node vs. inline under `Interface.wrap`. The AWS catalog is brought up to
+date with circuits. New `specs/README.mm1-demo.md`. CLAUDE.md: engine section, current position, and an MM1 demo
+workflow. Backlog: C1, C2, C3 and C5 closed. Program roadmap + memory. Full `sbt test`. (Split on 2026-09-16: the
+version bump, `publishLocal`, and phase close-out moved to Slice 7b, so the phase is not published before its last fix.)
+
+**Delivered.** Documentation only — no code changed.
+- **Core catalog.** A **Circuits** section: a four-question **rubric** for when a circuit is required — a cycle any trip
+  around which can take less than a tick **must** use one (with why direct wiring cannot express it); a cycle of at
+  least one tick *by construction* with an order-sensitive component on it, or an acyclic order-sensitive component fed
+  a merged or within-tick-unsorted stream, **absolutely should**; everything else **may wire directly** — with a verdict
+  table, the costs that keep circuits from being the default, and `GlobalTable` as the worked direct-wiring example.
+  Template entries for `Circuit`, `CircuitBuilder`, `CircuitNode`, `CircuitResult`, and "engine rules worth knowing"
+  (the flush-tick residue rule). Gates: `Reject(request, response)`, five gates, a `ContinuousTokenBucketGate` entry,
+  the tick-granular refill caveat on `TokenBucketGate`, and "Gates as circuit nodes" (`gate` / `gateVia`, wiretapped
+  throttle metrics, per-tick gates inside a loop). Foundations: `TrialRunner` over any result; one master seed per
+  ensemble. Quick reference and See also extended.
+- **AWS catalog.** A table as a circuit node (proven by `CircuitAnchorDynamoDbSpec`); why `GlobalTable` may be wired
+  directly, including its one second-order order effect; `FeedbackEmission` with no output for replicated writes;
+  stale scope line, duplicated Foundations paragraph, and "(later)" quick-reference row fixed.
+- **`specs/README.mm1-demo.md`**, in the engineer's-guide form: the domain and circuit, a representative run (re-run
+  for this slice — identical to Slice 6), the closed forms and why think time leaves the server unchanged, the
+  mechanisms, the measurement design with the finding behind each choice, what proves it, and running it.
+- **Elsewhere.** `README.store-demo-v2.md` (`Reject(request, response)`); the design note's status; program roadmap;
+  local `CLAUDE.md` (git-excluded) — phase 12 done, phase 13, circuits and the rubric, the MM1 workflow, the publish
+  line (backlog D1); backlog C1/C2/C3/C5 marked DONE with commits, and **C6** logged.
+
+**Found while documenting (C6).** A DynamoDB table's intrinsic throttle answers `ThrottledResponse`, a `case object`, so
+a client retrying against a table inside a circuit cannot tell which request was throttled. (`SystemErrorResponse`
+already arrives correlated, in the `ChaosGate`'s `Reject`.) Brian chose to fix it inside this phase, as Slice 7b, the
+same way gates correlate: the response carries its request.
+
+**Verified.** Full `sbt test` green (601). A link checker (GitHub heading slugs; itself shown to catch a bad file and a
+bad anchor) resolves all 97 relative links across `specs/`, including the new anchors. A grep of `specs/` finds no
+`Reject(response)`, "four gates", old `sample(in, state, …)` signature, or "(later)" row.
+
+### Slice 7b — DynamoDB correlated throttle + close-out
+
+Close backlog **C6**: `final case class ThrottledResponse(request: DynamoDbRequest)` replaces the `case object`, mirroring
+`Reject(request, response)`, and every match site becomes `ThrottledResponse(_)`. Successful responses are unchanged — as
+a gate's `Admit` never correlates the downstream response, a client needing context on a success carries it on its
+request. `SystemErrorResponse` is unchanged (already correlated by its `ChaosGate`).
+
+**Validated by:** every demo JSONL and baseline spec byte-identical; a spec with a retrying client node against a
+provisioned table in a circuit, retrying exactly the requests the table throttled; the AWS catalog updated (protocol,
+`DynamoDbTable` composition, quick reference); link check re-run.
+
+**Close-out.** Phase and program roadmaps COMPLETE; CLAUDE.md and memory; all modules to version **`0.0.2`**; full `sbt
+test`; **`sbt publishLocal`**; the phase PR description. Work then returns to tailgate, separately.
 
 ## Scope boundary
 

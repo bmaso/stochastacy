@@ -41,7 +41,7 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
 
 ## Engine capabilities
 
-### C1. Gates are tick-granular; samplers can't see an input's timestamp
+### C1. Gates are tick-granular; samplers can't see an input's timestamp — DONE (`aadf891`, `14206b8`)
 - **Found:** tailgate Slice 0, reading core for the throttle design (2026-09-15).
 - **Issue:** `TokenBucketGate` refills once per tick in `onTick`, and `FlatThrottleGate` resets per tick, so their
   resolution is the tick. `ComponentSampler.sample(in, state, rng)` receives only the payload — not the input's
@@ -54,8 +54,10 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
 - **Note:** the existing gates are *correct* for tick-granular models (they were built for per-second capacity
   models). With a 1-second tick, `FlatThrottleGate` is exactly tailgate's `FIXED_WINDOW` (counter reset on each
   second boundary, aligned to t=0). The gap is sub-tick time, addressed by C2.
+- **Status:** **DONE in v2/phase13.** Slice 1 (`aadf891`) passes the input's conceptual time to `sample` and
+  `onFeedback` as `at: SimInstant`; Slice 4 (`14206b8`) adds the continuous-refill gate (C2).
 
-### C2. GOAL: a continuous-refill token-bucket gate in core — harvested from tailgate (do after tailgate)
+### C2. GOAL: a continuous-refill token-bucket gate in core — DONE (`14206b8`)
 - **Agreed:** 2026-09-15, Brian. Originally scheduled for after tailgate; **PULLED FORWARD into v2/phase13 Slice 4**
   (2026-09-15) — feedback simulations need real rate limiting, and the interval bound is directly testable in core, so
   tailgate will consume the core gate instead of building its own.
@@ -73,8 +75,12 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
   4. Optionally migrate tailgate onto the core gate afterwards (drops its payload workaround).
 - **Source to harvest:** tailgate's throttle implementation + tests
   (`/Users/bmaso/projects/aws-cost-estimation/grafana-visualization/tailgate/src/…`).
+- **Status:** **DONE in v2/phase13 Slice 4** (`14206b8`), designed in core rather than harvested (tailgate had not
+  built its throttles yet): `ContinuousTokenBucketGate` accrues tokens from `at`, with the `capacity + refill × T`
+  interval bound proven in `ContinuousTokenBucketGateSpec`; documented in `specs/component-catalog.md`. Tailgate
+  consumes the core gate, so plan steps 1, 3 and 4 no longer apply.
 
-### C3. No time-ordered request feedback loop (client retries can't be composed)
+### C3. No time-ordered request feedback loop (client retries can't be composed) — DONE (`f8fb6d0`, `9b9da18`)
 - **Found:** tailgate slice breakdown, designing the client retry loop (2026-09-15).
 - **Issue:** a retry is a *new request* re-entering an upstream component (throttle) after a backoff that can be
   far shorter than a tick (spec: 50 ms, or `uniform(0, 50 ms)` with full jitter). The loopback machinery
@@ -87,8 +93,10 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
   design change — needs explicit approval.
 - **Downstream impact:** **BLOCKING** — tailgate's purpose is to show stochastacy models loops; the monolithic
   event-loop sampler workaround was rejected as heroic.
-- **Status:** **PROMOTED to a new stochastacy development phase** (closed-loop capability), 2026-09-15. Tailgate is
-  on hold until it lands.
+- **Status:** **DONE in v2/phase13.** Promoted to the closed-loop phase on 2026-09-15; delivered as **circuits** —
+  the calendar engine (Slice 2, `f8fb6d0`) and the typed builder with wiretaps (Slice 3, `9b9da18`), with
+  `onFeedback` able to emit a request (Slice 1, `aadf891`). Proven against queueing theory by the MM1 demo
+  (Slices 5–6). When to use a circuit: the rubric in `specs/component-catalog.md`.
 
 ### C4. Histogram quantile resolution is coarse for exact within-trial percentiles
 - **Found:** tailgate slice breakdown (2026-09-15).
@@ -98,7 +106,7 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
 - **Fix (options):** a configurable bucket base, or an exact/HDR-style quantile accumulator alongside it.
 - **Downstream impact:** tailgate computes within-trial percentiles exactly (sorted samples). Not blocking.
 
-### C5. Core gates reject with a constant response that can't identify the request
+### C5. Core gates reject with a constant response that can't identify the request — DONE (`14206b8`)
 - **Found:** v2/phase13 Slice 3, wiring a `FlatThrottleGate` node inside a circuit for the tailgate-shaped test
   (2026-09-15).
 - **Issue:** `FlatThrottleGate`, `TokenBucketGate`, and `ChaosGate` take a fixed `rejectResponse: Resp` value, so every
@@ -107,8 +115,22 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
 - **Fix (options):** a `reject: Req => Resp` function (constant rejection as the special case), keeping the existing
   constructors as overloads; or a correlated `Reject(request, response)` outcome.
 - **Downstream impact:** a client in a feedback loop cannot retry the rejected request.
-- **Status:** **PROMOTED into v2/phase13 Slice 4** (2026-09-15) — `Reject` will carry the request alongside the
-  response, so every gate correlates without per-gate configuration.
+- **Status:** **DONE in v2/phase13 Slice 4** (`14206b8`) — `Reject(request, response)` carries the request
+  alongside the response, so every gate correlates without per-gate configuration; `Interface.wrap` still emits only
+  the response.
+
+### C6. A throttled DynamoDB table response can't identify the request
+- **Found:** v2/phase13 Slice 7, documenting a DynamoDB table as a circuit node (2026-09-16).
+- **Issue:** the table's intrinsic capacity throttle answers with `ThrottledResponse`, a `case object`, and no
+  DynamoDB request or response carries identity — so a client node retrying against a *table* in a circuit cannot
+  tell which request was throttled. (`SystemErrorResponse` is produced by a `ChaosGate` in front of the table, so
+  inside a circuit it already arrives correlated in the gate's `Reject(request, response)`.)
+- **Fix:** mirror the gates' correlated rejection — `final case class ThrottledResponse(request: DynamoDbRequest)`,
+  updating the match sites to `ThrottledResponse(_)`; successful responses unchanged (as a gate's `Admit` never
+  correlates the downstream response). Approved by Brian as J1(b); must stay byte-identical on every demo and
+  baseline.
+- **Downstream impact:** a retrying client loop against a DynamoDB table in a circuit. Not blocking tailgate.
+- **Status:** **SCHEDULED — v2/phase13 Slice 7b.**
 
 ## Documentation
 
@@ -118,3 +140,6 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
   and the command actually used (`publishLocal`). Current-position section still says
   **"v2/phase12 — IN PROGRESS"** though phase 12 is complete and merged.
 - **Fix:** correct both (after B1 settles the coordinates).
+- **Status:** **Fixed locally in v2/phase13 Slice 7** — current position, engine section (circuits), and the
+  publish line (`sbt publishLocal`). `CLAUDE.md` remains git-excluded, so the fix lives only in the working copy;
+  the coordinates themselves still await B1.

@@ -131,8 +131,8 @@ sbt 'examples/testOnly stochastacy.examples.store.v2.StoreV2ExperimentsSpec'
 
 ### 4.1 The gate stack
 Each gate is an `InterfaceSampler[S, StoreRequest, StoreResponse]` — a `ComponentSampler` whose forward
-output is `Admit(request)` or `Reject(response)` and whose consumption is fixed to `Nothing` (gates emit
-no metric plane). `Interface.wrap(downstream, gate, rng)` produces a **shape- and materialized-value-
+output is `Admit(request)` or `Reject(request, response)` and whose consumption is fixed to `Nothing` (gates
+emit no metric plane; under `wrap` only a rejection's response is emitted). `Interface.wrap(downstream, gate, rng)` produces a **shape- and materialized-value-
 preserving** decorator: the wrapped component presents the same `StoreRequest → StoreResponse` interface
 as the datastore, so wraps nest and gates stack. `EdgeConfig.gates` turns the structured config into the
 outermost-first stack `latency → rate-limiter → chaos`, and `StoreV2TrialRunner` folds it over the

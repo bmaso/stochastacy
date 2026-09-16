@@ -4,6 +4,11 @@ Working notes for the phase that gives `stochastacy.core` **closed loops by comp
 (the throttle-comparison simulator for Brian's article, on hold until this lands; spec at
 `../../../tailgate/docs/simulation-spec.md`). Nothing here is approved until the phase goals/plan say so.
 
+**Status (2026-09-16):** **Concept K (circuits) was chosen and implemented** in v2/phase13 Slices 2–4 and proven by
+the MM1 demo (Slices 5–6); see `v2-phase13.md` and the circuits section of `specs/component-catalog.md`. **Concept F1
+(registers)** was not built; it remains recorded here as the candidate mechanism for loops *between* circuits, which
+are out of scope. These notes are kept as the design record.
+
 ## The problem, precisely
 
 Tailgate's loop: `client → throttle → bounded queue → c workers → response → client`, where a rejection or timeout
