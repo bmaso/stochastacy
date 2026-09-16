@@ -22,7 +22,8 @@ object MM1Report:
           ("page_time" -> t.pageTime) ~ ("mean_in_system" -> t.meanInSystem) ~
           ("busy_fraction" -> t.busyFraction) ~ ("page_rate" -> t.pageRate) ~
           ("sessions_measured" -> t.sessionsMeasured) ~ ("sessions_in_flight" -> t.sessionsInFlight) ~
-          ("pages_measured" -> t.pagesMeasured) ~ ("windows_measured" -> t.windowsMeasured)
+          ("pages_measured" -> t.pagesMeasured) ~ ("windows_measured" -> t.windowsMeasured) ~
+          ("queue_level_fractions" -> t.queueLevelFractions.toList) ~ ("pages_distribution" -> t.pagesDistribution.toList)
       compact(render(line))
     }.mkString("\n") + (if r.trials.isEmpty then "" else "\n")
 
@@ -45,5 +46,5 @@ object MM1Report:
     sb ++= row("page rate", r.pageRate, MM1Theory.pageRate(c))
     val inFlight = r.trials.map(_.sessionsInFlight).sum
     val measured = r.trials.map(_.sessionsMeasured).sum
-    sb ++= s"    sessions measured: $measured (excluded, still in flight at the horizon: $inFlight)\n"
+    sb ++= s"    sessions measured: $measured (cohort sessions still unfinished at the horizon: $inFlight)\n"
     sb.result()

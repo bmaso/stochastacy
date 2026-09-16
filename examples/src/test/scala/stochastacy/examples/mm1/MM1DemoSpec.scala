@@ -65,6 +65,18 @@ class MM1DemoSpec extends AnyWordSpec with should.Matchers with BeforeAndAfterAl
       all(r.trials.map(_.windowsMeasured)) shouldBe expected
     }
 
+    "report both distributions as proper probability vectors" in {
+      val r = run(config)
+      r.trials.foreach { t =>
+        t.queueLevelFractions should have size config.queueLevels.toLong
+        t.pagesDistribution should have size config.pageLevels.toLong
+        all(t.queueLevelFractions) should be >= 0.0
+        all(t.pagesDistribution) should be >= 0.0
+        t.queueLevelFractions.sum shouldBe (1.0 +- 1e-9)
+        t.pagesDistribution.sum shouldBe (1.0 +- 1e-9)
+      }
+    }
+
     "run the think-time arm, leaving the server's own load unchanged" in {
       val immediate = run(config)
       val thinking  = run(config.copy(scenarioId = "mm1-think-time", thinkTimeMean = Some(0.02)))

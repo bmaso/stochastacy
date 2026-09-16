@@ -1,15 +1,15 @@
 package stochastacy.examples.mm1
 
 import org.apache.commons.rng.UniformRandomProvider
-import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.Inside.inside
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
+import stochastacy.core.component.TickEmission
 import stochastacy.sim.SimInstant
 
 /** The FIFO server's exact mechanics: start = max(arrival, free), sojourn = queue wait + service, and the per-tick
- *  integrals of N(t) and busy time computed against hand-worked numbers. */
+ *  integrals of N(t), busy time, and time at each level computed against hand-worked numbers. */
 class ServerNodeSpec extends AnyWordSpec with should.Matchers:
 
   /** A server whose service time is always 0.25 ticks: `Exponential.draw(rate, rng)` is inverse-transform, so a fixed
@@ -28,6 +28,12 @@ class ServerNodeSpec extends AnyWordSpec with should.Matchers:
   private val node    = new ServerNode(config)
 
   private def at(t: Double): SimInstant = SimInstant(math.floor(t).toLong, t - math.floor(t))
+
+  private def integralsOf(e: TickEmission[ServerState, MM1Fact]): List[MM1Fact.WindowIntegral] =
+    e.consumption.map(_.event).collect { case w: MM1Fact.WindowIntegral => w }
+
+  private def levelsOf(e: TickEmission[ServerState, MM1Fact]): List[MM1Fact.WindowLevels] =
+    e.consumption.map(_.event).collect { case w: MM1Fact.WindowLevels => w }
 
   "ServerNode" should {
 
@@ -51,7 +57,7 @@ class ServerNodeSpec extends AnyWordSpec with should.Matchers:
       val second = node.sample(PageRequest(2L, 1, 1.1), at(1.1), first.newState, rng)
       val closed = node.onTick(2L, second.newState)
 
-      inside(closed.consumption.map(_.event)) { case List(MM1Fact.WindowIntegral(window, inSystem, busy)) =>
+      inside(integralsOf(closed)) { case List(MM1Fact.WindowIntegral(window, inSystem, busy)) =>
         window shouldBe 1L
         inSystem shouldBe (0.65 +- 1e-9)
         busy shouldBe (0.5 +- 1e-9)
@@ -59,24 +65,66 @@ class ServerNodeSpec extends AnyWordSpec with should.Matchers:
       closed.newState.open shouldBe empty // both jobs ended inside the window
     }
 
-    "carry an unfinished job into the next window and count only its overlap" in {
+    "measure the time at each level, consistently with the window's integral" in {
+      // Same two requests. N(t) over [1, 2): 1 on [1.0, 1.1), 2 on [1.1, 1.25), 1 on [1.25, 1.5), 0 on [1.5, 2.0),
+      // so level 0 = 0.5, level 1 = 0.1 + 0.25 = 0.35, level 2 = 0.15.
+      val first  = node.sample(PageRequest(1L, 1, 1.0), at(1.0), node.initialState, rng)
+      val second = node.sample(PageRequest(2L, 1, 1.1), at(1.1), first.newState, rng)
+      val closed = node.onTick(2L, second.newState)
+
+      inside(levelsOf(closed)) { case List(MM1Fact.WindowLevels(window, times)) =>
+        window shouldBe 1L
+        times should have size config.queueLevels.toLong
+        times(0) shouldBe (0.5 +- 1e-9)
+        times(1) shouldBe (0.35 +- 1e-9)
+        times(2) shouldBe (0.15 +- 1e-9)
+        times.drop(3).foreach(_ shouldBe 0.0)
+        times.sum shouldBe (1.0 +- 1e-9)                                     // the slots cover the whole window
+        times.zipWithIndex.map((t, n) => t * n).sum shouldBe (0.65 +- 1e-9)  // Σ n·time(n) = ∫N dt
+      }
+    }
+
+    "carry an unfinished job into the next window, counting only its overlap in every integral" in {
       // One request at 1.8 taking 0.25 → [1.8, 2.05]: 0.2 falls in tick 1, 0.05 in tick 2.
       val e       = node.sample(PageRequest(1L, 1, 1.8), at(1.8), node.initialState, rng)
       val closed1 = node.onTick(2L, e.newState)
-      inside(closed1.consumption.map(_.event)) { case List(MM1Fact.WindowIntegral(window, inSystem, busy)) =>
+      inside(integralsOf(closed1)) { case List(MM1Fact.WindowIntegral(window, inSystem, busy)) =>
         window shouldBe 1L
         inSystem shouldBe (0.2 +- 1e-9)
         busy shouldBe (0.2 +- 1e-9)
       }
+      inside(levelsOf(closed1)) { case List(MM1Fact.WindowLevels(_, times)) =>
+        times(0) shouldBe (0.8 +- 1e-9)
+        times(1) shouldBe (0.2 +- 1e-9)
+      }
       closed1.newState.open should have size 1 // still open: it ends in tick 2
 
+      // In tick 2 the job is already in the system when the window opens, so the walk starts at level 1.
       val closed2 = node.onTick(3L, closed1.newState)
-      inside(closed2.consumption.map(_.event)) { case List(MM1Fact.WindowIntegral(window, inSystem, busy)) =>
+      inside(integralsOf(closed2)) { case List(MM1Fact.WindowIntegral(window, inSystem, busy)) =>
         window shouldBe 2L
         inSystem shouldBe (0.05 +- 1e-9)
         busy shouldBe (0.05 +- 1e-9)
       }
+      inside(levelsOf(closed2)) { case List(MM1Fact.WindowLevels(_, times)) =>
+        times(1) shouldBe (0.05 +- 1e-9)
+        times(0) shouldBe (0.95 +- 1e-9)
+      }
       closed2.newState.open shouldBe empty
+    }
+
+    "lump every level at or above the cap into the last slot" in {
+      // Three simultaneous requests with a cap of 2 slots (level 0, and ≥ 1): all of N = 1, 2, 3 lands in slot 1.
+      val capped = new ServerNode(config.copy(queueLevels = 2))
+      val s1 = capped.sample(PageRequest(1L, 1, 1.5), at(1.5), capped.initialState, rng).newState
+      val s2 = capped.sample(PageRequest(2L, 1, 1.5), at(1.5), s1, rng).newState
+      val s3 = capped.sample(PageRequest(3L, 1, 1.5), at(1.5), s2, rng).newState
+      // Jobs: [1.5, 1.75], [1.5, 2.0], [1.5, 2.25] — N ≥ 1 throughout [1.5, 2.0).
+      inside(levelsOf(capped.onTick(2L, s3))) { case List(MM1Fact.WindowLevels(_, times)) =>
+        times should have size 2
+        times(0) shouldBe (0.5 +- 1e-9) // empty until 1.5
+        times(1) shouldBe (0.5 +- 1e-9) // N = 1, 2, 3 all lumped into the tail slot
+      }
     }
 
     "emit nothing at the first tick, when no window has closed yet" in {

@@ -18,22 +18,24 @@ import stochastacy.sim.{TimedControlEvent, TimedElement, ticks}
  * and per-session facts of a long run stream past.
  *
  * Every measurement is restricted to the measured window; the warm-up prefix is discarded, because the queue starts
- * empty and the closed forms this demo is checked against are steady-state. Sessions that started in the window but
- * had not finished by the horizon are excluded from the per-session averages (they could only read short) and
- * reported as `sessionsInFlight`.
+ * empty and the closed forms this demo is checked against are steady-state. Per-session averages are taken over the
+ * cohort defined by [[MM1Config.inCohort]] — sessions that start a margin before the horizon, so every one has time to
+ * finish; `sessionsInFlight` counts cohort sessions that nevertheless had not, and is expected to be zero.
  */
 object MM1TrialRunner:
 
   /** Running totals over the measured window. */
   private final case class Acc(
-    sessions:        Long   = 0L,
-    sessionPages:    Long   = 0L,
-    sessionDuration: Double = 0.0,
-    pages:           Long   = 0L,
-    pageSojourn:     Double = 0.0,
-    inSystem:        Double = 0.0,
-    busy:            Double = 0.0,
-    windows:         Long   = 0L  // window integrals actually received — the divisor for the two integrals
+    sessions:        Long,
+    sessionPages:    Long,
+    sessionDuration: Double,
+    pages:           Long,
+    pageSojourn:     Double,
+    inSystem:        Double,
+    busy:            Double,
+    windows:         Long,           // window integrals actually received — the divisor for the per-window integrals
+    levelTimes:      Vector[Double], // time at each number-in-system slot, summed over measured windows
+    pageCounts:      Vector[Long]    // cohort sessions per page-count slot
   )
 
   def run(config: MM1Config, trialId: Int, trialSeed: Long)(using
@@ -47,24 +49,31 @@ object MM1TrialRunner:
     val (circuit, _) = MM1Circuit.build(config)
     val component    = Circuit.componentOf(circuit, RandomSource.KISS.create(circuitSeed))
 
-    // Materialized so the trial can count the sessions that *started* in the measured window — the cohort the
-    // per-session averages are taken over, and the basis for the in-flight count.
+    // Materialized so the trial can count the sessions that *started* in the cohort — the population the per-session
+    // averages are taken over, and the basis for the in-flight count.
     val arrivals        = MM1Workload.arrivals(config, RandomSource.KISS.create(workloadSeed)).toVector
-    val startedInWindow = arrivals.count(a => config.measured(a.eventTime.ticks.toDouble + a.intraTick)).toLong
+    val startedInCohort = arrivals.count(a => config.inCohort(a.eventTime.ticks.toDouble + a.intraTick)).toLong
     val source          = TickFraming.frameSource(arrivals.iterator, config.simulationTicks)
 
-    val fold = Sink.fold[Acc, TimedElement[Timed[MM1Fact]]](Acc()) { (acc, element) =>
+    val initial = Acc(0L, 0L, 0.0, 0L, 0.0, 0.0, 0.0, 0L,
+                      Vector.fill(config.queueLevels)(0.0), Vector.fill(config.pageLevels)(0L))
+
+    val fold = Sink.fold[Acc, TimedElement[Timed[MM1Fact]]](initial) { (acc, element) =>
       element match
         case t: Timed[MM1Fact] @unchecked =>
           val at = t.eventTime.ticks.toDouble + t.intraTick
           t.event match
-            case MM1Fact.SessionCompleted(pages, startedAt, duration) if config.measured(startedAt) =>
+            case MM1Fact.SessionCompleted(pages, startedAt, duration) if config.inCohort(startedAt) =>
+              val slot = math.min(pages, config.pageLevels) - 1
               acc.copy(sessions = acc.sessions + 1L, sessionPages = acc.sessionPages + pages,
-                       sessionDuration = acc.sessionDuration + duration)
+                       sessionDuration = acc.sessionDuration + duration,
+                       pageCounts = acc.pageCounts.updated(slot, acc.pageCounts(slot) + 1L))
             case MM1Fact.PageServed(sojourn) if config.measured(at) =>
               acc.copy(pages = acc.pages + 1L, pageSojourn = acc.pageSojourn + sojourn)
             case MM1Fact.WindowIntegral(windowStart, inSystem, busy) if config.measured(windowStart.toDouble) =>
               acc.copy(inSystem = acc.inSystem + inSystem, busy = acc.busy + busy, windows = acc.windows + 1L)
+            case MM1Fact.WindowLevels(windowStart, times) if config.measured(windowStart.toDouble) =>
+              acc.copy(levelTimes = acc.levelTimes.lazyZip(times).map(_ + _))
             case _ => acc
         case _: TimedControlEvent => acc
     }
@@ -84,8 +93,11 @@ object MM1TrialRunner:
         windowsMeasured  = acc.windows,
         pageRate         = acc.pages.toDouble / config.measuredTicks,
         sessionsMeasured = acc.sessions,
-        sessionsInFlight = math.max(0L, startedInWindow - acc.sessions),
-        pagesMeasured    = acc.pages
+        sessionsInFlight = math.max(0L, startedInCohort - acc.sessions),
+        pagesMeasured    = acc.pages,
+        // Each window is one tick long, so time at a level ÷ windows received is the fraction of time at that level.
+        queueLevelFractions = acc.levelTimes.map(t => ratio(t, acc.windows)),
+        pagesDistribution   = acc.pageCounts.map(c => ratio(c.toDouble, acc.sessions))
       )
     }
 

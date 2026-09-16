@@ -54,8 +54,32 @@ final class ServerNode(config: MM1Config) extends ComponentSampler[ServerState, 
       }
       TickEmission(
         state.copy(open = state.open.filter(_.finish > to)),
-        List(Scheduled(MM1Fact.WindowIntegral(tick - 1L, inSystem, busy), 0.0))
+        List(
+          Scheduled(MM1Fact.WindowIntegral(tick - 1L, inSystem, busy), 0.0),
+          Scheduled(MM1Fact.WindowLevels(tick - 1L, levelTimes(state.open, from, to)), 0.0)
+        )
       )
+
+  /** Walk N(t) across `[from, to)` as a step function and total the time spent at each level. Start from the jobs in
+   *  the system at `from`; each arrival inside the window steps N up and each finish inside it steps N down. At equal
+   *  instants arrivals go first — any order takes zero time, but this keeps N from dipping below zero mid-tie. */
+  private def levelTimes(open: Vector[Job], from: Double, to: Double): Vector[Double] =
+    val slots = new Array[Double](config.queueLevels)
+    val top   = config.queueLevels - 1
+    var level = open.count(job => job.arrival < from && job.finish > from)
+    val steps = open.flatMap { job =>
+      val up   = if job.arrival >= from && job.arrival < to then Vector((job.arrival, 1)) else Vector.empty
+      val down = if job.finish > from && job.finish < to then Vector((job.finish, -1)) else Vector.empty
+      up ++ down
+    }.sortBy((time, delta) => (time, -delta))
+    var at = from
+    steps.foreach { (time, delta) =>
+      slots(math.min(level, top)) += time - at
+      at = time
+      level += delta
+    }
+    slots(math.min(level, top)) += to - at
+    slots.toVector
 
   private def overlap(from: Double, to: Double, windowFrom: Double, windowTo: Double): Double =
     math.max(0.0, math.min(to, windowTo) - math.max(from, windowFrom))

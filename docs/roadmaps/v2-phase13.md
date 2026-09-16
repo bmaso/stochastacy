@@ -1,6 +1,6 @@
 # v2/phase13 — Closed-loop circuits
 
-**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–5 done). Gives `stochastacy.core` **closed feedback
+**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–6 done). Gives `stochastacy.core` **closed feedback
 loops by composition** — including loops that close *inside* a tick — proven by the **MM1 demo** (an M/M/1 queue
 with Bernoulli feedback, checked against its closed-form solution). **Immediately after this phase, work resumes on
 `tailgate`** (the throttle-comparison simulator for Brian's article, on hold until this lands), so the close-out
@@ -109,7 +109,7 @@ Ticks are 1 s; a session makes several loop round trips inside one tick.
 | 3 | Typed circuit builder + wiretap | **Done** | typed ports/edges/transforms; external routing; consumption mapping; per-node states + RNGs; build-time validation; wiretap; tailgate-shaped unit wiring (gate Admit/Reject edges, tap self-edge timeout); `Interface.wrap` around a circuit |
 | 4 | Gates in circuits | **Done** | correlated `Reject(request, response)` across all four gates; a continuous-refill token bucket (backlog C2, pulled forward); gate wiring sugar; `Circuit.buildWith` handles; each gate proven in a retry loop; demo JSONLs byte-identical |
 | 5 | MM1 demo | **Done** | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
-| 6 | Theory baseline | Planned | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
+| 6 | Theory baseline | **Done** | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
 | 7 | Docs + close-out | Planned | catalog circuit + gate sections; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C2/C3/C5 closed; program roadmap; memory; full `sbt test`; `sbt publishLocal` for tailgate |
 
 ## Slices
@@ -313,12 +313,50 @@ Full-size run after the fix — 200 trials × 300 ticks, warm-up 60, λ = 40, μ
 About 1.92 M sessions measured per arm; 794 and 1,032 excluded as still in flight at the horizon. As the product-form
 theory predicts, think time lengthened sessions by ≈ 30 ms while leaving the server's own numbers unchanged.
 
+*Correction found in Slice 6:* the session cohort rule above (exclude sessions still in flight at the horizon) carried a
+small **length bias** — long sessions are the ones most likely to be caught unfinished — reading pages per session low
+by about 0.13 % (−10σ at ρ = 0.9 over 8 000 trials). It was invisible in this 240-tick table, where the effect is diluted,
+and "every metric within CI" remains literally true. Slice 6 replaced the rule with a cohort start cutoff before the
+horizon; see below.
+
 ### Slice 6 — Theory baseline
 
 `MM1TheoryBaselineSpec`, the phase's proof: for both arms and a small ρ sweep (e.g. 0.5 / 0.8 / 0.9), every metric —
 pages per session, time-average queue length and its geometric distribution, time per page, session duration, busy
 fraction — falls within its Monte Carlo confidence interval of the closed form, with trial counts sized so the
 check is meaningful and fast. Any failure is investigated to root cause, not tuned away.
+
+**Delivered.** `ServerNode` also reports the **queue-length distribution** (a `WindowLevels` fact per closed window: N(t)
+walked as a step function from the jobs already in the system, arrivals before finishes at ties, levels above the cap
+lumped into a tail), and the runner reports it and the **pages-per-session distribution** alongside the means.
+`MM1TheoryBaselineSpec` runs six ensembles (ρ = 0.5 / 0.8 / 0.9 × immediate / think time; 1 000 trials × 100 measured
+ticks each, every ensemble on its own master seed) and asserts, per ensemble, the six means, both distributions, and
+Little's law (from per-trial differences) against the closed forms: **140 checks, all within `k = 3.570` standard errors**
+— `k` computed from the check count for a 5 % family-wise error (Bonferroni), largest |z| 2.60. It also asserts that no
+cohort session is left unfinished, and a **negative control**: the Slice 5 biased estimator, recomputed from the same
+ensemble, is rejected at **z = −13.67**. The spec's header carries the integrity rule (fixed distinct seeds; a failure
+is investigated, never answered by changing a seed, `k`, or a band). Full `sbt test` green (601); the demo's server-side
+metrics are unchanged to the last digit and its session metrics moved toward theory.
+
+**What the spec's development found — each settled by measurement, each decided with Brian:**
+
+- **Budget was not a constraint.** A 200-trial ensemble takes ~0.3 s, so the planned 200 trials grew to 1 000 (E2),
+  putting the negative control ~14 σ clear of `k`.
+- **An alarming calibration was a design flaw in the calibration.** The correct busy-fraction estimator read about
+  −3σ at all three loads — but those ensembles shared a master seed, so they were one noise realization shown three
+  times. Two independent 4 000-trial ensembles put it at z = +0.58 and −0.24. Lesson: every ensemble gets its own seed.
+- **The session cohort was length-biased (E1).** Excluding sessions unfinished at the horizon under-represents long
+  sessions: cohort pages per session read −10.4σ and −10.6σ at ρ = 0.9 over 8 000 trials, while a cohort whose *starts*
+  stop before the horizon read −1.0σ and +1.5σ. The cohort is now sessions starting at least a margin before the horizon
+  (`MM1Config.inCohort`).
+- **The margin was measured, not assumed (F2).** A first 5-tick margin — chosen from the *mean* session length — left
+  2 sessions unfinished; near saturation the queue makes long excursions. Over 11.7 M sessions at ρ = 0.9, 375 ran past
+  5 ticks and the longest took 10.85, so the margin is now 20 ticks.
+- **One check was judging a zero-inflated slot (F1).** The only first-run miss was `P(N ≥ 11)` at ρ = 0.5 (z = −3.72).
+  At 20 000 trials that slot lands on theory in both arms (z = −0.85, +0.39) — the level walk is correct — but 55 % of
+  trials spend no time there, the regime where a z-score is least trustworthy. Queue slots now follow a rule stated up
+  front and applied to every load, `MM1Theory.adequateQueueLevels`: individual levels only while `P(N = n) ≥ 1 %`, then a
+  tail — 7 slots at ρ = 0.5 and 12 at ρ = 0.8 / 0.9. Seeds, α and ensemble sizes were not changed.
 
 ### Slice 7 — Docs + close-out
 
