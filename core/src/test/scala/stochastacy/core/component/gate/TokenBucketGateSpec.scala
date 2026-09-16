@@ -25,7 +25,7 @@ class TokenBucketGateSpec extends AnyWordSpec with should.Matchers:
         val e = gate.sample(Req(0), SimInstant(0L, 0.0), st, rng)
         e.output.event match
           case _: Admit[?]  => admitted += 1
-          case _: Reject[?] => rejected += 1
+          case _: Reject[?, ?] => rejected += 1
         st = e.newState
       }
     }

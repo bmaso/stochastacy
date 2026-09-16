@@ -4,17 +4,21 @@ import org.apache.commons.rng.UniformRandomProvider
 import stochastacy.core.component.{Admit, Emission, InterfaceSampler, Reject, Scheduled, TickEmission}
 import stochastacy.sim.SimInstant
 
-/** A token-bucket rate gate: admits a request when a token is available (spending one) and rejects
- *  otherwise. `refillPerTick` tokens are added at each tick boundary, capped at `capacity` — so the
- *  bucket **banks unused capacity during quiet ticks and spends it on a later burst**, up to
- *  `capacity`. Same average admission ceiling as a flat per-tick cap of `refillPerTick`, but with
- *  burst tolerance: under bursty load it throttles far less; under *sustained* overload it is still
- *  refill-limited and throttles like the flat cap.
+/** A token-bucket rate gate refilled **once per tick**: admits a request when a token is available
+ *  (spending one) and rejects otherwise. `refillPerTick` tokens are added at each tick boundary, capped
+ *  at `capacity` — so the bucket **banks unused capacity during quiet ticks and spends it on a later
+ *  burst**, up to `capacity`. Same average admission ceiling as a flat per-tick cap of `refillPerTick`,
+ *  but with burst tolerance: under bursty load it throttles far less; under *sustained* overload it is
+ *  still refill-limited and throttles like the flat cap.
+ *
+ *  Refill granularity is the tick: tokens spent early in a tick are not replaced until the next boundary.
+ *  For a loop that closes *within* a tick — a circuit — use [[ContinuousTokenBucketGate]], which accrues
+ *  tokens from elapsed conceptual time.
  *
  *  Tokens are fractional (real rate limiters run at fractional rates), so a `refillPerTick < 1`
  *  accumulates across ticks until a whole token is available. The bucket starts full. The domain
- *  supplies the response a rejection returns (e.g. a 429). Third use of the `onTick` hook (after the
- *  flat throttle's reset and the latency gate's tick threading). */
+ *  supplies the response a rejection returns (e.g. a 429); the rejection also carries the request, so a
+ *  client in a feedback loop can retry it. */
 final class TokenBucketGate[Req, Resp](
   capacity:       Double,
   refillPerTick:  Double,
@@ -31,7 +35,7 @@ final class TokenBucketGate[Req, Resp](
     if state.tokens >= 1.0 then
       Emission(TokenBucketGate.State(state.tokens - 1.0), Scheduled(Admit(req), latencyTicks), Nil)
     else
-      Emission(state, Scheduled(Reject(rejectResponse), latencyTicks), Nil)
+      Emission(state, Scheduled(Reject(req, rejectResponse), latencyTicks), Nil)
 
 object TokenBucketGate:
   final case class State(tokens: Double)

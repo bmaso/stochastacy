@@ -10,7 +10,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 
-import stochastacy.core.component.{ComponentSampler, Emission, FeedbackEmission, LoopbackComponentSampler, LoopbackEmission, Scheduled, TickEmission}
+import stochastacy.core.component.{ComponentSampler, Emission, FeedbackEmission, LoopbackComponentSampler, LoopbackEmission, Reject, Scheduled, TickEmission}
 import stochastacy.core.component.circuit.CircuitTestSupport.*
 import stochastacy.core.component.gate.FlatThrottleGate
 import stochastacy.sim.SimInstant
@@ -52,6 +52,12 @@ class CircuitBuilderSpec extends AnyWordSpec with should.Matchers with BeforeAnd
     def initialState: Unit = ()
     def sample(in: Int, at: SimInstant, s: Unit, rng: UniformRandomProvider): Emission[Unit, Int, Int] =
       Emission((), Scheduled(in, 0.0), List(Scheduled(in * 10, 0.0)))
+
+  /** Answers `ok<n>`; counts requests, no consumption. */
+  private final class IntToString extends ComponentSampler[Int, Int, String, Nothing]:
+    def initialState: Int = 0
+    def sample(in: Int, at: SimInstant, s: Int, rng: UniformRandomProvider): Emission[Int, String, Nothing] =
+      Emission(s + 1, Scheduled(s"ok$in", 0.0), Nil)
 
   /** Answers `s + "!"`; no consumption. */
   private final class Shout extends ComponentSampler[Unit, String, String, Nothing]:
@@ -204,6 +210,26 @@ class CircuitBuilderSpec extends AnyWordSpec with should.Matchers with BeforeAnd
       pinned(0) shouldBe baseline(0)
       pinned(2) shouldBe baseline(2)
       pinned(1).head shouldBe RandomSource.KISS.create(99L).nextLong()
+    }
+
+    "wire a gate with gateVia and return its handles from buildWith" in {
+      val (circuit, (gate, server)) = Circuit.buildWith[Int, String, Nothing] { b =>
+        val srv   = b.node("server", new IntToString)
+        val notes = b.node("notes", new Shout)
+        val g     = b.gateVia("gate", new FlatThrottleGate[Int, String](capacityPerTick = 1, rejectResponse = "no"))(
+          admitTo = srv.in, rejectTo = notes.in) { case Reject(req, resp) => s"denied-$req-$resp" }
+        b.input(g.in)
+        b.output(srv.out)
+        b.output(notes.out)
+        (g, srv)
+      }
+      val out = runCircuit(Circuit.componentOf(circuit, rng()), framed(Seq((1L, 0.1, 1), (1L, 0.2, 2)), horizon = 2L))
+
+      timedOnly(out.fwd).map(_.event) shouldBe Seq("ok1", "denied-2-no!") // the rejection carried its request
+      out.mat.stateOf(server) shouldBe 1                                  // only the admitted request reached it
+      // Handles come straight from the build block. The gate's counter is back to 0: onTick resets it at every tick
+      // boundary, and the last boundary of the run is the flush tick — the admissions themselves show in the outputs.
+      out.mat.stateOf(gate) shouldBe FlatThrottleGate.State(0)
     }
 
     "be reusable: materializing one blueprint twice with equal seeds gives identical runs" in {

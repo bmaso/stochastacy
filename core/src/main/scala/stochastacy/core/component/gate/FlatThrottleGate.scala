@@ -6,8 +6,9 @@ import stochastacy.sim.SimInstant
 
 /** A flat per-tick rate gate: admits the first `capacityPerTick` requests to arrive in a tick and
  *  rejects the rest, resetting the counter at each tick boundary. The domain supplies the response a
- *  rejection returns (e.g. a 429). Generic over the request/response types — carries no domain
- *  knowledge beyond that one response value. The generic form of the store demo's `AdmissionSampler`.
+ *  rejection returns (e.g. a 429); the rejection also carries the request, so a client in a feedback
+ *  loop can retry it. Generic over the request/response types — carries no domain knowledge beyond that
+ *  one response value. The generic form of the store demo's `AdmissionSampler`.
  *
  *  Because the cap is instantaneous per tick, a workload whose *mean* rate is under capacity still
  *  throttles during bursts — throttling keys off the per-tick count, not the mean. */
@@ -26,7 +27,7 @@ final class FlatThrottleGate[Req, Resp](
     if state.admittedThisTick < capacityPerTick then
       Emission(FlatThrottleGate.State(state.admittedThisTick + 1), Scheduled(Admit(req), latencyTicks), Nil)
     else
-      Emission(state, Scheduled(Reject(rejectResponse), latencyTicks), Nil)
+      Emission(state, Scheduled(Reject(req, rejectResponse), latencyTicks), Nil)
 
 object FlatThrottleGate:
   final case class State(admittedThisTick: Int)

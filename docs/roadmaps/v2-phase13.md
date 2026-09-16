@@ -107,9 +107,10 @@ Ticks are 1 s; a session makes several loop round trips inside one tick.
 | 1 | Sampler contract: input time + emitting feedback | **Done** | `at` passed to `sample`/`onFeedback`; `FeedbackEmission` with optional output; both transducer stages updated; every existing scenario **byte-identical** (all baseline specs unchanged); full `sbt test` |
 | 2 | Circuit engine | **Done** | calendar stage over erased nodes: zero-delay self-loop ordered exactly; cross-tick loop; `onTick` order; residue; runaway cap; determinism; **a one-node circuit ≡ `componentOf`** byte-identically |
 | 3 | Typed circuit builder + wiretap | **Done** | typed ports/edges/transforms; external routing; consumption mapping; per-node states + RNGs; build-time validation; wiretap; tailgate-shaped unit wiring (gate Admit/Reject edges, tap self-edge timeout); `Interface.wrap` around a circuit |
-| 4 | MM1 demo | Planned | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
-| 5 | Theory baseline | Planned | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
-| 6 | Docs + close-out | Planned | catalog circuit section; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C3 closed; program roadmap; memory; full `sbt test`; `sbt publishLocal` for tailgate |
+| 4 | Gates in circuits | **Done** | correlated `Reject(request, response)` across all four gates; a continuous-refill token bucket (backlog C2, pulled forward); gate wiring sugar; `Circuit.buildWith` handles; each gate proven in a retry loop; demo JSONLs byte-identical |
+| 5 | MM1 demo | Planned | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
+| 6 | Theory baseline | Planned | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
+| 7 | Docs + close-out | Planned | catalog circuit + gate sections; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C2/C3/C5 closed; program roadmap; memory; full `sbt test`; `sbt publishLocal` for tailgate |
 
 ## Slices
 
@@ -223,7 +224,47 @@ green (572). Findings: handles must be captured outside the `build` block (e.g. 
 — an ergonomics gap to settle before the MM1 demo; and core gates reject with a *constant* response that cannot
 identify the rejected request (stochastacy backlog C5).
 
-### Slice 4 — MM1 demo
+### Slice 4 — Gates in circuits
+
+Added 2026-09-15 at Brian's direction: throttling, rate limiting, and failure injection belong in feedback
+simulations, so the shipped gates must work as **circuit nodes in a loop**, not only inline under `Interface.wrap`.
+They already compose as nodes (Slice 3 wires a `FlatThrottleGate` and splits its outcomes); what a loop exposes is
+that a rejection cannot say *which* request it rejected, and that the rate-limiting gates only move at tick
+granularity.
+
+Three changes. **Correlated rejection** (backlog C5): `Reject` carries the request as well as the response
+(`Reject(request, response)`), so every gate correlates without per-gate configuration and an edge can read
+`{ case Reject(req, _) => Retry(req) }`; `Interface.wrap` still emits only the response, so wrapped scenarios are
+unchanged. **A continuous-refill token bucket** (backlog C2, pulled forward from after-tailgate on Brian's call):
+samplers now receive `at`, so the bucket can refill in continuous time rather than once per tick — and the property
+that bounds it (admissions over any interval `T` never exceed `B + r·T`) is directly testable in core, so tailgate can
+consume the gate instead of building its own. **Ergonomics:** gate wiring sugar
+(`b.gate(name, gate, admitTo = …, rejectTo = …)`, adding both filtered edges) and `Circuit.buildWith`, which returns
+the circuit together with the handles the block yields, so `stateOf` needs no `var`.
+
+**Validated by:** each of the four gates as a node in a **retry loop**, where rejections drive retries and the client
+identifies the retried request; the continuous-refill bucket's interval bound as a property test, plus a test that a
+once-per-tick refill **fails** it; the tick-granular gates unchanged; `Interface.wrap` behavior unchanged; and the
+store, store-v2, hot-replica, and capstone demo JSONLs **byte-identical** to pre-change captures (this touches the
+store-v2 and AWS chaos-gate paths). Full `sbt test`.
+
+**Delivered.** `Reject[+Req, +Resp](request, response)` (backlog C5): the three rejecting gates build the rejection
+from the request, their constructors unchanged, so all ~30 construction sites still compile; `Interface.wrap` still
+emits only the response, so wrapped scenarios are untouched. New `ContinuousTokenBucketGate` (backlog C2, pulled
+forward) accrues tokens from elapsed conceptual time (`at.toDouble`) with no `onTick` at all — `TokenBucketGate`
+remains the tick-granular one. Builder additions: `b.gate(name, gate)(admitTo, rejectTo)` delivering the whole
+`Reject(request, response)`, `b.gateVia(…)(…)(rejectAs)` mapping it, and `Circuit.buildWith[In, Out, Cons] { b => … }`
+returning the block's handles beside the circuit (applied in two steps so the handle type is inferred). Migration was
+`Interface.scala` + 3 gates + 8 spec sites — including three `Reject[?]` **type** tests that only an exhaustive grep
+caught. New tests: `GateCircuitLoopSpec` (5 — every shipped gate in a retry loop; the client retries exactly the
+rejected requests **by id**, which is what correlated rejection unlocks) and `ContinuousTokenBucketGateSpec` (4 —
+mid-tick refill, **with the tick-granular bucket shown failing the same case**; the `capacity + refill × T` interval
+bound over all admission pairs; capacity cap across idle time; correlated rejection). Full `sbt test` green (582:
+97 examples + 191 core + 294 aws) and the store, store-v2, hot-replica and capstone JSONLs **byte-identical**. Two
+self-inflicted test defects found by the gate and fixed: `buildWith`'s type-parameter arity (which reshaped the API
+into its two-step form) and an assertion that ignored `FlatThrottleGate`'s per-tick counter reset.
+
+### Slice 5 — MM1 demo
 
 `stochastacy.examples.mm1`: `MM1Config` (λ, μ, p, optional think-time mean, ticks, trials, seed); a session workload
 (exponential inter-arrivals placed within ticks); the `ClientNode` (loopback: `sample(session)` → page 1;
@@ -236,26 +277,28 @@ printing estimate vs theory with confidence intervals for both arms, plus per-tr
 **Validated by:** a demo smoke-run; determinism (same seed → identical output); conservation (sessions in =
 completed + in-flight residue; page requests = page responses + residue).
 
-### Slice 5 — Theory baseline
+### Slice 6 — Theory baseline
 
 `MM1TheoryBaselineSpec`, the phase's proof: for both arms and a small ρ sweep (e.g. 0.5 / 0.8 / 0.9), every metric —
 pages per session, time-average queue length and its geometric distribution, time per page, session duration, busy
 fraction — falls within its Monte Carlo confidence interval of the closed form, with trial counts sized so the
 check is meaningful and fast. Any failure is investigated to root cause, not tuned away.
 
-### Slice 6 — Docs + close-out
+### Slice 7 — Docs + close-out
 
 `specs/component-catalog.md` gains a circuits section: what a circuit is, when to use a circuit vs the Pekko graph,
 calendar ordering and tie-breaks, the within-window arrival-order limitation of the Pekko loopback stage, the new
-`at` / `FeedbackEmission` contract, and wiretaps. New `specs/README.mm1-demo.md`. CLAUDE.md: engine section, current
-position, and an MM1 demo workflow. Backlog: C1 and C3 closed; C2 (harvest tailgate's continuous-refill gate) still
-scheduled after tailgate. Program roadmap + memory. Full `sbt test`. **`sbt publishLocal`** so tailgate can resume on
+`at` / `FeedbackEmission` contract, and wiretaps — plus a **gates** update: correlated rejection, the continuous-refill
+bucket, and when to use a gate as a circuit node vs. inline under `Interface.wrap`. New `specs/README.mm1-demo.md`.
+CLAUDE.md: engine section, current position, and an MM1 demo workflow. Backlog: C1, C2, C3 and C5 closed (C2 and C5
+land in Slice 4). Program roadmap + memory. Full `sbt test`. **`sbt publishLocal`** so tailgate can resume on
 the new core (tailgate verifies the dependency resolves before its own work continues).
 
 ## Scope boundary
 
-In scope: the contract change, circuits (engine + typed builder + wiretap), and the MM1 demo with its theory
-baseline. Not in scope: multi-inlet circuits; loops *between* circuits or Pekko stages (would need F1's ≥ 1-tick
-registers — recorded in the design note); feedback driven by consumption metrics; exact ordered dispatch in the
-Pekko loopback stage; a Grafana dashboard for MM1; the continuous-refill gate (backlog C2, after tailgate); the
-artifact-coordinate cleanup (backlog B1–B4). After this phase, work returns to tailgate.
+In scope: the contract change, circuits (engine + typed builder + wiretap), **gates usable in feedback loops**
+(correlated rejection + a continuous-refill token bucket), and the MM1 demo with its theory baseline. Not in scope:
+multi-inlet circuits; loops *between* circuits or Pekko stages (would need F1's ≥ 1-tick registers — recorded in the
+design note); feedback driven by consumption metrics; exact ordered dispatch in the Pekko loopback stage; a Grafana
+dashboard for MM1; a metric (consumption) plane on gates — a wiretap on a gate's outcome plane already carries
+throttle metrics; the artifact-coordinate cleanup (backlog B1–B4). After this phase, work returns to tailgate.

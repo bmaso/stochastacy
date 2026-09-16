@@ -56,7 +56,9 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
   second boundary, aligned to t=0). The gap is sub-tick time, addressed by C2.
 
 ### C2. GOAL: a continuous-refill token-bucket gate in core — harvested from tailgate (do after tailgate)
-- **Agreed:** 2026-09-15, Brian. **Scheduled for after tailgate is complete** — do not start before.
+- **Agreed:** 2026-09-15, Brian. Originally scheduled for after tailgate; **PULLED FORWARD into v2/phase13 Slice 4**
+  (2026-09-15) — feedback simulations need real rate limiting, and the interval bound is directly testable in core, so
+  tailgate will consume the core gate instead of building its own.
 - **Goal:** add a continuous-refill token-bucket gate to `stochastacy.core.component.gate`, alongside (not
   replacing) the tick-granular `FlatThrottleGate` / `TokenBucketGate`, which stay correct for tick-level models.
 - **Plan:**
@@ -104,8 +106,9 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
   request was rejected — it can only count rejections.
 - **Fix (options):** a `reject: Req => Resp` function (constant rejection as the special case), keeping the existing
   constructors as overloads; or a correlated `Reject(request, response)` outcome.
-- **Downstream impact:** tailgate's own throttles (the future C2 harvest) should build the rejection from the request.
-  Not blocking — tailgate implements its throttles itself.
+- **Downstream impact:** a client in a feedback loop cannot retry the rejected request.
+- **Status:** **PROMOTED into v2/phase13 Slice 4** (2026-09-15) — `Reject` will carry the request alongside the
+  response, so every gate correlates without per-gate configuration.
 
 ## Documentation
 

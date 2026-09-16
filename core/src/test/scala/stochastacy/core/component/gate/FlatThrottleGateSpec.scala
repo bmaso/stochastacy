@@ -30,7 +30,8 @@ class FlatThrottleGateSpec extends AnyWordSpec with should.Matchers:
 
     "admit up to capacity within a tick and reject the rest with the configured response" in {
       val (outcomes, _) = feedTick(5, gate.initialState)
-      outcomes shouldBe Vector(Admit(Req(0)), Admit(Req(1)), Admit(Req(2)), Reject(Resp("throttled")), Reject(Resp("throttled")))
+      outcomes shouldBe Vector(Admit(Req(0)), Admit(Req(1)), Admit(Req(2)),
+        Reject(Req(3), Resp("throttled")), Reject(Req(4), Resp("throttled"))) // the rejection carries its request
     }
 
     "carry no consumption and stamp the outcome at the configured latency" in {

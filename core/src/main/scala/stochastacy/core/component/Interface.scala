@@ -12,7 +12,10 @@ import stochastacy.sim.{TimedControlEvent, TimedElement, TimedEvent}
  *  `InterfaceOutcome[Req, Resp]`. */
 sealed trait InterfaceOutcome[+Req, +Resp]
 final case class Admit[+Req](request: Req)     extends InterfaceOutcome[Req, Nothing]
-final case class Reject[+Resp](response: Resp) extends InterfaceOutcome[Nothing, Resp]
+/** A rejection carries the **request** as well as the response, so a component that receives the rejection out of
+ *  band — a client node in a circuit's feedback loop — can tell which request was rejected and retry it. Under
+ *  [[Interface.wrap]] only the response is emitted (a rejection *is* the response), exactly as before. */
+final case class Reject[+Req, +Resp](request: Req, response: Resp) extends InterfaceOutcome[Req, Resp]
 
 /** A gate: decides admit-or-reject per request on a request/response edge. It is a [[ComponentSampler]]
  *  whose forward output is an [[InterfaceOutcome]] and whose consumption is fixed to `Nothing` — gates
@@ -54,8 +57,8 @@ object Interface:
       }
     val rejectFlow: Flow[TimedElement[Timed[InterfaceOutcome[Req, Resp]]], TimedElement[Timed[Resp]], NotUsed] =
       Flow[TimedElement[Timed[InterfaceOutcome[Req, Resp]]]].collect {
-        case t: Timed[InterfaceOutcome[Req, Resp]] @unchecked if t.event.isInstanceOf[Reject[?]] =>
-          val resp = t.event.asInstanceOf[Reject[Resp]].response
+        case t: Timed[InterfaceOutcome[Req, Resp]] @unchecked if t.event.isInstanceOf[Reject[?, ?]] =>
+          val resp = t.event.asInstanceOf[Reject[Req, Resp]].response
           (Timed(resp, t.eventTime, t.intraTick, t.usecase): TimedElement[Timed[Resp]])
         case c: TimedControlEvent => c
       }

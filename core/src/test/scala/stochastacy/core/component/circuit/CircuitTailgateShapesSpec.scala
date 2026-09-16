@@ -62,7 +62,7 @@ class CircuitTailgateShapesSpec extends AnyWordSpec with should.Matchers with Be
         b.input(client.in)
         b.connect(client.out, throttle.in)
         b.connectVia(throttle.out, server.in) { case Admit(r) => r }
-        b.connectVia(throttle.out, client.fb) { case Reject(r) => r }
+        b.connectVia(throttle.out, client.fb) { case Reject(_, r) => r }
         b.connect(server.out, client.fb)
       }
       val out = runCircuit(Circuit.componentOf(circuit, rng()), framed(Seq((1L, 0.1, 1), (1L, 0.2, 2), (1L, 0.3, 3)), horizon = 3L))

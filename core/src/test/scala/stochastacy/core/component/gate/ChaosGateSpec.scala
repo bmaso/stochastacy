@@ -20,7 +20,7 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
     "reject with the configured response when the failure draw is certain" in {
       val gate = ChaosGate.constant[Req, Resp](1.0, fail503)
       val e = gate.sample(Req(1), SimInstant(0L, 0.0), gate.initialState, rng)
-      e.output.event shouldBe Reject(fail503)
+      e.output.event shouldBe Reject(Req(1), fail503) // the rejection carries its request
       e.consumption shouldBe Nil
     }
 
@@ -33,7 +33,7 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
       val gate = ChaosGate.constant[Req, Resp](0.5, fail503)
       val outcomes = (0 until 200).map(i => gate.sample(Req(i), SimInstant(0L, 0.0), gate.initialState, rng).output.event)
       outcomes.exists(_.isInstanceOf[Admit[?]]) shouldBe true
-      outcomes.exists(_.isInstanceOf[Reject[?]]) shouldBe true
+      outcomes.exists(_.isInstanceOf[Reject[?, ?]]) shouldBe true
     }
 
     "thread the current tick into the sampler via onTick (time-varying failure rate)" in {
@@ -42,7 +42,7 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
       val atT5  = gate.onTick(5L, gate.initialState).newState
       gate.sample(Req(0), SimInstant(0L, 0.0), atT5, rng).output.event shouldBe Admit(Req(0))
       val atT10 = gate.onTick(10L, atT5).newState
-      gate.sample(Req(0), SimInstant(0L, 0.0), atT10, rng).output.event shouldBe Reject(fail503)
+      gate.sample(Req(0), SimInstant(0L, 0.0), atT10, rng).output.event shouldBe Reject(Req(0), fail503)
     }
   }
 
@@ -63,11 +63,11 @@ class ChaosGateSpec extends AnyWordSpec with should.Matchers:
         (0 until n).foreach { _ =>
           val eo = outer.sample(Req(0), SimInstant(0L, 0.0), so, rng); so = eo.newState
           eo.output.event match
-            case _: Reject[?] => outerRej += 1
+            case _: Reject[?, ?] => outerRej += 1
             case _: Admit[?] =>
               val ei = inner.sample(Req(0), SimInstant(0L, 0.0), si, rng); si = ei.newState
               ei.output.event match
-                case _: Reject[?] => innerRej += 1
+                case _: Reject[?, ?] => innerRej += 1
                 case _: Admit[?]  => served += 1
         }
       }

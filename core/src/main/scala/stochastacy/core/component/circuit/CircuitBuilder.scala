@@ -4,7 +4,7 @@ import scala.collection.mutable
 
 import org.apache.commons.rng.UniformRandomProvider
 
-import stochastacy.core.component.LoopbackComponentSampler
+import stochastacy.core.component.{Admit, InterfaceOutcome, InterfaceSampler, LoopbackComponentSampler, Reject}
 
 /**
  * The builder a [[Circuit]] is described with, inside `Circuit.build { b => … }`. Declare nodes with [[node]], then wire
@@ -53,6 +53,36 @@ final class CircuitBuilder[In, Out, Cons] private[circuit] ():
     consState += ConsRouting.Untouched
     inbound += 0
     new CircuitNode[S, NIn, NFb, NOut, NCons, NTap](name, index, this)
+
+  /** Declare an admit/reject **gate** node and wire both of its outcomes in one call: admitted requests (unwrapped)
+   *  to `admitTo`, and the whole `Reject(request, response)` to `rejectTo` — so a client receiving the rejection out
+   *  of band knows which request to retry. Returns the gate's handle, so its outcome plane can still be wiretapped
+   *  for throttle metrics. */
+  def gate[S, Req, Resp](
+    name:    String,
+    g:       InterfaceSampler[S, Req, Resp],
+    rngSeed: Option[Long] = None
+  )(
+    admitTo:  NodePort[Req],
+    rejectTo: NodePort[Reject[Req, Resp]]
+  ): CircuitNode[S, Req, Nothing, InterfaceOutcome[Req, Resp], Nothing, Nothing] =
+    gateVia(name, g, rngSeed)(admitTo, rejectTo) { case r => r }
+
+  /** As [[gate]], but the rejection is mapped through `rejectAs` before delivery (e.g. into a domain retry event). */
+  def gateVia[S, Req, Resp, B](
+    name:    String,
+    g:       InterfaceSampler[S, Req, Resp],
+    rngSeed: Option[Long] = None
+  )(
+    admitTo:  NodePort[Req],
+    rejectTo: NodePort[B]
+  )(
+    rejectAs: PartialFunction[Reject[Req, Resp], B]
+  ): CircuitNode[S, Req, Nothing, InterfaceOutcome[Req, Resp], Nothing, Nothing] =
+    val node = this.node(name, g, rngSeed)
+    connectVia(node.out, admitTo) { case a: Admit[Req] @unchecked => a.request }
+    connectVia(node.out, rejectTo) { case r: Reject[Req, Resp] @unchecked if rejectAs.isDefinedAt(r) => rejectAs(r) }
+    node
 
   /** Wire a node's `out` or `taps` plane into a node port, unchanged. */
   def connect[A](from: EmissionPlane[A], to: NodePort[A]): Unit =

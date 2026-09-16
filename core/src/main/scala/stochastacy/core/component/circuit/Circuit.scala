@@ -50,10 +50,31 @@ object Circuit:
    * inbound route (it would never be dispatched), or if a node with real (non-`Nothing`) consumption neither routes nor
    * explicitly ignores it. A circuit with no forward-output route is valid (it reports through consumption only).
    */
-  def build[In, Out, Cons](body: CircuitBuilder[In, Out, Cons] => Unit): Circuit[In, Out, Cons] =
-    val b = new CircuitBuilder[In, Out, Cons]()
-    body(b)
-    b.result()
+  def build[In, Out, Cons](body: CircuitBuilder[In, Out, Cons] => Any): Circuit[In, Out, Cons] =
+    buildWith[In, Out, Cons](body)._1
+
+  /**
+   * As [[build]], but the block's value is returned alongside the circuit — the way to keep the node handles a run's
+   * [[CircuitResult.stateOf]] needs:
+   *
+   * {{{
+   * val (circuit, (client, server)) = Circuit.buildWith[Session, Nothing, Fact] { b =>
+   *   val client = b.node("client", new ClientNode(cfg))
+   *   val server = b.node("server", new ServerNode(cfg))
+   *   …
+   *   (client, server)
+   * }
+   * }}}
+   */
+  def buildWith[In, Out, Cons]: BuildWith[In, Out, Cons] = new BuildWith[In, Out, Cons]()
+
+  /** The second half of [[buildWith]]'s application: the circuit's three type parameters are given explicitly, and the
+   *  block's handle type is inferred. */
+  final class BuildWith[In, Out, Cons] private[circuit] ():
+    def apply[H](body: CircuitBuilder[In, Out, Cons] => H): (Circuit[In, Out, Cons], H) =
+      val b      = new CircuitBuilder[In, Out, Cons]()
+      val handle = body(b)
+      (b.result(), handle)
 
   /**
    * Materialize `circuit` as a running component. Each node gets its own RNG: a seed is drawn from `rng` for **every**
