@@ -101,5 +101,10 @@ case object SystemErrorResponse extends DynamoDbResponse
 
 /** The error response to a provisioned request throttled because its demand would exceed the table's (or a
  *  GSI's) per-tick provisioned capacity — DynamoDB's `ProvisionedThroughputExceededException`. No capacity
- *  is consumed and no state is mutated. */
-case object ThrottledResponse extends DynamoDbResponse
+ *  is consumed and no state is mutated.
+ *
+ *  The throttled **request** rides along, as a gate's `Reject(request, response)` does, so a client that receives the
+ *  throttle — a client node retrying against the table in a circuit — can re-send exactly that request. (For a
+ *  throttled transaction it is the whole transaction request.) To carry a client's own context through the table as
+ *  well, see [[DynamoDbTable.withContext]]. */
+final case class ThrottledResponse(request: DynamoDbRequest) extends DynamoDbResponse

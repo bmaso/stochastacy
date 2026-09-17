@@ -42,7 +42,7 @@ class ReplicationSpec extends AnyWordSpec with should.Matchers:
     "tap nothing for a throttled write" in {
       val s = sampler(billing = BillingMode.Provisioned(readCapacityUnits = 1, writeCapacityUnits = 1))
       val e = s.sample(PutItemRequest(10240L), SimInstant(0L, 0.0), s.initialState, rng) // 10 WCU ≫ ceiling 1 → throttled
-      e.output.event shouldBe ThrottledResponse
+      e.output.event shouldBe ThrottledResponse(PutItemRequest(10240L))
       e.taps shouldBe empty
     }
   }

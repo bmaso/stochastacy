@@ -167,13 +167,15 @@ by priority.
 
 ## Beyond parity
 
-- **v2/phase13 — Closed-loop circuits. IN PROGRESS (Slices 1–7 done; Slice 7b and close-out remaining).** The first phase driven by a
+- **v2/phase13 — Closed-loop circuits. DONE (2026-09-16; 8 slices; published locally as 0.0.2).** The first phase driven by a
   **downstream project**: `tailgate` (a throttle-comparison simulator built outside this repo) needs a client retry
   loop that closes within a tick, which the core could not compose. A **circuit** — one transducer stage hosting
   sampler nodes and a cyclic wiring, run by an internal calendar ordered by conceptual time — makes such loops
   exact while presenting an ordinary component outside. Opens with a sampler contract change (input time passed
   to samplers; `onFeedback` may emit a request). Proven by the **MM1 demo** (M/M/1 with Bernoulli feedback) against
-  its closed-form solution — 140 checks at three loads in two arms, all within a family-wise band. Tailgate resumes
+  its closed-form solution — 140 checks at three loads in two arms, all within a family-wise band. A DynamoDB table
+  also works in a client loop: throttles carry their request, and `DynamoDbTable.withContext` returns a client's own
+  context with each response. Tailgate resumes
   immediately after. Roadmap: `v2-phase13.md`; design exploration: `v2-phase13-design.md`; guides:
   `specs/component-catalog.md` (circuits, and the rubric for when one is required), `specs/README.mm1-demo.md`.
 

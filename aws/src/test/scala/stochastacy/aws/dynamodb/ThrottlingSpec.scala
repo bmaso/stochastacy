@@ -47,7 +47,7 @@ class ThrottlingSpec extends AnyWordSpec with should.Matchers:
       st.base.itemCount shouldBe 3L
 
       val throttled = put() // 4th write: 3 + 1 > 3
-      throttled.output.event shouldBe ThrottledResponse
+      throttled.output.event shouldBe ThrottledResponse(PutItemRequest(1024L))
       throttled.consumption.map(_.event) shouldBe List(RequestThrottled(DynamoDbTarget.Table))
       st.base.itemCount shouldBe 3L // no state mutation on a throttle
 
@@ -67,7 +67,7 @@ class ThrottlingSpec extends AnyWordSpec with should.Matchers:
       put().output.event shouldBe a[PutItemResponse] // GSI "g" consumed 1
       put().output.event shouldBe a[PutItemResponse] // GSI "g" consumed 2
       val throttled = put()                           // GSI "g" would hit 3 > 2 (base still fine)
-      throttled.output.event shouldBe ThrottledResponse
+      throttled.output.event shouldBe ThrottledResponse(PutItemRequest(1024L))
       throttled.consumption.map(_.event) shouldBe List(RequestThrottled(DynamoDbTarget.Gsi("g")))
     }
   }

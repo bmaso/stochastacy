@@ -15,7 +15,7 @@ lazy val Versions = new {
 lazy val core = (project in file("core"))
   .settings(
     name := "stochastacy",
-    version := "0.0.1",
+    version := "0.0.2",
     libraryDependencies ++= Seq(
       // Pekko -- streaming
       "org.apache.pekko" %% "pekko-stream" % Versions.pekkoStreamVersion,
@@ -49,7 +49,7 @@ lazy val examples = (project in file("examples"))
   .dependsOn(aws)
   .settings(
     name := "stochastacy-examples",
-    version := "0.0.1",
+    version := "0.0.2",
 
     // examples often want logging + runtime deps
     libraryDependencies ++= Seq(
@@ -64,7 +64,7 @@ lazy val aws = (project in file("aws"))
   .dependsOn(core)
   .settings(
     name := "stochastacy-aws",
-    version := "0.0.1",
+    version := "0.0.2",
 
     // the AWS line's v2 components + example code; inherits the v2 engine + commons-rng via core
     libraryDependencies ++= Seq(

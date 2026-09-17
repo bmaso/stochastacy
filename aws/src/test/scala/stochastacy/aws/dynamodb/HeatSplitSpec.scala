@@ -49,8 +49,8 @@ class HeatSplitSpec extends AnyWordSpec with should.Matchers:
     while !done do
       val e: LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng)
       e.output.event match
-        case ThrottledResponse => done = true
-        case _                 => st = e.newState; n += 1
+        case _: ThrottledResponse => done = true
+        case _                    => st = e.newState; n += 1
     (n, st)
 
   /** Saturate one tick's worth of writes to the concentrated key, then cross the tick boundary. */

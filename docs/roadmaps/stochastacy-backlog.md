@@ -119,7 +119,7 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
   alongside the response, so every gate correlates without per-gate configuration; `Interface.wrap` still emits only
   the response.
 
-### C6. A throttled DynamoDB table response can't identify the request
+### C6. A throttled DynamoDB table response can't identify the request — DONE (v2/phase13 Slice 7b)
 - **Found:** v2/phase13 Slice 7, documenting a DynamoDB table as a circuit node (2026-09-16).
 - **Issue:** the table's intrinsic capacity throttle answers with `ThrottledResponse`, a `case object`, and no
   DynamoDB request or response carries identity — so a client node retrying against a *table* in a circuit cannot
@@ -130,7 +130,12 @@ Triage rule: fix in stochastacy immediately only when it **blocks** downstream w
   correlates the downstream response). Approved by Brian as J1(b); must stay byte-identical on every demo and
   baseline.
 - **Downstream impact:** a retrying client loop against a DynamoDB table in a circuit. Not blocking tailgate.
-- **Status:** **SCHEDULED — v2/phase13 Slice 7b.**
+- **Status:** **DONE in v2/phase13 Slice 7b.** `ThrottledResponse(request)` as planned. Planning the slice showed the
+  carried request alone was not enough: DynamoDB requests carry no identity (`GetItemRequest` is a `case object`; two
+  1 KB puts are equal), so a client could re-send a throttled payload but could not cap attempts or tie an answer to a
+  logical request. Brian approved K5(a): `DynamoDbTable.withContext[C]`, a table sampler that returns the caller's own
+  context with every response (`Contextual(context, value)`) — no invented IDs; the caller chooses the context. Proven by
+  `ContextualTableSpec` and `CircuitDynamoDbRetrySpec`; all seven captured demo JSONLs byte-identical.
 
 ## Documentation
 

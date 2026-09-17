@@ -1,6 +1,6 @@
 # v2/phase13 — Closed-loop circuits
 
-**Status: IN PROGRESS** (roadmap approved 2026-09-15; Slices 1–7 done; Slice 7b and close-out remaining). Gives `stochastacy.core` **closed feedback
+**Status: COMPLETE** (roadmap approved 2026-09-15; all 8 slices done 2026-09-16; published locally as 0.0.2). Gives `stochastacy.core` **closed feedback
 loops by composition** — including loops that close *inside* a tick — proven by the **MM1 demo** (an M/M/1 queue
 with Bernoulli feedback, checked against its closed-form solution). **Immediately after this phase, work resumes on
 `tailgate`** (the throttle-comparison simulator for Brian's article, on hold until this lands), so the close-out
@@ -111,7 +111,7 @@ Ticks are 1 s; a session makes several loop round trips inside one tick.
 | 5 | MM1 demo | **Done** | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
 | 6 | Theory baseline | **Done** | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
 | 7 | Circuit docs + MM1 guide | **Done** | core catalog circuits section with the circuit-vs-direct-wiring **rubric** + gate updates; AWS catalog; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C2/C3/C5 closed, C6 logged; every relative link and anchor resolves; full `sbt test` |
-| 7b | DynamoDB correlated throttle + close-out | Planned | `ThrottledResponse(request)` (backlog C6); byte-identical demos and baselines; a retrying client against a table in a circuit; AWS catalog; version `0.0.2`; full `sbt test`; `sbt publishLocal`; phase COMPLETE; PR |
+| 7b | DynamoDB correlated throttle + close-out | **Done** | `ThrottledResponse(request)` (backlog C6) + `DynamoDbTable.withContext`; seven demo JSONLs byte-identical; a retrying client against a provisioned table in a circuit; AWS catalog; version `0.0.2`; full `sbt test`; `sbt publishLocal` |
 
 ## Slices
 
@@ -402,16 +402,63 @@ bad anchor) resolves all 97 relative links across `specs/`, including the new an
 ### Slice 7b — DynamoDB correlated throttle + close-out
 
 Close backlog **C6**: `final case class ThrottledResponse(request: DynamoDbRequest)` replaces the `case object`, mirroring
-`Reject(request, response)`, and every match site becomes `ThrottledResponse(_)`. Successful responses are unchanged — as
-a gate's `Admit` never correlates the downstream response, a client needing context on a success carries it on its
-request. `SystemErrorResponse` is unchanged (already correlated by its `ChaosGate`).
+`Reject(request, response)`. `SystemErrorResponse` is unchanged (already correlated by its `ChaosGate`). Then close the
+phase: roadmaps, CLAUDE.md, memory, version `0.0.2`, full `sbt test`, `sbt publishLocal`.
 
-**Validated by:** every demo JSONL and baseline spec byte-identical; a spec with a retrying client node against a
-provisioned table in a circuit, retrying exactly the requests the table throttled; the AWS catalog updated (protocol,
-`DynamoDbTable` composition, quick reference); link check re-run.
+**A gap found while planning (K5).** The carried request alone does not let a client do its job: DynamoDB requests carry
+no identity (`GetItemRequest` is a `case object`; two 1 KB puts are equal) and, unlike a gate's caller-typed `Req`, the
+protocol is fixed — so a client could re-send a throttled payload but not cap attempts per request or tie an answer to a
+logical request. Brian rejected a generic request-ID wrapper (an invented concept) and approved a **context adapter**:
+the caller chooses what rides along.
 
-**Close-out.** Phase and program roadmaps COMPLETE; CLAUDE.md and memory; all modules to version **`0.0.2`**; full `sbt
-test`; **`sbt publishLocal`**; the phase PR description. Work then returns to tailgate, separately.
+**Delivered.**
+- `ThrottledResponse(request)`, produced with the request the table was given (a throttled transaction carries the whole
+  transaction request).
+- `Contextual[C, A](context, value)` and `DynamoDbTable.withContext[C](config)` (`ContextualTableSampler`, aws module):
+  `Contextual(c, request)` in, `Contextual(c, response)` out, for successes and throttles alike; state, consumption, taps,
+  latency, `onTick` and `onFeedback` exactly the table's; a feedback *output* fails loudly (it would have no context).
+  Sampler only — no pipeline variant (L1–L4 as recommended).
+- Every use site rewritten (11 across 8 files). `ContextualTableSpec` (4 tests) and `CircuitDynamoDbRetrySpec`: ten
+  1-WCU puts against a 3-WCU ceiling, retried one tick later up to three attempts — served {1…9}, request 10 given up,
+  retries exactly {4…10} then {7…10}, every re-send equal to the original request, `RequestThrottled` 7/4/1 and
+  `WriteCapacityConsumed` 3/3/3 per tick, 9 items stored — all as worked by hand.
+- AWS catalog (protocol entry, `DynamoDbTable` composition with a retry sketch, throttling paragraph, exercised-by,
+  quick reference), `README.thermostat-v2.md`, backlog C6 DONE. All modules at version **0.0.2**.
+
+**Two hazards the change carried, handled before they bit.** After the type change, `t.event == ThrottledResponse` (the
+hot-key runner) and `case ThrottledResponse =>` still **compile** — they compare against the companion object. The
+runner would have silently counted zero throttles, and three specs that loop `while !done` until a throttle matches would
+have **hung** instead of failing. Every site was rewritten explicitly and a final grep confirmed none remain. Lesson: a
+`case object` → `case class` change must be grepped for equality and stable-identifier patterns, not only constructors.
+
+**One spec mistake, found by the spec.** The retry spec first used payloads of `1024 + n` bytes — over 1 KB, so 2 WCU each —
+and served only requests 1–3. Diagnostics showed the table was right; the payloads now stay ≤ 1 KB, and the hand-worked
+expectations were not changed.
+
+**Verified.** Full `sbt test` green (**606**). Seven demo JSONLs captured before the change — store, store-v2, hot-replica,
+capstone, and the three that throttle (hot-key, thermostat mixed-mode, thermostat auto-scaling) — are **byte-identical**
+after it (`cmp`). Link check: 98 relative links across `specs/`, none broken. `sbt publishLocal` published
+`stochastacy_3`, `stochastacy-aws_3` and `stochastacy-examples_3` at `0.0.2` (each under its own module name as group —
+backlog B1).
+
+## Phase close-out
+
+Phase 13 set out to give `stochastacy.core` closed feedback loops by composition, without a heroic monolithic sampler,
+and delivered:
+
+- **The contract** (Slice 1): samplers see an input's conceptual time `at`; `onFeedback` may emit a request.
+- **Circuits** (Slices 2–3): one stage hosting sampler nodes and a cyclic wiring, dispatched from a calendar in
+  conceptual-time order, so loops close exactly — even within a tick; a typed builder where bad wiring does not compile;
+  wiretaps; a one-node circuit output-identical to `componentOf`, on toys and on the real DynamoDB table.
+- **Gates in loops** (Slice 4): correlated `Reject(request, response)`, `ContinuousTokenBucketGate`, gate wiring sugar.
+- **The proof** (Slices 5–6): the MM1 demo against M/M/1-with-feedback closed forms — 140 checks at three loads in two
+  arms within a family-wise 5 % band, with a negative control rejected at z = −13.67.
+- **Documentation** (Slice 7): the circuits section and its rubric for when a circuit is required; the MM1 guide.
+- **DynamoDB in loops** (Slice 7b): correlated throttles and caller context through the table.
+
+Backlog closed: C1, C2, C3, C5, C6. Still open: B1–B4 (artifact coordinates and dependencies), C4 (histogram quantile
+resolution). Every pre-existing scenario stayed byte-identical at each contract change. Work returns to tailgate as a
+separate project, depending on `"stochastacy" %% "stochastacy" % "0.0.2"`.
 
 ## Scope boundary
 
@@ -420,4 +467,5 @@ In scope: the contract change, circuits (engine + typed builder + wiretap), **ga
 multi-inlet circuits; loops *between* circuits or Pekko stages (would need F1's ≥ 1-tick registers — recorded in the
 design note); feedback driven by consumption metrics; exact ordered dispatch in the Pekko loopback stage; a Grafana
 dashboard for MM1; a metric (consumption) plane on gates — a wiretap on a gate's outcome plane already carries
-throttle metrics; the artifact-coordinate cleanup (backlog B1–B4). After this phase, work returns to tailgate.
+throttle metrics; the artifact-coordinate cleanup (backlog B1–B4). Added during the phase: correlated DynamoDB throttles
+and the table's context adapter (Slice 7b). After this phase, work returns to tailgate.

@@ -58,7 +58,7 @@ final class HotKeyTrialRunner()(using ActorSystem, Materializer, ExecutionContex
           case t: Timed[DynamoDbResponse] @unchecked =>
             val tick       = t.eventTime.ticks
             val (off, thr) = acc.getOrElse(tick, (0L, 0L))
-            acc.updated(tick, (off + 1L, if t.event == ThrottledResponse then thr + 1L else thr))
+            acc.updated(tick, (off + 1L, t.event match { case _: ThrottledResponse => thr + 1L; case _ => thr }))
       }
 
     val graph = RunnableGraph.fromGraph(

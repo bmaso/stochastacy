@@ -78,10 +78,10 @@ class ReconfigurationSpec extends AnyWordSpec with should.Matchers:
       st = s.onTick(5L, st).newState // switch to Provisioned(2 WCU)
       put().output.event shouldBe a[PutItemResponse] // 1
       put().output.event shouldBe a[PutItemResponse] // 2
-      put().output.event shouldBe ThrottledResponse  // 3rd over the 2 WCU ceiling
+      put().output.event shouldBe ThrottledResponse(PutItemRequest(1024L)) // 3rd over the 2 WCU ceiling
 
       st = s.onTick(9L, st).newState // capacity widened to 4 WCU
       (1 to 4).foreach(_ => put().output.event shouldBe a[PutItemResponse]) // 4 now fit
-      put().output.event shouldBe ThrottledResponse                        // 5th over the 4 WCU ceiling
+      put().output.event shouldBe ThrottledResponse(PutItemRequest(1024L)) // 5th over the 4 WCU ceiling
     }
   }

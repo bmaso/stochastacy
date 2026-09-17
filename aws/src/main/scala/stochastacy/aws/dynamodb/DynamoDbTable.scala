@@ -172,7 +172,7 @@ object DynamoDbTable:
           // A throttled write is not admitted, so it taps nothing to replicate.
           LoopbackEmission(
             newState    = state, // base / indexes / currentTick / budget all preserved
-            output      = Scheduled(ThrottledResponse, math.max(0.0, latency)),
+            output      = Scheduled(ThrottledResponse(in), math.max(0.0, latency)),
             consumption = List(Scheduled(RequestThrottled(firstOverTarget(allConsumption, state.perTickBudget, p)), 0.0)),
             taps        = Nil
           )
@@ -362,3 +362,10 @@ object DynamoDbTable:
     Future[ComponentResult[TableState]]
   ] =
     ScheduleReleaseTransducer.loopbackComponentOf(new DynamoDbTableSampler(config), rng)
+
+  /** The table as a sampler that answers each request **with the caller's context**: `Contextual(c, request)` in,
+   *  `Contextual(c, response)` out, for successes and throttles alike — otherwise exactly [[DynamoDbTableSampler]]. For a
+   *  client node in a circuit that needs its own context back with every answer (a request number, an attempt count);
+   *  see [[ContextualTableSampler]]. */
+  def withContext[C](config: Config): ContextualTableSampler[C] =
+    new ContextualTableSampler[C](new DynamoDbTableSampler(config))
