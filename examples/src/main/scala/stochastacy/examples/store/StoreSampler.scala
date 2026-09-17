@@ -3,6 +3,7 @@ package stochastacy.examples.store
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.statistics.distribution.PoissonDistribution
 import stochastacy.core.component.{ComponentSampler, Delay, Emission, Scheduled}
+import stochastacy.sim.SimInstant
 
 /** The datastore behavior for the store simulator, as a `ComponentSampler` over the bounded summary
  *  [[StoreState]]. For each request it produces exactly one response (a success- or error-variant of
@@ -21,6 +22,7 @@ final class StoreSampler(cfg: StoreConfig)
 
   def sample(
     req:   StoreRequest,
+    at:    SimInstant,
     state: StoreState,
     rng:   UniformRandomProvider
   ): Emission[StoreState, StoreResponse, Consumption] =

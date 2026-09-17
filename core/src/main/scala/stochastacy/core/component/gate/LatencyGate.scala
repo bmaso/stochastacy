@@ -3,6 +3,7 @@ package stochastacy.core.component.gate
 import org.apache.commons.rng.UniformRandomProvider
 import stochastacy.core.component.{Admit, Emission, InterfaceSampler, Scheduled, TickEmission}
 import stochastacy.core.sampler.{ConstantSampler, StatelessSampler}
+import stochastacy.sim.SimInstant
 
 /** A latency gate: admits *every* request and adds a latency drawn per request from a distribution.
  *  The pure decorator — it never rejects — so it exercises the interface's admit-only path.
@@ -19,7 +20,7 @@ final class LatencyGate[Req, Resp](latency: StatelessSampler[Double])
 
   override def onTick(tick: Long, state: Long): TickEmission[Long, Nothing] = TickEmission(tick, Nil)
 
-  def sample(req: Req, state: Long, rng: UniformRandomProvider) =
+  def sample(req: Req, at: SimInstant, state: Long, rng: UniformRandomProvider) =
     val (drawn, _) = latency.sample(state, rng, ())
     Emission(state, Scheduled(Admit(req), math.max(0.0, drawn)), Nil)
 

@@ -1,5 +1,7 @@
 package stochastacy.core.component.gate
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
@@ -20,10 +22,10 @@ class TokenBucketGateSpec extends AnyWordSpec with should.Matchers:
     arrivalsPerTick.zipWithIndex.foreach { case (n, i) =>
       st = gate.onTick(i + 1L, st).newState
       (0 until n).foreach { _ =>
-        val e = gate.sample(Req(0), st, rng)
+        val e = gate.sample(Req(0), SimInstant(0L, 0.0), st, rng)
         e.output.event match
           case _: Admit[?]  => admitted += 1
-          case _: Reject[?] => rejected += 1
+          case _: Reject[?, ?] => rejected += 1
         st = e.newState
       }
     }

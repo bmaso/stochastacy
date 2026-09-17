@@ -1,5 +1,7 @@
 package stochastacy.aws.dynamodb
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
@@ -31,16 +33,16 @@ class ReplicationSpec extends AnyWordSpec with should.Matchers:
   "A local admitted write" should {
     "tap exactly one ReplicationWrite carrying the write" in {
       val s = sampler()
-      s.sample(PutItemRequest(1024L), s.initialState, rng).taps.map(_.event) shouldBe List(ReplicationWrite(OperationOutcome.Put(1024L, None)))
+      s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), s.initialState, rng).taps.map(_.event) shouldBe List(ReplicationWrite(OperationOutcome.Put(1024L, None)))
     }
     "tap nothing for a read" in {
       val s = sampler()
-      s.sample(GetItemRequest, s.initialState, rng).taps shouldBe empty
+      s.sample(GetItemRequest, SimInstant(0L, 0.0), s.initialState, rng).taps shouldBe empty
     }
     "tap nothing for a throttled write" in {
       val s = sampler(billing = BillingMode.Provisioned(readCapacityUnits = 1, writeCapacityUnits = 1))
-      val e = s.sample(PutItemRequest(10240L), s.initialState, rng) // 10 WCU ≫ ceiling 1 → throttled
-      e.output.event shouldBe ThrottledResponse
+      val e = s.sample(PutItemRequest(10240L), SimInstant(0L, 0.0), s.initialState, rng) // 10 WCU ≫ ceiling 1 → throttled
+      e.output.event shouldBe ThrottledResponse(PutItemRequest(10240L))
       e.taps shouldBe empty
     }
   }
@@ -48,7 +50,7 @@ class ReplicationSpec extends AnyWordSpec with should.Matchers:
   "onFeedback (an inbound replicated write)" should {
     "bill rWCU (not WCU) for base and index, grow storage, and never re-tap" in {
       val s  = sampler(gsi = true)
-      val te = s.onFeedback(ReplicationWrite(OperationOutcome.Put(1024L, None)), s.initialState, rng)
+      val te = s.onFeedback(ReplicationWrite(OperationOutcome.Put(1024L, None)), SimInstant(0L, 0.0), s.initialState, rng)
       val facts = te.consumption.map(_.event)
       facts.collect { case ReplicatedWriteCapacityConsumed(_, t) => t }.toSet shouldBe Set(DynamoDbTarget.Table, DynamoDbTarget.Gsi("g"))
       facts.collect { case _: WriteCapacityConsumed => () }                    shouldBe empty
@@ -56,7 +58,7 @@ class ReplicationSpec extends AnyWordSpec with should.Matchers:
     }
     "always admit even under a tiny provisioned ceiling (rWCU ungated this slice)" in {
       val s  = sampler(billing = BillingMode.Provisioned(readCapacityUnits = 1, writeCapacityUnits = 1))
-      val te = s.onFeedback(ReplicationWrite(OperationOutcome.Put(10240L, None)), s.initialState, rng)
+      val te = s.onFeedback(ReplicationWrite(OperationOutcome.Put(10240L, None)), SimInstant(0L, 0.0), s.initialState, rng)
       te.consumption.map(_.event).collect { case _: ReplicatedWriteCapacityConsumed => () } should not be empty
     }
   }

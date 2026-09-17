@@ -129,7 +129,7 @@ class DynamoDbTableTransactionSpec extends AnyWordSpec with should.Matchers with
       val input = Vector(req(1L, TransactWriteItemsRequest(Vector(2000L, 2000L))))
 
       val (resp, cons) = runPlanes(cfg, input, ticks = 3L)
-      responses(resp).map(_.event)    shouldBe Seq(ThrottledResponse)
+      responses(resp).map(_.event)    shouldBe Seq(ThrottledResponse(TransactWriteItemsRequest(Vector(2000L, 2000L))))
       consumptions(cons).map(_.event) shouldBe Seq(RequestThrottled(Table)) // no WCU / no storage
       // all-or-nothing: no sub-write applied
       runResult(cfg, input, ticks = 3L).finalState.base shouldBe TableSummaryState.empty

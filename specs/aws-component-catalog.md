@@ -12,7 +12,8 @@ Scope today is **DynamoDB** — a single table with **Query/Scan and secondary i
 provisioned billing** (with throttling, scheduled reconfiguration, burst capacity, and reactive auto-scaling),
 **hot-partition throttling + adaptive capacity**, **item TTL** (storage expiry), and **transactions** (2×
 capacity), composable into **multi-table** simulations and **multi-region Global Tables** (cross-region
-replication with rWCU billing + throttling). This catalog grows as the AWS line does.
+replication with rWCU billing + throttling), and hostable as a node of a core **circuit** when a client loop
+runs against it. This catalog grows as the AWS line does.
 
 ## How to read an entry
 
@@ -105,13 +106,35 @@ configuration for intrinsic table structure*). Because it presents a `Req → Re
 [Thermostat-fleet demo](README.thermostat-v2.md) wraps the table with a `ChaosGate` at the table's inlet to
 model DynamoDB's intrinsic ~0.1 % transient failures (a rejected request consumes nothing) — the first
 realized decoration on an AWS table.
+**A table can also be a [circuit](component-catalog.md#circuits) node** — `DynamoDbTable.DynamoDbTableSampler`
+is an ordinary loopback sampler, and a one-node circuit hosting it is output-identical to
+`DynamoDbTable.componentOf`. Put the table in a circuit when a client in the simulation *reacts* to its
+responses — retrying a throttled request, following a write with a read — and that loop can close within a
+tick; the core catalog's [rubric](component-catalog.md#when-a-circuit-is-required) decides. (Its taps, unused
+in a single-region circuit, are simply left unrouted.) Two things make such a client work:
+- **A throttle carries its request.** The table answers a throttled request with `ThrottledResponse(request)`,
+  so the client can re-send exactly that request — as a gate's `Reject(request, response)` does.
+- **The client's own context comes back with every answer.** The DynamoDB request types are fixed and carry no
+  identity (two 1 KB puts are equal), so a client cannot attach its own context to a request the way a gate's
+  caller can. `DynamoDbTable.withContext[C](config)` is the table as a sampler taking `Contextual(c, request)` and
+  answering `Contextual(c, response)` — for successes and throttles alike — with everything else unchanged
+  (state, consumption, taps, latency; replicated writes still apply). The context is whatever the client needs:
+  a request number, an attempt count, when a session started.
+
+```scala
+val table = b.node("table", DynamoDbTable.withContext[Attempt](config))
+b.connect(client.out, table.in)   // client emits Contextual(Attempt(n, a), request)
+b.connect(table.out, client.fb)   // client receives Contextual(Attempt(n, a), response)
+// in the client's onFeedback:
+//   case Contextual(Attempt(n, a), ThrottledResponse(req)) if a < max => re-send Contextual(Attempt(n, a + 1), req) after a backoff
+```
 
 **Billing mode, throttling, and reconfiguration** (intrinsic config, not a gate). A `BillingMode` on the
 `Config` selects **on-demand** (pay per consumed unit; uncapped) or **provisioned** (a reserved RCU/WCU
 capacity, base plus explicitly-provisioned GSIs, billed by **capacity-hours**). A provisioned table
 **throttles** — an internal, **per-target** weighted per-tick budget (base + LSI share the base; each GSI its
 own, base-fallback ceiling) held in `TableState`: a request whose mechanics-computed demand would push any
-target past its ceiling is rejected whole with a `ThrottledResponse`, consuming nothing and mutating no state
+target past its ceiling is rejected whole with a `ThrottledResponse(request)`, consuming nothing and mutating no state
 (reset each tick). Capacity-unit throttling is coupled to the billing mode and the table's own capacity math,
 so it lives **inside** the table rather than in an edge gate — the gate family stays the tool for request-rate
 limits. A `ReconfigurationSchedule` applies `SwitchBillingMode` / `UpdateProvisionedCapacity` at tick
@@ -205,9 +228,9 @@ accounting, not `DynamoDbTable`. `false` = off = byte-identical.
 
 **Scope.** On-demand or provisioned billing (with throttling, scheduled reconfiguration, **burst capacity**,
 **reactive auto-scaling**, **hot-partition throttling + instant adaptive capacity**, and **split-for-heat**),
-item TTL, transactions, **PITR** (backup cost), a single table with Query/Scan + GSIs/LSIs, and none of the
-remaining advanced models (**replication / multi-region**). Those belong to later phases. Transaction
-conditional-checks / partial-failure (`TransactionCanceledException`) are out of scope.
+item TTL, transactions, **PITR** (backup cost), and a single table with Query/Scan + GSIs/LSIs; replication is
+added by [`GlobalTable`](#globaltable). Transaction conditional-checks / partial-failure
+(`TransactionCanceledException`) are out of scope.
 
 **Exercised by.** [Order-Tracking v2](README.ordertracking-v2.md) (single table, then Query/Scan + two
 All-projection GSIs); the [Thermostat-fleet demo](README.thermostat-v2.md) (a growing fleet with **mixed
@@ -228,7 +251,13 @@ integrating on-demand + provisioned/auto-scaling/burst + transactions + PITR + T
 `OrderTrackingBaselineSpec.scala`, `OrderTrackingIndexedBaselineSpec.scala`, and `ThermostatFleetBaselineSpec.scala`
 (pin the demos to their captured baselines); `aws/…/PartitionTopologySpec.scala`, `HotPartitionSpec.scala`, `HeatSplitSpec.scala`
 (derived topology, per-partition throttle, adaptive on/off ceilings, sustained-heat splitting), and
-`aws/…/hotkey/HotKeySpec.scala` + `HotKeyBaselineSpec.scala` (the hot-key demo + its hybrid baseline).
+`aws/…/hotkey/HotKeySpec.scala` + `HotKeyBaselineSpec.scala` (the hot-key demo + its hybrid baseline); and
+`aws/…/CircuitAnchorDynamoDbSpec.scala` (a one-node circuit hosting the table matches `componentOf` byte for
+byte, on the thermostat table with GSIs + LSI and on the `onTick`-heavy auto-scaling telemetry table);
+`aws/…/ContextualTableSpec.scala` (the context adapter matches the plain table emission for emission, returns the
+context on successes and throttles, passes replicated writes through, and fails loudly on a feedback output); and
+`aws/…/CircuitDynamoDbRetrySpec.scala` (a client retrying against a provisioned table in a circuit: exactly the
+throttled requests are re-sent, attempts are capped per request, and only admitted writes consume capacity).
 
 ### Supporting types
 
@@ -272,7 +301,12 @@ lag); an LSI shares the base partition and is maintained synchronously. `IndexPr
 #### The protocol
 `DynamoDbRequest` (`GetItemRequest` / `PutItemRequest(itemBytes)` / `UpdateItemRequest(itemBytes)` /
 `DeleteItemRequest` / `QueryRequest(target, consistency)` / `ScanRequest(target, consistency)`) and
-`DynamoDbResponse` are **timeless** payloads — timing lives on the `Timed[E]` envelope. `DynamoDbTarget`
+`DynamoDbResponse` are **timeless** payloads — timing lives on the `Timed[E]` envelope. Two responses are
+errors: `ThrottledResponse(request)` — the table's own provisioned throttle, carrying the throttled request so a
+client can re-send it — and `SystemErrorResponse`, which the table never produces: it is the reject response of a
+`ChaosGate` in front of the table, so inside a circuit it already arrives correlated in the gate's
+`Reject(request, response)`. Requests carry no identity of their own; a client that needs its context back uses
+`DynamoDbTable.withContext` and `Contextual(context, value)` (see [Composition](#dynamodbtable)). `DynamoDbTarget`
 (`Table` | `Gsi(name)` | `Lsi(name)`) names the store a request/fact concerns. `DynamoDbConsumption` is the
 metric plane, each fact tagged with its `target`: `ReadCapacityConsumed(units, consistency, target)`,
 `WriteCapacityConsumed(units, target)`, `StorageBytesDelta(bytesDelta, target)`, plus the feature-specific facts
@@ -290,7 +324,19 @@ A **Global Table** composes N regional [`DynamoDbTable`](#the-dynamodb-table)s i
 replicates every local write to its peers. It rests on a **core generalization** (phase-11 Slice 1): a table is
 now a `LoopbackComponentSampler` — a `ComponentSampler` with a **feedback inlet** and a **tap outlet** — so the
 region↔coordinator cycle runs adapter-free and **deadlock-free** (see the core catalog's
-[Foundations](component-catalog.md#foundations)).
+[Foundations](component-catalog.md#foundations)). A replicated write answers nothing: the table's `onFeedback`
+returns a `FeedbackEmission` with no forward output.
+
+**Why a Global Table is wired directly, not as a circuit.** It is the core
+[rubric](component-catalog.md#when-a-circuit-is-required)'s worked example of a cycle that **may** be wired
+directly. Every trip around the cycle takes at least one tick *by construction* — the coordinator clamps each
+link's lag to `max(1, ⌊lag⌋)` ticks — and a replica's replay accumulates rWCU and storage totals, which do not
+depend on the order a window's replicated writes were applied. (The one residual order effect is second-order: a
+local write's insert-or-overwrite draw reads a summary that may or may not yet include a same-window replicated
+write — the summary model's bounded behavior, alongside the discrepancy recorded under
+[Known discrepancies](#known-discrepancies).) A model that let replication lag fall below one tick, or whose
+replicas made order-sensitive decisions such as throttling replicated writes in the table itself, would have to
+move into a circuit.
 
 ### `GlobalTable`
 
@@ -373,13 +419,11 @@ replication, so `CrossRegionTransferEvent` bytes are surfaced as a **volume metr
 
 ## Foundations
 
-The table is a `ComponentSampler` and rests entirely on the domain-agnostic core — the
-`ScheduleReleaseTransducer` runs it, `TickFraming` frames its input, the distribution samplers feed its
-workload and latency, and `MonteCarlo` / `SeedSequence` drive the ensemble. Those are documented once in
-the [core component catalog](component-catalog.md#foundations); they are not repeated here.
-`ScheduleReleaseTransducer` runs it, `TickFraming` frames its input, the distribution samplers feed its
-workload and latency, and `MonteCarlo` / `SeedSequence` drive the ensemble. Those are documented once in
-the [core component catalog](component-catalog.md#foundations); they are not repeated here.
+The table is a `LoopbackComponentSampler` and rests entirely on the domain-agnostic core — the
+`ScheduleReleaseTransducer` runs it (or a [circuit](component-catalog.md#circuits) hosts it as a node),
+`TickFraming` frames its input, the distribution samplers feed its workload and latency, and `MonteCarlo` /
+`SeedSequence` drive the ensemble. Those are documented once in the
+[core component catalog](component-catalog.md#foundations); they are not repeated here.
 
 ## Quick reference
 
@@ -392,7 +436,10 @@ the [core component catalog](component-catalog.md#foundations); they are not rep
 | check an index's maintenance without a graph | `SecondaryIndexMechanics.maintain` |
 | choose how much of an item an index projects | `IndexProjection` (`All` / `KeysOnly` / `Include`) |
 | model a hot partition / adaptive capacity / split-for-heat | `TableBehavior.partitionAccessFor` + `Config.adaptiveCapacity` + `Config.heatSplitPolicy` |
-| add throttling to a table (later) | a core `Interface.wrap` gate on the table's edge |
+| throttle a provisioned table by its capacity | intrinsic: `BillingMode.Provisioned` on the `Config` |
+| add edge behavior to a table (transient errors, an extra rate limit) | a core `Interface.wrap` gate on the table's edge |
+| put a table inside a client feedback loop (retries, read-after-write) | `DynamoDbTable.withContext` as a [circuit](component-catalog.md#circuits) node — see the [rubric](component-catalog.md#when-a-circuit-is-required) |
+| retry a throttled request | re-send `ThrottledResponse.request` |
 | compose a multi-region Global Table | `GlobalTable.componentOf` (regions + a `ReplicationModel`) |
 | throttle inbound replication with an rWCU ceiling | `BillingMode.Provisioned.replicatedWriteCapacityUnits` |
 | read replication latency / pending / transfer per link | the `GlobalTableShape.metricsOut` plane |

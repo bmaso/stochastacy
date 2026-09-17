@@ -228,7 +228,7 @@ provisioning to ~the mean throttles the bursts on-demand absorbed.
   capacity is reserved (an unspecified GSI reserves nothing of its own, though it is still throttle-limited by
   the base).
 - **Throttling** — an internal, **per-target** weighted budget (base + each GSI, reset each tick): a request
-  over any target's ceiling is rejected whole with a `ThrottledResponse`, consuming nothing.
+  over any target's ceiling is rejected whole with a `ThrottledResponse(request)`, consuming nothing.
 - **Scheduled reconfiguration** — a `ReconfigurationSchedule` applied at tick boundaries; the accounting bills
   each tick by the mode in force, so a run that is on-demand for part of the horizon and provisioned for the
   rest prices correctly.

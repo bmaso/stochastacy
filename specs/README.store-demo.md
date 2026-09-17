@@ -235,8 +235,8 @@ Every stage is a `ComponentSampler[S, In, Out, Cons]`
 ```scala
 trait ComponentSampler[S, In, Out, Cons]:
   def initialState: S
-  def sample(in: In, state: S, rng): Emission[S, Out, Cons]   // per input: new state, one forward output, N consumption facts
-  def onTick(tick: Long, state: S): S = state                 // per tick boundary (e.g. admission resets its counter)
+  def sample(in: In, at: SimInstant, state: S, rng): Emission[S, Out, Cons]   // per input (at its conceptual time): new state, one forward output, N consumption facts
+  def onTick(tick: Long, state: S): TickEmission[S, Cons]                     // per tick boundary (e.g. admission resets its counter)
 ```
 
 `In`/`Out`/`Cons` are **timeless payloads**; timing is added by the generic **schedule-and-release

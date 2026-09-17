@@ -1,5 +1,7 @@
 package stochastacy.aws.dynamodb
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
@@ -45,10 +47,10 @@ class HeatSplitSpec extends AnyWordSpec with should.Matchers:
   private def admits(s: DynamoDbTable.DynamoDbTableSampler, start: TableState): (Int, TableState) =
     var st = start; var n = 0; var done = false
     while !done do
-      val e: LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] = s.sample(PutItemRequest(1024L), st, rng)
+      val e: LoopbackEmission[TableState, DynamoDbResponse, DynamoDbConsumption, ReplicationWrite] = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng)
       e.output.event match
-        case ThrottledResponse => done = true
-        case _                 => st = e.newState; n += 1
+        case _: ThrottledResponse => done = true
+        case _                    => st = e.newState; n += 1
     (n, st)
 
   /** Saturate one tick's worth of writes to the concentrated key, then cross the tick boundary. */

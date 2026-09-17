@@ -1,5 +1,7 @@
 package stochastacy.aws.dynamodb
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
@@ -68,7 +70,7 @@ class ReconfigurationSpec extends AnyWordSpec with should.Matchers:
         billingMode = BillingMode.OnDemand, reconfigurationSchedule = schedule
       ))
       var st = s.initialState
-      def put() = { val e = s.sample(PutItemRequest(1024L), st, rng); st = e.newState; e }
+      def put() = { val e = s.sample(PutItemRequest(1024L), SimInstant(0L, 0.0), st, rng); st = e.newState; e }
 
       // on-demand: no cap — 5 writes in a tick all admit
       (1 to 5).foreach(_ => put().output.event shouldBe a[PutItemResponse])
@@ -76,10 +78,10 @@ class ReconfigurationSpec extends AnyWordSpec with should.Matchers:
       st = s.onTick(5L, st).newState // switch to Provisioned(2 WCU)
       put().output.event shouldBe a[PutItemResponse] // 1
       put().output.event shouldBe a[PutItemResponse] // 2
-      put().output.event shouldBe ThrottledResponse  // 3rd over the 2 WCU ceiling
+      put().output.event shouldBe ThrottledResponse(PutItemRequest(1024L)) // 3rd over the 2 WCU ceiling
 
       st = s.onTick(9L, st).newState // capacity widened to 4 WCU
       (1 to 4).foreach(_ => put().output.event shouldBe a[PutItemResponse]) // 4 now fit
-      put().output.event shouldBe ThrottledResponse                        // 5th over the 4 WCU ceiling
+      put().output.event shouldBe ThrottledResponse(PutItemRequest(1024L)) // 5th over the 4 WCU ceiling
     }
   }

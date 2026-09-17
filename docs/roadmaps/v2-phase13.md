@@ -1,0 +1,471 @@
+# v2/phase13 — Closed-loop circuits
+
+**Status: COMPLETE** (roadmap approved 2026-09-15; all 8 slices done 2026-09-16; published locally as 0.0.2). Gives `stochastacy.core` **closed feedback
+loops by composition** — including loops that close *inside* a tick — proven by the **MM1 demo** (an M/M/1 queue
+with Bernoulli feedback, checked against its closed-form solution). **Immediately after this phase, work resumes on
+`tailgate`** (the throttle-comparison simulator for Brian's article, on hold until this lands), so the close-out
+republishes the core for it.
+
+Design exploration: `docs/roadmaps/v2-phase13-design.md` (the problem, Concept F1 "registers", Concept K "circuits").
+
+## Why this phase exists
+
+Tailgate models `client → throttle → bounded queue → workers → response → client`, where a rejection or timeout
+triggers a retry after a 50 ms / `uniform(0, 50 ms)` backoff. Today's core cannot compose that loop: `onFeedback`
+cannot emit a request, fed-back items aren't time-ordered against a window's primary inputs, and a cycle of
+tick-barrier transducers deadlocks unless something breaks it. The only workaround — one monolithic event-loop
+sampler holding the whole system — was rejected as heroic: tailgate exists to show that stochastacy models loops.
+Backlog items **C3** (no time-ordered request feedback) and **C1** (samplers can't see input time) are resolved
+here.
+
+## Goal
+
+A **circuit**: a single transducer stage hosting several sampler *nodes* and a wiring among them — **cycles
+allowed** — run by an internal discrete-event **calendar** ordered by conceptual time. Outside, a circuit is an
+ordinary component (`FanOutShape2`: in → forward out, consumption out), so `Interface.wrap`, `TrialRunner`,
+`MonteCarlo`, and accounting sinks work unchanged. Inside, an output routed along an internal edge re-enters the
+calendar at `trigger + delay` for **any** delay, including zero, so a loop closes exactly within a tick and ticks
+stay coarse. The Pekko graph remains the composition mechanism for pipelines and ≥ 1-tick coupling; circuits are
+for tight coupling.
+
+## Design decisions
+
+Confirmed:
+
+- **D-circuit (Concept K).** Loops close inside a circuit's calendar, not across Pekko stages. Chosen over F1
+  (≥ 1-tick "registers" between stages), whose artificial one-tick hop would force ~1 ms ticks on tailgate (see the
+  design note).
+- **D-demo-mm1.** The proof is the **MM1 demo**: M/M/1 with Bernoulli feedback, framed as a paginated client
+  against a single FIFO server. Exact closed forms make the pass criterion "Monte Carlo estimate within its
+  confidence interval of theory", not a captured baseline.
+- **D-no-consumption-feedback.** Loops are driven by forward outputs and taps. Feedback driven by *consumption
+  metrics* is out of scope.
+
+Proposed (confirm with the roadmap):
+
+- **D-input-time (resolves C1).** `sample` and `onFeedback` receive the input's **conceptual time** as a new
+  parameter (a small `SimInstant(tick: Long, intraTick: Double)` value) — a clean single-contract change rather
+  than an additive overload. Migration is mechanical: 15 `sample` implementations — 9 production (4 core gates,
+  `DynamoDbTable`, 4 store samplers) and 6 test toys — plus one production `onFeedback` (`DynamoDbTable`).
+- **D-feedback-emission.** `onFeedback` returns `FeedbackEmission(newState, output: Option[Scheduled[Out]],
+  consumption, taps)`: `None` when a fed-back item answers nothing (phase-11 replicated writes), `Some(request)`
+  when it triggers one (a retry, a next page). `sample` stays strictly 1:1. The Pekko loopback stage supports the
+  new output (released in time order like any output); its documented limitation — feedback applied in
+  wire-arrival order within a window — is unchanged, and circuits are the exact alternative.
+- **D-circuit-shape.** One external inlet, one forward outlet, one consumption outlet (multi-inlet deferred).
+  Materialized value: `Future[CircuitResult]`, with typed per-node final state via node handles.
+- **D-wiring.** Typed builder over erased dispatch (the `ErasedSampler` precedent). An edge connects a node's
+  output plane (`out` or `taps`) to a node's port (`in` → `sample`, `fb` → `onFeedback`), with an optional
+  partial-function transform that also filters (e.g. `{ case Admit(r) => r }`). Edges add no delay — the emitter's
+  `Scheduled` delay is the latency. An output feeds every matching edge in declaration order. External edges route
+  the circuit input to a node port and a node plane to the forward outlet; per-node consumption maps into the
+  circuit's consumption type.
+- **D-calendar.** Events keyed `(tick, intraTick, seq)` — `seq` is global emission order, making ties
+  deterministic. Mirroring the transducer's per-tick order: when `Tick(k)` opens a window, every node's
+  `onTick(k)` runs (declaration order) before any window-`k` event; at the barrier `Tick(k+1)`, window `k`'s
+  buffered external inputs are loaded, events are dispatched until the earliest is beyond window `k`, window `k`'s
+  outputs are released in time order, and the tick is forwarded. A per-window event cap fails the stage on a runaway zero-delay cycle.
+  Post-horizon events are summarized as residue.
+- **D-rng.** Each node gets its own RNG, derived deterministically from the circuit's seed in node-declaration
+  order — per-concern random streams (tailgate's common-random-numbers requirement) fall out naturally.
+- **D-wiretap.** A wiretap edge copies an internal edge's events onto the consumption outlet, preserving the
+  principle that every interaction is an observable timed event. Ships in this phase (small; keeps the principle
+  intact from day one).
+- **D-demo-home.** `examples/…/stochastacy/examples/mm1`, beside the store demos (core has no demos; MM1 needs no
+  AWS). Console + JSONL; no Grafana dashboard.
+- **D-demo-arms.** Two arms: **immediate** next-page requests (zero-delay loop) and **think time** (exponential,
+  mean 20 ms — a sub-tick nonzero loop delay; still product-form).
+
+## The MM1 demo
+
+Sessions arrive Poisson(λ). The client requests page 1; each page response indicates more pages with probability
+`p`, and the client requests the next page (immediately, or after think time). One server, FIFO, exponential
+service at rate μ.
+
+```
+sessions (Poisson λ) ──▶ CLIENT ──page request──▶ SERVER (FIFO, 1 worker, Exp(μ) service)
+                           ▲ fb                          │
+                           └──────── page response ◀─────┘
+```
+
+With `λ_eff = λ / (1 − p)` and `ρ = λ_eff / μ` (Jackson network, product form):
+
+| Metric | Closed form | λ=40, p=0.6, μ=125 |
+|---|---|---|
+| Pages per session | geometric, mean `1/(1−p)` | 2.5 |
+| Queue length (time-average) | `P(n) = (1−ρ)ρⁿ`, mean `ρ/(1−ρ)` | 4 |
+| Mean time per page | `1/(μ − λ_eff)` | 40 ms |
+| Mean session duration | `1/((1−p)μ − λ)` (+ `(pages−1) × think` in the think arm) | 100 ms (130 ms) |
+| Server busy fraction | `ρ` | 0.8 |
+
+Ticks are 1 s; a session makes several loop round trips inside one tick.
+
+## Slice status
+
+| # | Slice | Status | Proof (target) |
+|---|---|---|---|
+| 1 | Sampler contract: input time + emitting feedback | **Done** | `at` passed to `sample`/`onFeedback`; `FeedbackEmission` with optional output; both transducer stages updated; every existing scenario **byte-identical** (all baseline specs unchanged); full `sbt test` |
+| 2 | Circuit engine | **Done** | calendar stage over erased nodes: zero-delay self-loop ordered exactly; cross-tick loop; `onTick` order; residue; runaway cap; determinism; **a one-node circuit ≡ `componentOf`** byte-identically |
+| 3 | Typed circuit builder + wiretap | **Done** | typed ports/edges/transforms; external routing; consumption mapping; per-node states + RNGs; build-time validation; wiretap; tailgate-shaped unit wiring (gate Admit/Reject edges, tap self-edge timeout); `Interface.wrap` around a circuit |
+| 4 | Gates in circuits | **Done** | correlated `Reject(request, response)` across all four gates; a continuous-refill token bucket (backlog C2, pulled forward); gate wiring sugar; `Circuit.buildWith` handles; each gate proven in a retry loop; demo JSONLs byte-identical |
+| 5 | MM1 demo | **Done** | workload + client/server nodes + circuit + trial and Monte Carlo runners + theory module + `@main MM1Demo` (both arms, estimate vs theory, JSONL); smoke-run + determinism |
+| 6 | Theory baseline | **Done** | `MM1TheoryBaselineSpec`: every metric within its CI of the closed form, both arms, across a ρ sweep; conservation |
+| 7 | Circuit docs + MM1 guide | **Done** | core catalog circuits section with the circuit-vs-direct-wiring **rubric** + gate updates; AWS catalog; `README.mm1-demo.md`; CLAUDE.md; backlog C1/C2/C3/C5 closed, C6 logged; every relative link and anchor resolves; full `sbt test` |
+| 7b | DynamoDB correlated throttle + close-out | **Done** | `ThrottledResponse(request)` (backlog C6) + `DynamoDbTable.withContext`; seven demo JSONLs byte-identical; a retrying client against a provisioned table in a circuit; AWS catalog; version `0.0.2`; full `sbt test`; `sbt publishLocal` |
+
+## Slices
+
+### Slice 1 — Sampler contract: input time + emitting feedback
+
+The prerequisite contract change, isolated before anything depends on it. `sample(in, at, state, rng)` and
+`onFeedback(fb, at, state, rng)` receive the input's conceptual time; `onFeedback` returns `FeedbackEmission` (state,
+optional forward output, consumption, taps). The plain `ScheduleReleaseTransducer` stage passes each input's
+`(eventTime, intraTick)`; the loopback stage does the same for primary and fed-back inputs and schedules a
+feedback's optional output and taps exactly like a sample's. Migrate every implementation: the four core gates, the
+`Interface` plumbing, `DynamoDbTable` (`onFeedback` → `FeedbackEmission(…, None, …)`), the four store samplers, and
+test toys.
+
+**Validated by:** new transducer specs — `at` equals each input's conceptual time on both stages; a loopback
+`onFeedback` returning `Some(output)` has that output released in time order on the forward plane, with taps from
+feedback also forwarded. **Every existing scenario byte-identical**: the store demos' specs, the AWS baseline specs,
+and the hot-replica specs pass unchanged. Gate on the **full `sbt test`** (a shared-contract change — grep all three
+modules for implementors first).
+
+**Delivered.** New `stochastacy.sim.SimInstant(tick, intraTick)` — ordering, `toDouble`, `of(TimedEvent)`, and `plus(delay)`
+(the rawOffset rule, ready for the Slice-2 calendar); a `require` enforces `intraTick ∈ [0, 1)`. The contract is now
+`sample(in, at, state, rng)` and `onFeedback(fb, at, state, rng): FeedbackEmission(newState, output: Option[…],
+consumption, taps)`; `onTick` and `TickEmission` are unchanged. Both transducer stages pass each input's conceptual time;
+the loopback stage schedules a feedback's optional output, consumption, and taps exactly like a sample's. **Feedback-tap
+guard (the approved D1 refinement):** because the tap window is released eagerly on `in`'s `Tick(w+1)` — but a window-`w`
+fed-back item is always absorbed before `in` can pass that tick — a feedback tap is safe iff stamped at tick `≥ w + 1`;
+the stage checks this at emission and fails **deterministically** (`IllegalStateException`, materialized future failed)
+rather than detecting a scheduling-dependent late tap. Migrated 9 production samplers (4 gates, `DynamoDbTable` —
+`onFeedback` → `FeedbackEmission(…, None, facts, Nil)` — and 4 store samplers) plus 6 test toys; the compile also
+surfaced **50 direct `sample`/`onFeedback` call sites in unit specs** (gate, DynamoDB, store specs), updated mechanically
+with a fixed `SimInstant(0L, 0.0)`. New tests: `SimInstantSpec` (5), the `at` case in `ScheduleReleaseTransducerSpec`, and
+four `LoopbackTransducerSpec` cases (both-path `at`; feedback forward output + consumption released in time order inside
+their windows; later-tick feedback taps sustain a multi-hop loop; a same-tick feedback tap fails the stage). Doc signature
+references fixed in `CLAUDE.md`, `specs/component-catalog.md`, and `specs/README.store-demo.md`. **Full `sbt test` green
+(540)**, and four demo JSONLs — store, store-v2, hot-replica (loopback path), capstone — are **byte-identical** to captures
+taken before the change.
+
+### Slice 2 — Circuit engine
+
+The runtime, independent of the typed builder: a `CircuitStage` (`FanOutShape2`) over erased node adapters and a
+routing table. Per barrier: node `onTick`s, load the window's external inputs, pop/dispatch/route until the earliest
+event leaves the window, release outputs in time order, forward the tick; `EndOfTime` completes the materialized
+result with per-node final states and residue. A low-level internal wiring API is enough to test it.
+
+**Validated by:** a zero-delay self-loop interleaves fed-back items exactly between primary inputs by conceptual
+time; a loop spanning ticks carries events across barriers; `onTick` runs before a window's events; post-horizon
+residue is counted, not emitted; the runaway cap fails the stage with a clear error; repeated runs are identical;
+and the anchor invariant — **a one-node circuit wired in → node → out is byte-identical to
+`ScheduleReleaseTransducer.componentOf`** on the existing transducer spec fixtures. A throughput microbenchmark
+(events/s through the calendar) is recorded for later tailgate sizing.
+
+**Delivered.** Package `stochastacy.core.component.circuit`, purely additive (no existing file changed). Public:
+`CircuitResult` (node final states in declaration order, `CircuitResidue`, per-plane `UnroutedCount`s,
+`unroutedInputs`) and `CircuitPlane` (`Out` / `Taps` / `Consumption`). Internal (`private[stochastacy]`, for Slice 3's
+typed builder): `CircuitPlan` (erased nodes + routes keyed by source, each route a target plus a filtering transform;
+structural `require`s — the input feeds only node ports, `Out`/`Taps` feed node ports or the forward outlet,
+consumption feeds only the consumption outlet), `ErasedNode` (any `LoopbackComponentSampler` behind a cast adapter,
+with its own RNG; stateless — the stage owns state), and `CircuitStage.componentOf(plan)`. The stage places external
+inputs on a calendar at their conceptual time; at `Tick(t)` it dispatches every event before `t` in `(tick,
+intraTick, seq)` order — events it creates that also land before `t` join the same pass, which is how a loop closes
+inside the tick — then releases outlet items before `t`, runs every node's `onTick(t)` (boundary facts stamped at
+`(t, 0) + delay`), and forwards the tick: the transducer's own order. Approved decisions as implemented: D1
+conceptual-time dispatch of external inputs (a dedicated spec documents the difference from the transducer's
+arrival order on unsorted input); D2 a negative delay fails the stage; D3 unrouted emissions are dropped and counted;
+D4 a per-window dispatch cap (default 10 M) fails a runaway zero-delay cycle; D5 tight visibility. A node exception
+fails the stage naming the node and port. `CircuitStageSpec` (13), `CircuitAnchorSpec` (5 — delayed outputs, residue,
+boundary facts, per-tick reset, RNG-drawn delays), and **`CircuitAnchorDynamoDbSpec` (2) — a one-node circuit hosting
+the real `DynamoDbTableSampler` is byte-identical to `DynamoDbTable.componentOf`** on the single-region thermostat
+table (GSIs + LSI) and the auto-scaling telemetry table (`onTick`-heavy); the table's taps, unrouted, are the only
+unrouted plane. Full `sbt test` green (560). Benchmark (`CircuitThroughputBenchmark`, a `main` in core test sources,
+not part of `sbt test`; Apple M3 Max, one warm-up pass then one timed pass): **~37 M dispatches/s** through the calendar
+(a zero-delay two-node relay, 10,000,020 dispatches verified from node states), and on 1 M framed inputs a one-node
+circuit runs **~1.65 M events/s vs ~1.12 M for `componentOf`** — per-element stream overhead, not the calendar,
+dominates. Rough tailgate sizing: Stage 2's ~6 × 10⁹ arrivals at ~1.6 M/s is ~1 CPU-hour, before per-request internal
+dispatches (cheap by (a)) and trial parallelism.
+
+### Slice 3 — Typed circuit builder + wiretap
+
+The user-facing API: `Circuit.builder { b => … }` with typed node handles (`in`, `fb`, `out`, `taps`), typed edges
+with partial-function transforms, `b.input(port)`, `b.output(plane)`, per-node consumption mapping, wiretaps, and
+`Circuit.componentOf(circuit, rng)` deriving per-node RNGs. Build-time validation rejects malformed wiring (e.g. an
+`fb` edge into a node that has no feedback port, a circuit with no input). `CircuitResult.stateOf(node)` returns a
+node's typed final state.
+
+**Validated by:** typed toy circuits; a gate node whose `Admit`/`Reject` outputs split along two filtered edges; a
+tap self-edge that fires a timeout probe back into its own node (the tailgate client's shape, unit-level only); a
+wiretap delivering an internal edge's events on the consumption outlet in time order; `Interface.wrap` around a
+circuit; per-node RNG derivation deterministic and independent of wiring order changes that don't reorder nodes.
+
+**Delivered.** Public API in `stochastacy.core.component.circuit`: `Circuit[In, Out, Cons]` (an immutable, reusable
+blueprint; `Circuit.build { b => … }` validates, `Circuit.componentOf(circuit, rng)` materializes an ordinary
+`FanOutShape2` component with a `Future[CircuitResult]`), `CircuitBuilder`, and typed `CircuitNode` handles whose
+ports (`InPort[-A]`, `FbPort[-A]`) and planes (`OutPlane[+A]`, `TapPlane[+A]`, `ConsumptionPlane[+A]`) carry the node
+sampler's types — the variances make mismatched wiring a compile error, a plain sampler's `FbPort[Nothing]` unconnectable,
+and consumption impossible to `connect` or wiretap. Wiring: `connect`/`connectVia`, `input`/`inputVia`,
+`output`/`outputVia`, `consumption`/`consumptionVia`, `ignore`, `wiretap`, `maxEventsPerWindow` (P1: distinct `…Via`
+names for partial-function transforms; P5: the cap as a builder setter). Validation — at the call: a handle from
+another builder, routing an ignored consumption plane or ignoring a routed one; at build: no nodes, no input route,
+duplicate names, a node with no inbound route (D3), and a node with real consumption neither routed nor ignored (D4 —
+decided at compile time by a `ConsumptionDemand` given, so `Nothing`-consumption nodes such as gates need no `ignore`).
+RNGs (D2 / P2): a seed is drawn from `componentOf`'s RNG for **every** node in declaration order and each node uses its
+optional pinned `rngSeed` or the drawn seed, in a fresh KISS per materialization. `CircuitResult.stateOf(node)` gives a
+typed final state. Engine edits: `Route` gained a `wiretap` flag — `Out`/`Taps` → consumption outlet is permitted only
+as a wiretap, and a wiretap copy does not count as routing (P4). `TrialRunner.run` now accepts any component `Future[R]`
+(P3; `SingleTrialRunner` unchanged). Tests: `CircuitBuilderSpec` (7 — a typed two-node paging loop, every wiring form,
+wiretap ordering + unrouted accounting, every build error, `Nothing`-consumption gate, RNG derivation / pinning,
+blueprint reuse), `CircuitTailgateShapesSpec` (2 — a `FlatThrottleGate` node's admit/reject split along filtered edges;
+a client timeout probe on a tap self-edge that retries at send + 0.5, re-arms, and ignores late or resolved events),
+`CircuitInteropSpec` (3 — typed anchor ≡ `componentOf`, behind `Interface.wrap`, under `TrialRunner`). Full `sbt test`
+green (572). Findings: handles must be captured outside the `build` block (e.g. a `var`) to call `stateOf` after a run
+— an ergonomics gap to settle before the MM1 demo; and core gates reject with a *constant* response that cannot
+identify the rejected request (stochastacy backlog C5).
+
+### Slice 4 — Gates in circuits
+
+Added 2026-09-15 at Brian's direction: throttling, rate limiting, and failure injection belong in feedback
+simulations, so the shipped gates must work as **circuit nodes in a loop**, not only inline under `Interface.wrap`.
+They already compose as nodes (Slice 3 wires a `FlatThrottleGate` and splits its outcomes); what a loop exposes is
+that a rejection cannot say *which* request it rejected, and that the rate-limiting gates only move at tick
+granularity.
+
+Three changes. **Correlated rejection** (backlog C5): `Reject` carries the request as well as the response
+(`Reject(request, response)`), so every gate correlates without per-gate configuration and an edge can read
+`{ case Reject(req, _) => Retry(req) }`; `Interface.wrap` still emits only the response, so wrapped scenarios are
+unchanged. **A continuous-refill token bucket** (backlog C2, pulled forward from after-tailgate on Brian's call):
+samplers now receive `at`, so the bucket can refill in continuous time rather than once per tick — and the property
+that bounds it (admissions over any interval `T` never exceed `B + r·T`) is directly testable in core, so tailgate can
+consume the gate instead of building its own. **Ergonomics:** gate wiring sugar
+(`b.gate(name, gate, admitTo = …, rejectTo = …)`, adding both filtered edges) and `Circuit.buildWith`, which returns
+the circuit together with the handles the block yields, so `stateOf` needs no `var`.
+
+**Validated by:** each of the four gates as a node in a **retry loop**, where rejections drive retries and the client
+identifies the retried request; the continuous-refill bucket's interval bound as a property test, plus a test that a
+once-per-tick refill **fails** it; the tick-granular gates unchanged; `Interface.wrap` behavior unchanged; and the
+store, store-v2, hot-replica, and capstone demo JSONLs **byte-identical** to pre-change captures (this touches the
+store-v2 and AWS chaos-gate paths). Full `sbt test`.
+
+**Delivered.** `Reject[+Req, +Resp](request, response)` (backlog C5): the three rejecting gates build the rejection
+from the request, their constructors unchanged, so all ~30 construction sites still compile; `Interface.wrap` still
+emits only the response, so wrapped scenarios are untouched. New `ContinuousTokenBucketGate` (backlog C2, pulled
+forward) accrues tokens from elapsed conceptual time (`at.toDouble`) with no `onTick` at all — `TokenBucketGate`
+remains the tick-granular one. Builder additions: `b.gate(name, gate)(admitTo, rejectTo)` delivering the whole
+`Reject(request, response)`, `b.gateVia(…)(…)(rejectAs)` mapping it, and `Circuit.buildWith[In, Out, Cons] { b => … }`
+returning the block's handles beside the circuit (applied in two steps so the handle type is inferred). Migration was
+`Interface.scala` + 3 gates + 8 spec sites — including three `Reject[?]` **type** tests that only an exhaustive grep
+caught. New tests: `GateCircuitLoopSpec` (5 — every shipped gate in a retry loop; the client retries exactly the
+rejected requests **by id**, which is what correlated rejection unlocks) and `ContinuousTokenBucketGateSpec` (4 —
+mid-tick refill, **with the tick-granular bucket shown failing the same case**; the `capacity + refill × T` interval
+bound over all admission pairs; capacity cap across idle time; correlated rejection). Full `sbt test` green (582:
+97 examples + 191 core + 294 aws) and the store, store-v2, hot-replica and capstone JSONLs **byte-identical**. Two
+self-inflicted test defects found by the gate and fixed: `buildWith`'s type-parameter arity (which reshaped the API
+into its two-step form) and an assertion that ignored `FlatThrottleGate`'s per-tick counter reset.
+
+### Slice 5 — MM1 demo
+
+`stochastacy.examples.mm1`: `MM1Config` (λ, μ, p, optional think-time mean, ticks, trials, seed); a session workload
+(exponential inter-arrivals placed within ticks); the `ClientNode` (loopback: `sample(session)` → page 1;
+`onFeedback(response)` → next page with probability `p` — immediate or after think time — or a session-complete
+record) and the `ServerNode` (FIFO start `max(at, serverFree)`, exponential service as the output delay,
+time-weighted queue-length and busy-time facts); the circuit; `MM1TrialRunner` folding consumption into per-trial
+statistics; `MM1MonteCarloRunner` (`MonteCarlo.stream` + fold); `MM1Theory` (the closed forms); `@main MM1Demo`
+printing estimate vs theory with confidence intervals for both arms, plus per-trial JSONL.
+
+**Validated by:** a demo smoke-run; determinism (same seed → identical output); conservation (sessions in =
+completed + in-flight residue; page requests = page responses + residue).
+
+**Delivered.** `stochastacy.examples.mm1`, all new code: `MM1Config` (derives `λ_eff`, `ρ`; **refuses an unstable
+server**; defines the measured window once), a Poisson workload of exponential inter-arrivals placed at exact intra-tick
+positions, a stateless `ClientNode` (a session's start time rides on the request, so the next page comes from
+`onFeedback` at the response's own instant), a `ServerNode` computing each start as `max(arrival, freeAt)` — queue
+waiting exact, never sampled — and integrating ∫N dt and busy time per closed window exactly, `MM1Circuit` (built with
+`Circuit.buildWith`), incremental trial and Monte Carlo runners (mean ± standard error), `MM1Theory`, and
+`@main MM1Demo` (estimate vs theory with a within-CI column, one JSONL line per trial). Decisions as approved: D1
+server-side integration, D2 20 % warm-up, D3 in-flight sessions excluded and counted, D4 exponential think time;
+P1 number *in system* (`ρ/(1−ρ)`), P2 per-page sojourn facts, P3 cohort = sessions started in the measured window.
+Tests: `MM1WorkloadSpec` (3), `ServerNodeSpec` (4 — hand-worked starts, sojourns, and window integrals), `MM1DemoSpec`
+(6). Full `sbt test` green (595).
+
+**A bias the demo caught, fixed before commit.** The first full run put busy fraction at **0.7971 ± 0.0008** against
+ρ = 0.8 in both arms (~3.6 standard errors), with mean number in system low by the same proportion. An exact
+per-trial count — not a statistical probe — showed every measured window's integral arrived **except the final one**:
+the server integrates a window when it closes and stamps the result at the next boundary, and the window closed by the
+flush tick has no later boundary, so it is post-horizon residue (the engine's documented rule). The runner divided by
+240 measured ticks while receiving 239. Fixed by dividing by the windows actually received, recorded per trial as
+`windowsMeasured` and pinned by a regression test. (An earlier statistical probe of the effect was poorly designed —
+its horizons shared random streams and it used too few trials — and was set aside rather than read either way.)
+
+Full-size run after the fix — 200 trials × 300 ticks, warm-up 60, λ = 40, μ = 125, p = 0.6 (λ_eff = 100, ρ = 0.8),
+**every metric within its confidence interval in both arms**:
+
+| metric | immediate | think time 0.02 | theory |
+|---|---|---|---|
+| pages per session | 2.4992 ± 0.0014 | 2.4987 ± 0.0014 | 2.5000 |
+| mean number in system | 4.0012 ± 0.0263 | 3.9851 ± 0.0251 | 4.0000 |
+| time per page | 0.0400 ± 0.0002 | 0.0398 ± 0.0002 | 0.0400 |
+| session duration | 0.0998 ± 0.0006 | 0.1295 ± 0.0006 | 0.1000 / 0.1300 |
+| busy fraction | 0.8005 ± 0.0008 | 0.8003 ± 0.0008 | 0.8000 |
+| page rate | 100.02 ± 0.09 | 100.01 ± 0.09 | 100.00 |
+
+About 1.92 M sessions measured per arm; 794 and 1,032 excluded as still in flight at the horizon. As the product-form
+theory predicts, think time lengthened sessions by ≈ 30 ms while leaving the server's own numbers unchanged.
+
+*Correction found in Slice 6:* the session cohort rule above (exclude sessions still in flight at the horizon) carried a
+small **length bias** — long sessions are the ones most likely to be caught unfinished — reading pages per session low
+by about 0.13 % (−10σ at ρ = 0.9 over 8 000 trials). It was invisible in this 240-tick table, where the effect is diluted,
+and "every metric within CI" remains literally true. Slice 6 replaced the rule with a cohort start cutoff before the
+horizon; see below.
+
+### Slice 6 — Theory baseline
+
+`MM1TheoryBaselineSpec`, the phase's proof: for both arms and a small ρ sweep (e.g. 0.5 / 0.8 / 0.9), every metric —
+pages per session, time-average queue length and its geometric distribution, time per page, session duration, busy
+fraction — falls within its Monte Carlo confidence interval of the closed form, with trial counts sized so the
+check is meaningful and fast. Any failure is investigated to root cause, not tuned away.
+
+**Delivered.** `ServerNode` also reports the **queue-length distribution** (a `WindowLevels` fact per closed window: N(t)
+walked as a step function from the jobs already in the system, arrivals before finishes at ties, levels above the cap
+lumped into a tail), and the runner reports it and the **pages-per-session distribution** alongside the means.
+`MM1TheoryBaselineSpec` runs six ensembles (ρ = 0.5 / 0.8 / 0.9 × immediate / think time; 1 000 trials × 100 measured
+ticks each, every ensemble on its own master seed) and asserts, per ensemble, the six means, both distributions, and
+Little's law (from per-trial differences) against the closed forms: **140 checks, all within `k = 3.570` standard errors**
+— `k` computed from the check count for a 5 % family-wise error (Bonferroni), largest |z| 2.60. It also asserts that no
+cohort session is left unfinished, and a **negative control**: the Slice 5 biased estimator, recomputed from the same
+ensemble, is rejected at **z = −13.67**. The spec's header carries the integrity rule (fixed distinct seeds; a failure
+is investigated, never answered by changing a seed, `k`, or a band). Full `sbt test` green (601); the demo's server-side
+metrics are unchanged to the last digit and its session metrics moved toward theory.
+
+**What the spec's development found — each settled by measurement, each decided with Brian:**
+
+- **Budget was not a constraint.** A 200-trial ensemble takes ~0.3 s, so the planned 200 trials grew to 1 000 (E2),
+  putting the negative control ~14 σ clear of `k`.
+- **An alarming calibration was a design flaw in the calibration.** The correct busy-fraction estimator read about
+  −3σ at all three loads — but those ensembles shared a master seed, so they were one noise realization shown three
+  times. Two independent 4 000-trial ensembles put it at z = +0.58 and −0.24. Lesson: every ensemble gets its own seed.
+- **The session cohort was length-biased (E1).** Excluding sessions unfinished at the horizon under-represents long
+  sessions: cohort pages per session read −10.4σ and −10.6σ at ρ = 0.9 over 8 000 trials, while a cohort whose *starts*
+  stop before the horizon read −1.0σ and +1.5σ. The cohort is now sessions starting at least a margin before the horizon
+  (`MM1Config.inCohort`).
+- **The margin was measured, not assumed (F2).** A first 5-tick margin — chosen from the *mean* session length — left
+  2 sessions unfinished; near saturation the queue makes long excursions. Over 11.7 M sessions at ρ = 0.9, 375 ran past
+  5 ticks and the longest took 10.85, so the margin is now 20 ticks.
+- **One check was judging a zero-inflated slot (F1).** The only first-run miss was `P(N ≥ 11)` at ρ = 0.5 (z = −3.72).
+  At 20 000 trials that slot lands on theory in both arms (z = −0.85, +0.39) — the level walk is correct — but 55 % of
+  trials spend no time there, the regime where a z-score is least trustworthy. Queue slots now follow a rule stated up
+  front and applied to every load, `MM1Theory.adequateQueueLevels`: individual levels only while `P(N = n) ≥ 1 %`, then a
+  tail — 7 slots at ρ = 0.5 and 12 at ρ = 0.8 / 0.9. Seeds, α and ensemble sizes were not changed.
+
+### Slice 7 — Circuit docs + MM1 guide
+
+`specs/component-catalog.md` gains a circuits section: what a circuit is, when to use a circuit vs the Pekko graph,
+calendar ordering and tie-breaks, the within-window arrival-order limitation of the Pekko loopback stage, the new
+`at` / `FeedbackEmission` contract, and wiretaps — plus a **gates** update: correlated rejection, the continuous-refill
+bucket, and when to use a gate as a circuit node vs. inline under `Interface.wrap`. The AWS catalog is brought up to
+date with circuits. New `specs/README.mm1-demo.md`. CLAUDE.md: engine section, current position, and an MM1 demo
+workflow. Backlog: C1, C2, C3 and C5 closed. Program roadmap + memory. Full `sbt test`. (Split on 2026-09-16: the
+version bump, `publishLocal`, and phase close-out moved to Slice 7b, so the phase is not published before its last fix.)
+
+**Delivered.** Documentation only — no code changed.
+- **Core catalog.** A **Circuits** section: a four-question **rubric** for when a circuit is required — a cycle any trip
+  around which can take less than a tick **must** use one (with why direct wiring cannot express it); a cycle of at
+  least one tick *by construction* with an order-sensitive component on it, or an acyclic order-sensitive component fed
+  a merged or within-tick-unsorted stream, **absolutely should**; everything else **may wire directly** — with a verdict
+  table, the costs that keep circuits from being the default, and `GlobalTable` as the worked direct-wiring example.
+  Template entries for `Circuit`, `CircuitBuilder`, `CircuitNode`, `CircuitResult`, and "engine rules worth knowing"
+  (the flush-tick residue rule). Gates: `Reject(request, response)`, five gates, a `ContinuousTokenBucketGate` entry,
+  the tick-granular refill caveat on `TokenBucketGate`, and "Gates as circuit nodes" (`gate` / `gateVia`, wiretapped
+  throttle metrics, per-tick gates inside a loop). Foundations: `TrialRunner` over any result; one master seed per
+  ensemble. Quick reference and See also extended.
+- **AWS catalog.** A table as a circuit node (proven by `CircuitAnchorDynamoDbSpec`); why `GlobalTable` may be wired
+  directly, including its one second-order order effect; `FeedbackEmission` with no output for replicated writes;
+  stale scope line, duplicated Foundations paragraph, and "(later)" quick-reference row fixed.
+- **`specs/README.mm1-demo.md`**, in the engineer's-guide form: the domain and circuit, a representative run (re-run
+  for this slice — identical to Slice 6), the closed forms and why think time leaves the server unchanged, the
+  mechanisms, the measurement design with the finding behind each choice, what proves it, and running it.
+- **Elsewhere.** `README.store-demo-v2.md` (`Reject(request, response)`); the design note's status; program roadmap;
+  local `CLAUDE.md` (git-excluded) — phase 12 done, phase 13, circuits and the rubric, the MM1 workflow, the publish
+  line (backlog D1); backlog C1/C2/C3/C5 marked DONE with commits, and **C6** logged.
+
+**Found while documenting (C6).** A DynamoDB table's intrinsic throttle answers `ThrottledResponse`, a `case object`, so
+a client retrying against a table inside a circuit cannot tell which request was throttled. (`SystemErrorResponse`
+already arrives correlated, in the `ChaosGate`'s `Reject`.) Brian chose to fix it inside this phase, as Slice 7b, the
+same way gates correlate: the response carries its request.
+
+**Verified.** Full `sbt test` green (601). A link checker (GitHub heading slugs; itself shown to catch a bad file and a
+bad anchor) resolves all 97 relative links across `specs/`, including the new anchors. A grep of `specs/` finds no
+`Reject(response)`, "four gates", old `sample(in, state, …)` signature, or "(later)" row.
+
+### Slice 7b — DynamoDB correlated throttle + close-out
+
+Close backlog **C6**: `final case class ThrottledResponse(request: DynamoDbRequest)` replaces the `case object`, mirroring
+`Reject(request, response)`. `SystemErrorResponse` is unchanged (already correlated by its `ChaosGate`). Then close the
+phase: roadmaps, CLAUDE.md, memory, version `0.0.2`, full `sbt test`, `sbt publishLocal`.
+
+**A gap found while planning (K5).** The carried request alone does not let a client do its job: DynamoDB requests carry
+no identity (`GetItemRequest` is a `case object`; two 1 KB puts are equal) and, unlike a gate's caller-typed `Req`, the
+protocol is fixed — so a client could re-send a throttled payload but not cap attempts per request or tie an answer to a
+logical request. Brian rejected a generic request-ID wrapper (an invented concept) and approved a **context adapter**:
+the caller chooses what rides along.
+
+**Delivered.**
+- `ThrottledResponse(request)`, produced with the request the table was given (a throttled transaction carries the whole
+  transaction request).
+- `Contextual[C, A](context, value)` and `DynamoDbTable.withContext[C](config)` (`ContextualTableSampler`, aws module):
+  `Contextual(c, request)` in, `Contextual(c, response)` out, for successes and throttles alike; state, consumption, taps,
+  latency, `onTick` and `onFeedback` exactly the table's; a feedback *output* fails loudly (it would have no context).
+  Sampler only — no pipeline variant (L1–L4 as recommended).
+- Every use site rewritten (11 across 8 files). `ContextualTableSpec` (4 tests) and `CircuitDynamoDbRetrySpec`: ten
+  1-WCU puts against a 3-WCU ceiling, retried one tick later up to three attempts — served {1…9}, request 10 given up,
+  retries exactly {4…10} then {7…10}, every re-send equal to the original request, `RequestThrottled` 7/4/1 and
+  `WriteCapacityConsumed` 3/3/3 per tick, 9 items stored — all as worked by hand.
+- AWS catalog (protocol entry, `DynamoDbTable` composition with a retry sketch, throttling paragraph, exercised-by,
+  quick reference), `README.thermostat-v2.md`, backlog C6 DONE. All modules at version **0.0.2**.
+
+**Two hazards the change carried, handled before they bit.** After the type change, `t.event == ThrottledResponse` (the
+hot-key runner) and `case ThrottledResponse =>` still **compile** — they compare against the companion object. The
+runner would have silently counted zero throttles, and three specs that loop `while !done` until a throttle matches would
+have **hung** instead of failing. Every site was rewritten explicitly and a final grep confirmed none remain. Lesson: a
+`case object` → `case class` change must be grepped for equality and stable-identifier patterns, not only constructors.
+
+**One spec mistake, found by the spec.** The retry spec first used payloads of `1024 + n` bytes — over 1 KB, so 2 WCU each —
+and served only requests 1–3. Diagnostics showed the table was right; the payloads now stay ≤ 1 KB, and the hand-worked
+expectations were not changed.
+
+**Verified.** Full `sbt test` green (**606**). Seven demo JSONLs captured before the change — store, store-v2, hot-replica,
+capstone, and the three that throttle (hot-key, thermostat mixed-mode, thermostat auto-scaling) — are **byte-identical**
+after it (`cmp`). Link check: 98 relative links across `specs/`, none broken. `sbt publishLocal` published
+`stochastacy_3`, `stochastacy-aws_3` and `stochastacy-examples_3` at `0.0.2` (each under its own module name as group —
+backlog B1).
+
+## Phase close-out
+
+Phase 13 set out to give `stochastacy.core` closed feedback loops by composition, without a heroic monolithic sampler,
+and delivered:
+
+- **The contract** (Slice 1): samplers see an input's conceptual time `at`; `onFeedback` may emit a request.
+- **Circuits** (Slices 2–3): one stage hosting sampler nodes and a cyclic wiring, dispatched from a calendar in
+  conceptual-time order, so loops close exactly — even within a tick; a typed builder where bad wiring does not compile;
+  wiretaps; a one-node circuit output-identical to `componentOf`, on toys and on the real DynamoDB table.
+- **Gates in loops** (Slice 4): correlated `Reject(request, response)`, `ContinuousTokenBucketGate`, gate wiring sugar.
+- **The proof** (Slices 5–6): the MM1 demo against M/M/1-with-feedback closed forms — 140 checks at three loads in two
+  arms within a family-wise 5 % band, with a negative control rejected at z = −13.67.
+- **Documentation** (Slice 7): the circuits section and its rubric for when a circuit is required; the MM1 guide.
+- **DynamoDB in loops** (Slice 7b): correlated throttles and caller context through the table.
+
+Backlog closed: C1, C2, C3, C5, C6. Still open: B1–B4 (artifact coordinates and dependencies), C4 (histogram quantile
+resolution). Every pre-existing scenario stayed byte-identical at each contract change. Work returns to tailgate as a
+separate project, depending on `"stochastacy" %% "stochastacy" % "0.0.2"`.
+
+## Scope boundary
+
+In scope: the contract change, circuits (engine + typed builder + wiretap), **gates usable in feedback loops**
+(correlated rejection + a continuous-refill token bucket), and the MM1 demo with its theory baseline. Not in scope:
+multi-inlet circuits; loops *between* circuits or Pekko stages (would need F1's ≥ 1-tick registers — recorded in the
+design note); feedback driven by consumption metrics; exact ordered dispatch in the Pekko loopback stage; a Grafana
+dashboard for MM1; a metric (consumption) plane on gates — a wiretap on a gate's outcome plane already carries
+throttle metrics; the artifact-coordinate cleanup (backlog B1–B4). Added during the phase: correlated DynamoDB throttles
+and the table's context adapter (Slice 7b). After this phase, work returns to tailgate.

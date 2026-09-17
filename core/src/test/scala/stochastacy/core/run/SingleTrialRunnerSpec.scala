@@ -11,7 +11,7 @@ import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
 import stochastacy.core.component.{ComponentSampler, Emission, ResidueSummary, ScheduleReleaseTransducer, Scheduled, Timed}
 import stochastacy.core.stream.TickFraming
-import stochastacy.sim.SimTime
+import stochastacy.sim.{SimInstant, SimTime}
 
 class SingleTrialRunnerSpec extends AnyWordSpec with should.Matchers with BeforeAndAfterAll:
 
@@ -23,7 +23,7 @@ class SingleTrialRunnerSpec extends AnyWordSpec with should.Matchers with Before
   // Counts requests via Int state; one in-horizon response + consumption per request.
   private val sampler = new ComponentSampler[Int, Req, String, String]:
     def initialState: Int = 0
-    def sample(in: Req, s: Int, rng: UniformRandomProvider): Emission[Int, String, String] =
+    def sample(in: Req, at: SimInstant, s: Int, rng: UniformRandomProvider): Emission[Int, String, String] =
       Emission(s + 1, Scheduled("resp", 0.0), List(Scheduled("cons", 0.0)))
 
   private def req(tick: Long): Timed[Req] = Timed(Req(), SimTime.of(tick), 0.0, "r")

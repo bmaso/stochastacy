@@ -2,6 +2,7 @@ package stochastacy.examples.store
 
 import org.apache.commons.rng.UniformRandomProvider
 import stochastacy.core.component.{ComponentSampler, Emission, Scheduled}
+import stochastacy.sim.SimInstant
 
 /** The service ingress: translates each client `ApiRequest` into the downstream `StoreRequest` it
  *  issues (its forward **output**), adds ingress service latency, and emits a latency observation.
@@ -14,7 +15,7 @@ final class IngressSampler(cfg: ServiceConfig)
 
   def initialState: Unit = ()
 
-  def sample(in: ApiRequest, state: Unit, rng: UniformRandomProvider): Emission[Unit, StoreRequest, ServiceConsumption] =
+  def sample(in: ApiRequest, at: SimInstant, state: Unit, rng: UniformRandomProvider): Emission[Unit, StoreRequest, ServiceConsumption] =
     val lat = cfg.ingressLatencyTicks
     Emission((), Scheduled(toStoreRequest(in), lat), List(Scheduled(ServiceLatency(lat), lat)))
 

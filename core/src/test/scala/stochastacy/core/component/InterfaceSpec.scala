@@ -31,7 +31,7 @@ class InterfaceSpec extends AnyWordSpec with should.Matchers with BeforeAndAfter
    *  it a known non-zero value. */
   private final class EchoSampler(latency: Double = 0.0) extends ComponentSampler[Unit, ToyReq, ToyResp, ToyCons]:
     def initialState: Unit = ()
-    def sample(in: ToyReq, state: Unit, rng: UniformRandomProvider): Emission[Unit, ToyResp, ToyCons] =
+    def sample(in: ToyReq, at: SimInstant, state: Unit, rng: UniformRandomProvider): Emission[Unit, ToyResp, ToyCons] =
       Emission((), Scheduled(ToyResp(in.id), latency), List(Scheduled(ToyCons("work"), 0.0)))
 
   private def req(tick: Long, id: Int): Timed[ToyReq] = Timed(ToyReq(id), SimTime.of(tick), 0.0, "uc")

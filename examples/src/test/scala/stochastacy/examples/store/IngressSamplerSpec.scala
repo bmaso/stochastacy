@@ -1,5 +1,7 @@
 package stochastacy.examples.store
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
@@ -11,7 +13,7 @@ class IngressSamplerSpec extends AnyWordSpec with should.Matchers:
   private val ingress = new IngressSampler(cfg)
   private val rng = RandomSource.KISS.create(1L)
 
-  private def emit(api: ApiRequest) = ingress.sample(api, (), rng)
+  private def emit(api: ApiRequest) = ingress.sample(api, SimInstant(0L, 0.0), (), rng)
 
   "IngressSampler" should {
 

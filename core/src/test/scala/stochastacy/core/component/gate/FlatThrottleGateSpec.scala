@@ -1,5 +1,7 @@
 package stochastacy.core.component.gate
 
+import stochastacy.sim.SimInstant
+
 import org.apache.commons.rng.simple.RandomSource
 import org.scalatest.matchers.should
 import org.scalatest.wordspec.AnyWordSpec
@@ -18,7 +20,7 @@ class FlatThrottleGateSpec extends AnyWordSpec with should.Matchers:
     var st  = start
     val out = Vector.newBuilder[Any]
     (0 until n).foreach { i =>
-      val e = gate.sample(Req(i), st, rng)
+      val e = gate.sample(Req(i), SimInstant(0L, 0.0), st, rng)
       out += e.output.event
       st = e.newState
     }
@@ -28,11 +30,12 @@ class FlatThrottleGateSpec extends AnyWordSpec with should.Matchers:
 
     "admit up to capacity within a tick and reject the rest with the configured response" in {
       val (outcomes, _) = feedTick(5, gate.initialState)
-      outcomes shouldBe Vector(Admit(Req(0)), Admit(Req(1)), Admit(Req(2)), Reject(Resp("throttled")), Reject(Resp("throttled")))
+      outcomes shouldBe Vector(Admit(Req(0)), Admit(Req(1)), Admit(Req(2)),
+        Reject(Req(3), Resp("throttled")), Reject(Req(4), Resp("throttled"))) // the rejection carries its request
     }
 
     "carry no consumption and stamp the outcome at the configured latency" in {
-      val e = new FlatThrottleGate[Req, Resp](2, Resp("x"), latencyTicks = 0.03).sample(Req(1), FlatThrottleGate.State(0), rng)
+      val e = new FlatThrottleGate[Req, Resp](2, Resp("x"), latencyTicks = 0.03).sample(Req(1), SimInstant(0L, 0.0), FlatThrottleGate.State(0), rng)
       e.consumption shouldBe Nil
       e.output.delay shouldBe 0.03
     }
